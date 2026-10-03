@@ -5,7 +5,9 @@ const path = require('node:path');
 const { DatabaseSync } = require('node:sqlite');
 const { AUDIT_CHAIN_ID, verifyAuditChainRows } = require('../operating-ledger');
 const { BACKUP_MANIFEST_V3, verifyBackupManifestAuthenticity } = require('../backup-manifest');
-const { acquireRuntimeLock } = require('../runtime-lock');
+const { acquireRuntimeLock, acquireLedgerRuntimeLock } = require('../runtime-lock');
+const { readAuthority, readAuthorityMarker, verifyAuthorityHistory } = require('../company-authority');
+const { assertSameCompany, readCompanyRuntime, readDirectoryCompany } = require('../company-runtime');
 
 const projectRoot = path.resolve(__dirname, '..');
 
@@ -1657,6 +1659,167 @@ function verifySqliteBackupDatabase(ledgerFile) {
           throw new Error('Backup operator-preference constraints are incomplete: idx_operator_preferences_locale.');
         }
       }
+      if (appliedMigrations.has('073_self_service_work_board')) {
+        const schema = {
+          work_board_accounts: ['id', 'email', 'password_hash', 'salt', 'status', 'worker_id', 'data_json', 'created_at'],
+          work_board_positions: ['id', 'job_id', 'status', 'data_json', 'created_at'],
+          work_board_applications: ['id', 'position_id', 'account_id', 'status', 'assignment_id', 'created_at']
+        };
+        for (const [table, columns] of Object.entries(schema)) {
+          if (!retainedTables.has(table)) throw new Error(`Backup work-board schema is incomplete: ${table}.`);
+          const retained = new Set(database.prepare(`PRAGMA table_info(${table})`).all().map(row => row.name));
+          if (columns.some(column => !retained.has(column))) throw new Error(`Backup work-board columns are incomplete: ${table}.`);
+        }
+        for (const [table, required] of [['work_board_accounts', ['email']], ['work_board_applications', ['position_id', 'account_id']]]) {
+          const unique = database.prepare(`PRAGMA index_list(${table})`).all().filter(row => row.unique);
+          const valid = unique.some(index => {
+            const columns = database.prepare(`PRAGMA index_info("${index.name.replace(/"/g, '""')}")`).all().map(row => row.name);
+            return columns.length === required.length && required.every((name, offset) => columns[offset] === name);
+          });
+          if (!valid) throw new Error(`Backup work-board unique constraint is missing: ${table}.`);
+        }
+      }
+      if (appliedMigrations.has('088_durable_work_board_sessions')) {
+        const required = ['token_hash', 'account_id', 'issued_at', 'expires_at', 'revoked_at', 'revocation_reason', 'created_at', 'updated_at'];
+        if (!retainedTables.has('work_board_sessions')) throw new Error('Backup work-board session schema is incomplete.');
+        const columns = new Set(database.prepare('PRAGMA table_info(work_board_sessions)').all().map(row => row.name));
+        if (required.some(name => !columns.has(name))) throw new Error('Backup work-board session columns are incomplete.');
+        for (const name of ['idx_work_board_sessions_expiry', 'idx_work_board_sessions_account']) {
+          if (!database.prepare('SELECT name FROM sqlite_master WHERE type = ? AND name = ?').get('index', name)) throw new Error(`Backup work-board session index is missing: ${name}.`);
+        }
+      }
+      if (appliedMigrations.has('089_position_offer_acceptance')) {
+        const required = ['id', 'application_id', 'terms_revision', 'return_status', 'status', 'expires_at', 'responded_at', 'actor', 'created_at'];
+        if (!retainedTables.has('work_board_position_offers')) throw new Error('Backup position-offer schema is incomplete.');
+        const columns = new Set(database.prepare('PRAGMA table_info(work_board_position_offers)').all().map(row => row.name));
+        if (required.some(name => !columns.has(name))) throw new Error('Backup position-offer columns are incomplete.');
+        if (!database.prepare('SELECT name FROM sqlite_master WHERE type = ? AND name = ?').get('index', 'idx_work_board_offers_application')) throw new Error('Backup position-offer index is missing.');
+      }
+      if (appliedMigrations.has('090_durable_conversation_analysis')) {
+        const queue = require('../conversation-analysis-queue');
+        queue.verifyConversationAnalysisQueue(database);
+      }
+      if (appliedMigrations.has('091_site_receipt_inspection_reviews')) {
+        const required = ['id', 'job_id', 'issue_id', 'receipt_id', 'accepted_quantity', 'damaged_quantity',
+          'review_reference', 'evidence_reference', 'entry_key', 'entry_fingerprint', 'actor', 'created_at'];
+        if (!retainedTables.has('shared_material_site_issue_receipt_reviews')) throw new Error('Backup site-receipt inspection review schema is incomplete.');
+        const columns = new Set(database.prepare('PRAGMA table_info(shared_material_site_issue_receipt_reviews)').all().map(row => row.name));
+        if (required.some(name => !columns.has(name))) throw new Error('Backup site-receipt inspection review columns are incomplete.');
+        const unique = database.prepare('PRAGMA index_list(shared_material_site_issue_receipt_reviews)').all().some(index => index.unique
+          && database.prepare(`PRAGMA index_info("${index.name.replace(/"/g, '""')}")`).all().map(row => row.name).join(',') === 'entry_key');
+        if (!unique) throw new Error('Backup site-receipt inspection review idempotency constraint is missing.');
+      }
+      if (appliedMigrations.has('083_standby_callout_workflow')) {
+        const required = ['id', 'job_id', 'assignment_id', 'worker_id', 'unavailability_period_id', 'standby_period_id', 'status', 'expires_at', 'approval_id', 'data_json', 'created_at', 'updated_at'];
+        if (!retainedTables.has('standby_callouts')) throw new Error('Backup standby-callout schema is incomplete.');
+        const columns = new Set(database.prepare('PRAGMA table_info(standby_callouts)').all().map(row => row.name));
+        if (required.some(name => !columns.has(name))) throw new Error('Backup standby-callout columns are incomplete.');
+        const indexes = database.prepare('PRAGMA index_list(standby_callouts)').all();
+        const unique = indexes.some(index => index.unique && database.prepare(`PRAGMA index_info("${index.name.replace(/"/g, '""')}")`).all().map(row => row.name).join(',') === 'assignment_id,worker_id,standby_period_id');
+        if (!unique) throw new Error('Backup standby-callout idempotency constraint is missing.');
+      }
+      if (appliedMigrations.has('074_company_runtime_boundary')) {
+        if (!retainedTables.has('company_runtime')) throw new Error('Backup company runtime schema is incomplete.');
+        const columns = new Set(database.prepare('PRAGMA table_info(company_runtime)').all().map(row => row.name));
+        if (['id', 'company_id', 'ledger_id', 'created_at'].some(name => !columns.has(name))) throw new Error('Backup company runtime columns are incomplete.');
+      }
+      if (appliedMigrations.has('075_shared_identity_sessions')) {
+        for (const [table, required] of Object.entries({ identity_runtime_sessions: ['kind', 'id_hash', 'sealed_payload', 'expires_at'],
+          work_board_accounts: ['auth_source', 'membership_id', 'person_id'] })) {
+          if (!retainedTables.has(table)) throw new Error(`Backup identity schema is incomplete: ${table}.`);
+          const columns = new Set(database.prepare(`PRAGMA table_info(${table})`).all().map(row => row.name));
+          if (required.some(name => !columns.has(name))) throw new Error(`Backup identity columns are incomplete: ${table}.`);
+        }
+        for (const name of ['idx_identity_runtime_expiry', 'idx_work_board_membership']) {
+          if (!database.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?").get(name)) throw new Error(`Backup identity index is missing: ${name}.`);
+        }
+      }
+      if (appliedMigrations.has('076_company_authority_handover')) {
+        if (!retainedTables.has('company_authority') || !retainedTables.has('company_authority_history') || !verifyAuthorityHistory(database).valid) throw new Error('Backup authority history is incomplete or invalid.');
+        const guarded = [...retainedTables].filter(name => !name.startsWith('sqlite_') && !['company_authority', 'company_authority_history', 'ledger_schema_migrations'].includes(name));
+        for (const table of guarded) for (const operation of ['insert', 'update', 'delete']) {
+          if (!database.prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name = ?").get(`authority_${table}_${operation}`)) throw new Error(`Backup write guard is missing: ${table}.${operation}.`);
+        }
+      }
+      if (appliedMigrations.has('077_shared_work_context')) {
+        for (const table of require('../work-context').TABLES) {
+          if (!retainedTables.has(table)) throw new Error(`Backup work context table is missing: ${table}.`);
+        }
+        if (database.prepare('SELECT id FROM work_context_control').all().length !== 1
+          || !database.prepare("SELECT id FROM work_context_control WHERE id = 'current'").get()) throw new Error('Backup work context control is invalid.');
+        for (const [table, required] of Object.entries({ work_places: ['parent_id', 'data_json', 'revision', 'archived'], job_places: ['job_id', 'place_id'], job_parties: ['job_id', 'data_json', 'archived'], work_packages: ['job_id', 'place_id', 'data_json', 'revision'], work_package_tasks: ['package_id', 'task_id'], work_package_quantities: ['package_id', 'item_id'], work_context_commands: ['job_id', 'request_hash', 'response_json'] })) {
+          const columns = new Set(database.prepare(`PRAGMA table_info(${table})`).all().map(row => row.name));
+          if (required.some(name => !columns.has(name))) throw new Error(`Backup work context columns are incomplete: ${table}.`);
+        }
+      }
+      if (appliedMigrations.has('078_work_delivery_lifecycle')) {
+        const { TABLES, COLUMNS, verifyWorkDeliveries } = require('../work-delivery');
+        for (const table of TABLES) {
+          if (!retainedTables.has(table)) throw new Error(`Backup work delivery table is missing: ${table}.`);
+          const columns = new Set(database.prepare(`PRAGMA table_info(${table})`).all().map(row => row.name));
+          if (COLUMNS[table].some(name => !columns.has(name))) throw new Error(`Backup work delivery columns are incomplete: ${table}.`);
+        }
+        for (const name of ['idx_work_delivery_production_active', 'idx_work_delivery_tasks_active', 'idx_work_delivery_decision_pending']) {
+          if (!database.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?").get(name)) throw new Error(`Backup work delivery index is missing: ${name}.`);
+        }
+        verifyWorkDeliveries(database);
+      }
+      if (appliedMigrations.has('079_installed_asset_history')) {
+        const { TABLES, COLUMNS, verifyAssetHistory } = require('../asset-history');
+        for (const table of TABLES) {
+          if (!retainedTables.has(table)) throw new Error(`Backup asset history table is missing: ${table}.`);
+          const columns = new Set(database.prepare(`PRAGMA table_info(${table})`).all().map(row => row.name));
+          if (COLUMNS[table].some(name => !columns.has(name))) throw new Error(`Backup asset history columns are incomplete: ${table}.`);
+        }
+        for (const name of ['idx_asset_service_delivery_active', 'idx_asset_service_document_active']) {
+          if (!database.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?").get(name)) throw new Error(`Backup asset history index is missing: ${name}.`);
+        }
+        verifyAssetHistory(database);
+      }
+      if (appliedMigrations.has('080_inspection_coverage')) {
+        const { TABLES, COLUMNS, verifyInspectionCoverage } = require('../inspection-coverage');
+        for (const table of TABLES) {
+          if (!retainedTables.has(table)) throw new Error(`Backup inspection coverage table is missing: ${table}.`);
+          const columns = new Set(database.prepare(`PRAGMA table_info(${table})`).all().map(row => row.name));
+          if (COLUMNS[table].some(name => !columns.has(name))) throw new Error(`Backup inspection coverage columns are incomplete: ${table}.`);
+        }
+        if (!database.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_inspection_coverage_pending'").get()) throw new Error('Backup inspection coverage pending-decision index is missing.');
+        verifyInspectionCoverage(database);
+      }
+      if (appliedMigrations.has('081_client_delivery_responses')) {
+        const { TABLES, COLUMNS, verifyClientDelivery } = require('../client-delivery');
+        for (const table of TABLES) {
+          if (!retainedTables.has(table)) throw new Error(`Backup client delivery table is missing: ${table}.`);
+          const columns = new Set(database.prepare(`PRAGMA table_info(${table})`).all().map(row => row.name));
+          if (COLUMNS[table].some(name => !columns.has(name))) throw new Error(`Backup client delivery columns are incomplete: ${table}.`);
+        }
+        for (const name of ['idx_client_delivery_offer_active', 'idx_client_delivery_offer_access', 'idx_client_delivery_response_job']) {
+          if (!database.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?").get(name)) throw new Error(`Backup client delivery index is missing: ${name}.`);
+        }
+        verifyClientDelivery(database);
+      }
+      if (appliedMigrations.has('082_work_balance')) {
+        const { TABLES, COLUMNS, verifyWorkBalance } = require('../work-balance');
+        for (const table of TABLES) {
+          if (!retainedTables.has(table)) throw new Error(`Backup work balance table is missing: ${table}.`);
+          const columns = new Set(database.prepare(`PRAGMA table_info(${table})`).all().map(row => row.name));
+          if (COLUMNS[table].some(name => !columns.has(name))) throw new Error(`Backup work balance columns are incomplete: ${table}.`);
+        }
+        for (const name of ['idx_work_balance_pending', 'idx_work_balance_active', 'idx_work_balance_job']) {
+          if (!database.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?").get(name)) throw new Error(`Backup work balance index is missing: ${name}.`);
+        }
+        verifyWorkBalance(database);
+      }
+      if (appliedMigrations.has('084_operational_recovery_cases')) {
+        const { TABLES, COLUMNS, verifyOperationalRecovery } = require('../operational-recovery');
+        for (const table of TABLES) {
+          if (!retainedTables.has(table)) throw new Error(`Backup operational-recovery table is missing: ${table}.`);
+          const columns = new Set(database.prepare(`PRAGMA table_info(${table})`).all().map(row => row.name));
+          if (COLUMNS[table].some(name => !columns.has(name))) throw new Error(`Backup operational-recovery columns are incomplete: ${table}.`);
+        }
+        if (!database.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_operational_recovery_job'").get()) throw new Error('Backup operational-recovery index is missing.');
+        verifyOperationalRecovery(database);
+      }
       const auditColumns = new Set(database.prepare('PRAGMA table_info(audit_events)').all().map(row => row.name));
       let auditIntegrity = { supported: false, valid: null, status: 'legacy_unchained_backup' };
       if (['sequence_number', 'previous_hash', 'event_hash'].every(column => auditColumns.has(column))) {
@@ -1667,7 +1830,7 @@ function verifySqliteBackupDatabase(ledgerFile) {
           throw new Error(`Backup audit chain failed integrity verification: ${auditIntegrity.failures.map(failure => failure.code).join(', ')}.`);
         }
       }
-      return { valid: true, tables: retainedTables.size, auditIntegrity };
+      return { valid: true, tables: retainedTables.size, auditIntegrity, company: readCompanyRuntime(database), authority: readAuthority(database) };
     } finally {
       database.close();
     }
@@ -1679,6 +1842,7 @@ function verifySqliteBackupDatabase(ledgerFile) {
 function invalidateRestoredOperatorSessions(ledgerFile) {
   const database = new DatabaseSync(ledgerFile);
   try {
+    if (database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'identity_runtime_sessions'").get()) database.exec('DELETE FROM identity_runtime_sessions');
     const retained = database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'operator_sessions'").get();
     if (!retained) return 0;
     const timestamp = new Date().toISOString();
@@ -1720,6 +1884,9 @@ function clearRestoredApiRateLimits(ledgerFile) {
 function deactivateRestoredManagedOperators(ledgerFile) {
   const database = new DatabaseSync(ledgerFile);
   try {
+    if (database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'work_board_accounts'").get()) {
+      database.prepare("UPDATE work_board_accounts SET status = 'suspended'").run();
+    }
     const retained = database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'managed_operator_accounts'").get();
     if (!retained) return 0;
     const timestamp = new Date().toISOString();
@@ -1728,6 +1895,19 @@ function deactivateRestoredManagedOperators(ledgerFile) {
       SET status = 'deactivated', deactivated_at = ?, last_used_at = NULL, updated_at = ?
       WHERE status = 'active'
     `).run(timestamp, timestamp);
+    return Number(result.changes || 0);
+  } finally {
+    database.close();
+  }
+}
+
+function invalidateRestoredWorkerSessions(ledgerFile) {
+  const database = new DatabaseSync(ledgerFile);
+  try {
+    if (!database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'work_board_sessions'").get()) return 0;
+    const timestamp = new Date().toISOString();
+    const result = database.prepare(`UPDATE work_board_sessions
+      SET revoked_at = ?, revocation_reason = 'database_restore', updated_at = ? WHERE revoked_at IS NULL`).run(timestamp, timestamp);
     return Number(result.changes || 0);
   } finally {
     database.close();
@@ -1808,6 +1988,24 @@ function restoreWithLockHeld(argumentsMap) {
   for (const file of requiredFiles) {
     if (!manifestFiles.has(file)) throw new Error(`Backup does not contain required local state file: ${file}`);
   }
+  const sourceVerification = verifySqliteBackupDatabase(path.join(backupDir, path.basename(ledgerFile)));
+  const sourceCompany = sourceVerification.company;
+  if (sourceVerification.authority || process.env.CONTRACTOR_AI_AUTHORITY_KEY_FILE || readAuthorityMarker(ledgerFile)) throw Object.assign(new Error('An authority-bound environment cannot be replaced by generic backup restore. Retain the source/target handover records for reviewed recovery; generic authority-aware restore is not implemented.'), { code: 'authority_restore_review_required' });
+  if (manifest.company) assertSameCompany(manifest.company, sourceCompany);
+  const targetCompanies = [readDirectoryCompany(dataDir), readDirectoryCompany(uploadDir)].filter(Boolean);
+  if (fs.existsSync(ledgerFile)) {
+    const targetDatabase = new DatabaseSync(ledgerFile, { readOnly: true });
+    try {
+      const current = readCompanyRuntime(targetDatabase);
+      if (readAuthority(targetDatabase)) throw Object.assign(new Error('Generic restore cannot reopen or roll back an authority-bound environment.'), { code: 'authority_restore_review_required' });
+      if (current) targetCompanies.push(current);
+    } catch (error) {
+      const corrupt = [11, 26].includes(Number(error.errcode) & 255);
+      const legacyRecovery = !sourceCompany && argumentsMap['allow-legacy-unsigned'] === true;
+      if (!corrupt || (!targetCompanies.length && !legacyRecovery)) throw error;
+    } finally { targetDatabase.close(); }
+  }
+  for (const current of targetCompanies) assertSameCompany(current, sourceCompany);
   const stagingRoot = path.join(dataDir, `.restore-staging-${process.pid}-${Date.now()}`);
   const stagedFilesDir = path.join(stagingRoot, 'files');
   const stagedEvidenceDir = path.join(stagingRoot, 'evidence');
@@ -1857,6 +2055,7 @@ function restoreWithLockHeld(argumentsMap) {
   let clearedAuthenticationRateLimits = 0;
   let clearedApiRateLimits = 0;
   let deactivatedManagedOperators = 0;
+  let invalidatedWorkerSessions = 0;
   try {
     for (const target of targetFiles) {
       const filename = path.basename(target);
@@ -1878,6 +2077,7 @@ function restoreWithLockHeld(argumentsMap) {
     clearedAuthenticationRateLimits = clearRestoredAuthenticationRateLimits(ledgerFile);
     clearedApiRateLimits = clearRestoredApiRateLimits(ledgerFile);
     deactivatedManagedOperators = deactivateRestoredManagedOperators(ledgerFile);
+    invalidatedWorkerSessions = invalidateRestoredWorkerSessions(ledgerFile);
   } catch (error) {
     const rollbackFailures = [];
     for (const target of targetFiles) {
@@ -1921,6 +2121,7 @@ function restoreWithLockHeld(argumentsMap) {
     databaseVerification,
     invalidatedOperatorSessions,
     deactivatedManagedOperators,
+    invalidatedWorkerSessions,
     clearedAuthenticationRateLimits,
     clearedApiRateLimits,
     preRestoreBackupId: safetyId,
@@ -1933,9 +2134,14 @@ function restore(argumentsMap) {
   const backupId = String(argumentsMap['backup-id'] || '');
   if (argumentsMap.confirm !== `RESTORE_${backupId}`) throw new Error(`Set --confirm RESTORE_${backupId} to apply this verified local backup.`);
   const recoveryLock = acquireRuntimeLock(dataDir, { purpose: 'restore' });
+  let ledgerLock;
   try {
+    const ledgerFile = path.resolve(argumentsMap['ledger-db-file'] || process.env.LEDGER_DB_FILE || path.join(dataDir, 'contractor-ledger.sqlite'));
+    fs.mkdirSync(path.dirname(ledgerFile), { recursive: true });
+    ledgerLock = acquireLedgerRuntimeLock(ledgerFile, { purpose: 'restore' });
     return restoreWithLockHeld(argumentsMap);
   } finally {
+    ledgerLock?.release();
     recoveryLock.release();
   }
 }

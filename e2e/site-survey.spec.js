@@ -1,4 +1,5 @@
 const { test, expect } = require('@playwright/test');
+const { jpegFixture } = require('../tests/image-fixtures');
 
 test('operator completes an approval-gated site survey and advances the opportunity to estimating', async ({ page, request }) => {
   const marker = Date.now();
@@ -40,7 +41,7 @@ test('operator completes an approval-gated site survey and advances the opportun
   await control.locator('input[type="file"]').setInputFiles({
     name: 'browser-site-survey.jpg',
     mimeType: 'image/jpeg',
-    buffer: Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from(`browser site survey ${marker}`)]),
+    buffer: jpegFixture(`browser site survey ${marker}`),
   });
   await control.getByRole('button', { name: 'Upload' }).click();
   await expect(page.getByText('Private site-survey evidence retained with checksum verification.')).toBeVisible();

@@ -80,19 +80,31 @@ test('lifecycle transitions update existing records and gate consequential closu
 
   const incident = await request(baseUrl, `/api/ledger/jobs/${encodeURIComponent(jobId)}/incidents`, {
     method: 'POST',
-    body: JSON.stringify({ title: 'Minor trip hazard', status: 'reported', severity: 'high' })
+    body: JSON.stringify({ title: 'Minor trip hazard', status: 'reported', severity: 'high', responsible: 'Site supervisor', dueAt: '2026-09-25' })
   });
   assert.equal(incident.response.status, 201);
   assert.ok(incident.body.incident.approvalId);
+  assert.equal(incident.body.incident.responsible, 'Site supervisor');
+  assert.equal(incident.body.incident.dueAt, '2026-09-25');
+  const unresolvedIncident = await request(baseUrl, `/api/ledger/jobs/${encodeURIComponent(jobId)}/lifecycle/incident/${encodeURIComponent(incident.body.incident.id)}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ status: 'resolved', notes: 'Reviewed by site supervisor.' })
+  });
+  assert.equal(unresolvedIncident.response.status, 400);
+  assert.equal(unresolvedIncident.body.error.code, 'incident_resolution_evidence_required');
   const resolvingIncident = await request(baseUrl, `/api/ledger/jobs/${encodeURIComponent(jobId)}/lifecycle/incident/${encodeURIComponent(incident.body.incident.id)}`, {
     method: 'PATCH',
-    body: JSON.stringify({ status: 'resolved', notes: 'Cable route secured and crew briefed.' })
+    body: JSON.stringify({ status: 'resolved', notes: 'Cable route secured and crew briefed.', correctiveAction: 'Cable rerouted above the protected walkway and secured with fixed clips.' })
   });
   assert.equal(resolvingIncident.response.status, 200);
   assert.equal(resolvingIncident.body.record.status, 'pending_approval');
   assert.equal(resolvingIncident.body.approval.id, incident.body.incident.approvalId);
   assert.equal(resolvingIncident.body.approval.data.requestedStatus, 'resolved');
   await resolveApproval(baseUrl, resolvingIncident.body.approval.id);
+  const resolvedDetail = await request(baseUrl, `/api/ledger/jobs/${encodeURIComponent(jobId)}`);
+  const retainedIncident = resolvedDetail.body.job.incidents.find(record => record.id === incident.body.incident.id);
+  assert.equal(retainedIncident.data.lifecycleTransition.correctiveAction, 'Cable rerouted above the protected walkway and secured with fixed clips.');
+  assert.equal(retainedIncident.responsible, 'Site supervisor');
 
   const punch = await request(baseUrl, `/api/ledger/jobs/${encodeURIComponent(jobId)}/punch-items`, {
     method: 'POST',

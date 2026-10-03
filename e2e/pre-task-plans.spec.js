@@ -68,6 +68,7 @@ test('pre-task release, crew activation, revision, stop work, closeout, and mobi
   await approve(request, jha.approval.id, 'Hazards, controls, and stop-work basis verified.');
 
   await page.goto('/');
+  await page.getByLabel(/^(Language|Taal)$/).selectOption('en-GB');
   let panel = await openPlan(page, job.id);
   const editor = panel.locator('.pre-task-create');
   const title = `Distribution installation plan ${suffix}`;
@@ -123,7 +124,7 @@ test('pre-task release, crew activation, revision, stop work, closeout, and mobi
   await expect(panel.getByText('Sources current', { exact: true })).toBeVisible();
   await expect(panel.locator('.pre-task-attendees').getByText('acknowledged', { exact: true })).toHaveCount(2);
   await panel.getByRole('button', { name: 'Revise' }).click();
-  await expect(panel.locator('.pre-task-create-heading')).toContainText('Prepare revision');
+  await expect(editor.locator('.pre-task-create-heading')).toContainText('Prepare revision');
   await expect(panel.locator('.pre-task-create').getByLabel('Title', { exact: true })).toHaveValue(title);
   await expect(panel.locator('.pre-task-create label').filter({ hasText: /^Approved JHA/ }).locator('select')).toHaveValue(jha.id);
 

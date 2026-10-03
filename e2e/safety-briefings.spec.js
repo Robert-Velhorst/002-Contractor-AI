@@ -65,6 +65,7 @@ test('safety briefing schedule, attendance exception, signoff, and mobile layout
   const briefing = (await briefingResponse.json()).safetyMeetings[0];
   await postJson(request, `/api/ledger/jobs/${job.id}/safety-meetings/${briefing.id}/acknowledgments`, {
     entryKey: `browser-safety-acknowledgement-${suffix}`,
+    briefingContentHash: briefing.briefingContentHash,
     workerId: workers[0].id,
     workerName: workers[0].name,
     acknowledged: true,

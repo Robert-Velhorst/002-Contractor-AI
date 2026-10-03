@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
+const { ContractorOperatingLedger } = require('../operating-ledger');
 
 const stateDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'contractor-ai-equipment-custody-api-'));
 const tokens = {
@@ -36,8 +37,10 @@ async function request(baseUrl, route, options = {}) {
 test('equipment custody API gives assigned field workers replay-safe checkout and return without global access', async t => {
   const server = app.listen(0);
   await new Promise(resolve => server.once('listening', resolve));
+  const ledger = new ContractorOperatingLedger({ dbFile: process.env.LEDGER_DB_FILE });
   t.after(async () => {
     await app.locals.runtimeControl.shutdown({ server, signal: 'equipment_custody_api_test' });
+    ledger.close();
     fs.rmSync(stateDirectory, { recursive: true, force: true });
   });
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
@@ -58,6 +61,11 @@ test('equipment custody API gives assigned field workers replay-safe checkout an
     body: JSON.stringify({ id: tokens.field.workerId, name: 'Field equipment custodian', role: 'Equipment operator', status: 'available' })
   });
   assert.equal(worker.response.status, 201);
+  const peerWorker = await request(baseUrl, '/api/ledger/workers', {
+    method: 'POST',
+    body: JSON.stringify({ id: 'another-worker', name: 'Another equipment custodian', role: 'Equipment operator', status: 'available' })
+  });
+  assert.equal(peerWorker.response.status, 201);
   const assignment = await request(baseUrl, `/api/ledger/jobs/${encodeURIComponent(jobId)}/assignments`, {
     method: 'POST',
     body: JSON.stringify({ workerId: tokens.field.workerId, workerName: 'Field equipment custodian', role: 'Equipment operator', status: 'assigned' })
@@ -86,7 +94,7 @@ test('equipment custody API gives assigned field workers replay-safe checkout an
   assert.equal(plan.body.plans[0].tool.id, tool.body.tool.id);
 
   const checkoutPayload = {
-    reservationId: reservation.body.toolReservation.id,
+    reservation_id: reservation.body.toolReservation.id,
     checkedOutAt: new Date(Date.now() - 60_000).toISOString(),
     checkedOutBy: 'Spoofed office actor',
     condition: 'good',
@@ -131,6 +139,17 @@ test('equipment custody API gives assigned field workers replay-safe checkout an
     entryKey: `equipment-return-api-${suffix}`,
     notes: 'Emergency stop did not reset; equipment isolated for review.'
   };
+  ledger.db.prepare('UPDATE equipment_custody_sessions SET worker_id = ? WHERE id = ?')
+    .run('another-worker', checkout.body.custody.id);
+  const peerReturn = await request(baseUrl, `/api/ledger/jobs/${encodeURIComponent(jobId)}/equipment-custody/${encodeURIComponent(checkout.body.custody.id)}/return`, {
+    token: tokens.field.token,
+    method: 'POST',
+    body: JSON.stringify(returnPayload)
+  });
+  assert.equal(peerReturn.response.status, 403);
+  assert.equal(peerReturn.body.error.code, 'field_equipment_custody_scope_forbidden');
+  ledger.db.prepare('UPDATE equipment_custody_sessions SET worker_id = ? WHERE id = ?')
+    .run(tokens.field.workerId, checkout.body.custody.id);
   const returned = await request(baseUrl, `/api/ledger/jobs/${encodeURIComponent(jobId)}/equipment-custody/${encodeURIComponent(checkout.body.custody.id)}/return`, {
     token: tokens.field.token,
     method: 'POST',
@@ -147,5 +166,5 @@ test('equipment custody API gives assigned field workers replay-safe checkout an
   const diagnostics = await request(baseUrl, '/api/ledger/debug', { token: tokens.owner });
   assert.equal(diagnostics.response.status, 200);
   assert.equal(diagnostics.body.diagnostics.valid, true);
-  assert.equal(diagnostics.body.diagnostics.migrations.currentVersion, '072_operator_locale_preferences');
+  assert.equal(diagnostics.body.diagnostics.migrations.currentVersion, '096_loading_read_indexes');
 });

@@ -1,6 +1,6 @@
 const { test, expect } = require('@playwright/test');
 
-test('operator approves a production baseline, records output offline, and requests a retained reversal', async ({ page, request, context }) => {
+test('operator approves a production baseline, records output offline, and requests a retained reversal', async ({ page, request, context }, testInfo) => {
   const suffix = Date.now();
   const title = `Browser production control ${suffix}`;
   const intakeResponse = await request.post('/api/ledger/intake', {
@@ -14,6 +14,11 @@ test('operator approves a production baseline, records output offline, and reque
   });
   expect(intakeResponse.ok()).toBeTruthy();
   const job = (await intakeResponse.json()).job;
+  const taskResponse = await request.post(`/api/ledger/jobs/${job.id}/tasks`, {
+    data: { title: 'Install wall finish', status: 'open' }
+  });
+  expect(taskResponse.ok()).toBeTruthy();
+  const task = (await taskResponse.json()).task;
 
   await page.goto('/');
   await page.getByLabel(/^(Language|Taal)$/).selectOption('en-GB');
@@ -28,6 +33,7 @@ test('operator approves a production baseline, records output offline, and reque
   await baselineForm.getByLabel('Line key').fill('wall-finish-area');
   await baselineForm.getByLabel('Cost code').fill('LAB-WALL-100');
   await baselineForm.getByLabel('Description').fill('Installed wall finish area');
+  await baselineForm.getByLabel('Linked task').selectOption(task.id);
   await baselineForm.getByLabel('Unit').fill('m2');
   await baselineForm.getByLabel('Planned quantity').fill('100');
   await baselineForm.getByLabel('Labor hours').fill('80');
@@ -38,6 +44,7 @@ test('operator approves a production baseline, records output offline, and reque
 
   let detailResponse = await request.get(`/api/ledger/jobs/${job.id}`);
   let detail = (await detailResponse.json()).job;
+  expect(detail.productionControl.pendingBaseline.snapshot.lines[0].taskId).toBe(task.id);
   const baselineApproval = detail.approvals.find(approval => approval.targetType === 'production_baseline' && approval.status === 'pending');
   expect(baselineApproval).toBeTruthy();
   const approvalResponse = await request.post(`/api/ledger/approvals/${baselineApproval.id}/resolve`, {
@@ -112,6 +119,7 @@ test('operator approves a production baseline, records output offline, and reque
   await expect(dutchBaseline.getByText('Herziene productie-uitgangswaarde')).toBeVisible();
   await expect(dutchBaseline.getByLabel('Regelsleutel')).toHaveValue('wall-finish-area');
   await expect(dutchBaseline.getByLabel('Omschrijving')).toHaveValue('Installed wall finish area');
+  await expect(dutchBaseline.getByLabel('Gekoppelde taak')).toHaveValue(task.id);
   await dutchBaseline.getByRole('button', { name: 'Productie-uitgangswaarde annuleren' }).click();
   await page.locator('header').getByLabel('Taal', { exact: true }).selectOption('en-GB');
 
@@ -128,4 +136,16 @@ test('operator approves a production baseline, records output offline, and reque
   }));
   expect(geometry.pageWidth).toBeLessThanOrEqual(geometry.viewportWidth);
   expect(geometry.scrollWidth).toBeLessThanOrEqual(geometry.clientWidth);
+  for (const button of await production.locator('.production-entry-row > .icon-button').all()) {
+    const bounds = await button.evaluate(element => {
+      const buttonRect = element.getBoundingClientRect();
+      const rowRect = element.parentElement.getBoundingClientRect();
+      return { width: buttonRect.width, height: buttonRect.height, right: buttonRect.right, rowRight: rowRect.right };
+    });
+    expect(bounds.width).toBeGreaterThanOrEqual(44);
+    expect(bounds.height).toBeGreaterThanOrEqual(44);
+    expect(bounds.right).toBeLessThanOrEqual(bounds.rowRight);
+  }
+  await production.locator('.production-entry-row').last().scrollIntoViewIfNeeded();
+  await page.screenshot({ path: testInfo.outputPath('production-control-mobile.png') });
 });

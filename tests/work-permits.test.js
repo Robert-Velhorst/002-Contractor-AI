@@ -155,7 +155,7 @@ test('work permits require approval and every assigned worker acknowledgement be
   assert.equal(ledger.verifyAuditIntegrity().valid, true);
   const diagnostics = ledger.diagnose();
   assert.equal(diagnostics.valid, true, JSON.stringify(diagnostics.issues));
-  assert.equal(diagnostics.migrations.currentVersion, '072_operator_locale_preferences');
+  assert.equal(diagnostics.migrations.currentVersion, '096_loading_read_indexes');
   assert.equal(diagnostics.counts.governedWorkPermits, 1);
   assert.equal(diagnostics.counts.workPermitAttendees, 2);
 });

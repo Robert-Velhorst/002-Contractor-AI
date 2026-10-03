@@ -12,6 +12,7 @@ const tokens = {
   office_operator: 'inspection-api-office-token-at-least-32-characters',
   field_worker: {
     id: 'field-inspector',
+    workerId: 'field-inspector',
     token: 'inspection-api-field-token-at-least-32-characters',
     jobIds: [assignedJobId]
   }
@@ -51,7 +52,8 @@ async function createJob(baseUrl, ledgerJobId, title) {
       ledgerJobId,
       title,
       status: 'planned',
-      client: { name: `${title} client` }
+      client: { name: `${title} client` },
+      assignAutomatically: false
     })
   });
 }
@@ -68,6 +70,16 @@ test('inspection checklist API enforces office, field, and approval role boundar
   const intake = await createJob(baseUrl, assignedJobId, 'Assigned inspection project');
   assert.equal(intake.response.status, 201);
   assert.equal(intake.body.job.id, assignedJobId);
+  const fieldWorker = await request(baseUrl, '/api/ledger/workers', tokens.office_operator, {
+    method: 'POST',
+    body: JSON.stringify({ id: 'field-inspector', name: 'Field Inspector', role: 'Inspector', status: 'available' })
+  });
+  assert.equal(fieldWorker.response.status, 201);
+  const fieldAssignment = await request(baseUrl, `/api/ledger/jobs/${assignedJobId}/assignments`, tokens.office_operator, {
+    method: 'POST',
+    body: JSON.stringify({ workerId: 'field-inspector', role: 'Inspector', status: 'assigned' })
+  });
+  assert.equal(fieldAssignment.response.status, 201);
 
   const templates = await request(baseUrl, '/api/ledger/inspection-templates', tokens.office_operator);
   assert.equal(templates.response.status, 200);

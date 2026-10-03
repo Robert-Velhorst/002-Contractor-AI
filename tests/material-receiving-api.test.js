@@ -78,6 +78,7 @@ test('material receiving API retains exact field evidence and approval-backed re
     deliveredAt: new Date(Date.now() - 60_000).toISOString(),
     receivedBy: 'API site receiver',
     location: 'Site compound',
+    stockDestination: 'company_warehouse',
     entryKey: `material-receipt-api-${suffix}`,
     lines: [{
       materialRequirementId: material.body.materialRequirement.id,
@@ -94,6 +95,7 @@ test('material receiving API retains exact field evidence and approval-backed re
   assert.equal(created.response.status, 201);
   assert.equal(created.body.receipt.status, 'discrepancy');
   assert.equal(created.body.receipt.receivedBy, 'Field material receiver');
+  assert.equal(created.body.receipt.stockDestination, 'job_site');
   assert.equal(created.body.receipt.entryFingerprint, undefined);
   assert.equal(created.body.receipt.exceptions[0].code, 'purchase_order_missing');
   assert.equal(created.body.receipt.summary.acceptedQuantity, 4);
@@ -151,5 +153,5 @@ test('material receiving API retains exact field evidence and approval-backed re
   const diagnostics = await request(baseUrl, '/api/ledger/debug', { token: tokens.owner });
   assert.equal(diagnostics.response.status, 200);
   assert.equal(diagnostics.body.diagnostics.valid, true);
-  assert.equal(diagnostics.body.diagnostics.migrations.currentVersion, '072_operator_locale_preferences');
+  assert.equal(diagnostics.body.diagnostics.migrations.currentVersion, '096_loading_read_indexes');
 });

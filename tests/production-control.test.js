@@ -143,7 +143,15 @@ test('production entry reversal preserves history and excludes output only after
 
 test('revised baselines preserve cumulative output and cannot orphan retained line history', t => {
   const { ledger, job } = fixture(t);
-  const initial = ledger.requestProductionBaseline(job.id, { lines: planLines });
+  const linkedTask = ledger.addTask(job.id, { title: 'Install wall finish' });
+  const linkedPlanLines = [{ ...planLines[0], taskId: linkedTask.id }, planLines[1]];
+  const otherJob = ledger.createIntake({ title: 'Separate task scope', client: { name: 'Other Client' }, status: 'in_progress', assignAutomatically: false });
+  const foreignTask = ledger.addTask(otherJob.id, { title: 'Foreign wall finish' });
+  assert.throws(
+    () => ledger.requestProductionBaseline(job.id, { lines: [{ ...linkedPlanLines[0], taskId: foreignTask.id }, planLines[1]] }),
+    error => error.code === 'production_line_task_invalid' && error.statusCode === 409
+  );
+  const initial = ledger.requestProductionBaseline(job.id, { lines: linkedPlanLines });
   ledger.resolveApproval(initial.approval.id, { status: 'approved', resolvedBy: 'Production approver' });
   ledger.recordProductionEntry(job.id, {
     entryKey: 'production-cumulative-output-0001',
@@ -161,9 +169,13 @@ test('revised baselines preserve cumulative output and cannot orphan retained li
     () => ledger.requestProductionBaseline(job.id, { lines: [{ ...planLines[0], unit: 'm' }, planLines[1]] }),
     error => error.code === 'production_baseline_unit_conflict' && error.statusCode === 409
   );
+  assert.throws(
+    () => ledger.requestProductionBaseline(job.id, { lines: [planLines[0], planLines[1]] }),
+    error => error.code === 'production_baseline_task_conflict' && error.statusCode === 409
+  );
 
   const revised = ledger.requestProductionBaseline(job.id, {
-    lines: [{ ...planLines[0], plannedQuantity: 120, plannedLaborHours: 90 }, planLines[1]],
+    lines: [{ ...linkedPlanLines[0], plannedQuantity: 120, plannedLaborHours: 90 }, planLines[1]],
     notes: 'Verified scope growth retained in a revised production plan.'
   });
   ledger.resolveApproval(revised.approval.id, { status: 'approved', resolvedBy: 'Production approver' });

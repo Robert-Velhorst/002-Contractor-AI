@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { appText, normalizeLocale, portalText } from '../locale'
+import { appText, detectOperatorLocale, normalizeLocale, portalText, preferredOperatorLocale } from '../locale'
 import { operatorText } from '../operator-locale'
 import {
   currency,
@@ -15,14 +15,39 @@ import {
 } from '../dashboard-format'
 
 describe('locale contract', () => {
+  it('translates approved technical PDF downloads without changing the English labels', () => {
+    const labels = {
+      'Download approved submittal PDF': 'Goedgekeurd technisch document downloaden',
+      'Downloading approved submittal...': 'Technisch document downloaden...',
+      'Verified approved submittal downloaded.': 'Gecontroleerd technisch document gedownload.',
+      'The approved submittal PDF is unavailable.': 'Het goedgekeurde technische document is niet beschikbaar.'
+    }
+    for (const [key, dutch] of Object.entries(labels)) {
+      expect(operatorText('nl-NL', key)).toBe(dutch)
+      expect(operatorText('en-GB', key)).toBe(key)
+    }
+  })
   it('normalizes only supported operator and portal locales', () => {
     expect(normalizeLocale('nl')).toBe('nl-NL')
     expect(normalizeLocale('EN_gb')).toBe('en-GB')
     expect(normalizeLocale('de-DE')).toBe('en-GB')
   })
 
+  it('chooses the first supported browser language without overriding a saved operator choice', () => {
+    expect(detectOperatorLocale(['nl-BE', 'en-GB'])).toBe('nl-NL')
+    expect(detectOperatorLocale(['fr-FR', 'en-IE'])).toBe('en-GB')
+    expect(detectOperatorLocale(['de-DE'])).toBe('en-GB')
+    expect(normalizeLocale('en-GB', detectOperatorLocale(['nl-NL']))).toBe('en-GB')
+    expect(preferredOperatorLocale({ locale: 'en-GB', isPersisted: false }, ['nl-NL'])).toBe('nl-NL')
+    expect(preferredOperatorLocale({ locale: 'en-GB', isPersisted: true }, ['nl-NL'])).toBe('en-GB')
+    expect(preferredOperatorLocale({ locale: 'en-GB', updatedAt: '2026-09-25T10:00:00Z' }, ['nl-NL'])).toBe('en-GB')
+    expect(preferredOperatorLocale({ locale: 'en-GB', updatedAt: null }, ['nl-NL'])).toBe('nl-NL')
+  })
+
   it('translates shell and client-portal copy without changing retained project text', () => {
     expect(appText('nl-NL', 'nav.jobs')).toBe('Projecten')
+    expect(appText('nl-NL', 'nav.help')).toBe('Hulp')
+    expect(appText('en-GB', 'nav.help')).toBe('Help')
     expect(appText('en-GB', 'shell.activeSummary', { jobs: 3, approvals: 2 })).toBe('3 active jobs, 2 decisions awaiting review')
     expect(portalText('en-GB', 'Reageer uiterlijk {date}', { date: '13 Aug 2026' })).toBe('Respond by 13 Aug 2026')
     expect(portalText('nl-NL', 'Werkadres')).toBe('Werkadres')
@@ -33,6 +58,9 @@ describe('locale contract', () => {
     expect(operatorText('nl-NL', '{count} reviews due', { count: 2 })).toBe('2 beoordelingen vereist')
     expect(operatorText('nl-NL', 'Ideal customer and service area')).toBe('Ideale klant en servicegebied')
     expect(operatorText('nl-NL', 'Bid / no-bid scorecard')).toBe('Inschrijven / niet inschrijven-scorekaart')
+    expect(operatorText('nl-NL', 'Required declared skills')).toBe('Benodigde opgegeven vaardigheden')
+    expect(operatorText('nl-NL', '{count} matching workers', { count: 2 })).toBe('2 uitvoerenden met overeenkomstige vaardigheden')
+    expect(operatorText('nl-NL', 'Declared skill gap')).toBe('Tekort op basis van opgegeven vaardigheden')
     expect(operatorText('nl-NL', '{answered} of {total} checklist items complete', { answered: 7, total: 10 })).toBe('7 van 10 checklistpunten voltooid')
     expect(operatorText('nl-NL', 'Crew capacity and two-week plan')).toBe('Ploegcapaciteit en tweewekenplan')
     expect(operatorText('nl-NL', '13-week cash-flow forecast')).toBe('Liquiditeitsprognose voor 13 weken')
@@ -62,6 +90,9 @@ describe('locale contract', () => {
     expect(operatorText('nl-NL', '{assignee} / {priority} / due {date}', { assignee: 'Ploeg A', priority: 'hoog', date: '14 aug' })).toBe('Ploeg A / hoog / uiterlijk 14 aug')
     expect(operatorText('nl-NL', 'Nonconformance register')).toBe('Afwijkingenregister')
     expect(operatorText('nl-NL', 'Field risk register')).toBe('Risicoregister bouwplaats')
+    expect(operatorText('nl-NL', 'Material SDS applicability')).toBe('SDS-plicht per materiaal')
+    expect(operatorText('nl-NL', 'SDS not required (owner/approver)')).toBe('SDS niet vereist (eigenaar/goedkeurder)')
+    expect(operatorText('nl-NL', 'A current approved, task-linked SDS is required before release.')).toBe('Voor vrijgave is een actueel goedgekeurd SDS nodig dat aan de taak is gekoppeld.')
     expect(operatorText('nl-NL', 'Assurance queue')).toBe('Borgingswachtrij')
     expect(operatorText('nl-NL', 'Close safety or quality observation')).toBe('Veiligheids- of kwaliteitsobservatie afsluiten')
     expect(operatorText('nl-NL', '{action} for {job}', { action: 'Observatie oplossen', job: 'Keukenrenovatie' })).toBe('Observatie oplossen voor Keukenrenovatie')
@@ -96,6 +127,9 @@ describe('locale contract', () => {
     expect(operatorText('nl-NL', '{title} evidence was retained for approval. It does not satisfy job readiness until verified.', { title: 'VCA Basis' }))
       .toBe('Onderbouwing voor VCA Basis is vastgelegd voor goedkeuring. Deze voldoet pas na verificatie aan opdrachtgereedheid.')
     expect(operatorText('nl-NL', 'Work permits')).toBe('Werkvergunningen')
+    expect(operatorText('nl-NL', 'Shared warehouse stock')).toBe('Gedeelde magazijnvoorraad')
+    expect(operatorText('nl-NL', 'Reserve for a job')).toBe('Reserveren voor opdracht')
+    expect(operatorText('nl-NL', 'Used quantity for {job}', { job: 'Dakrenovatie' })).toBe('Verbruikte hoeveelheid voor Dakrenovatie')
     expect(operatorText('nl-NL', '{count} assigned worker acknowledgement is outstanding.', { count: 1 }))
       .toBe('1 bevestiging door een toegewezen medewerker staat nog open.')
     expect(operatorText('nl-NL', '{count} assigned worker acknowledgements are outstanding.', { count: 2 }))
@@ -123,6 +157,7 @@ describe('locale contract', () => {
     expect(formatStatus('awaiting_acknowledgment')).toBe('wacht op ontvangstbevestiging')
     expect(formatStatus('revise_resubmit')).toBe('herzien en opnieuw indienen')
     expect(formatStatus('checked_out')).toBe('uitgegeven')
+    expect(formatStatus('checked out')).toBe('uitgegeven')
     expect(formatStatus('worker_created')).toBe('medewerker aangemaakt')
     expect(formatStatus('update_operator_locale')).toBe('operator-taal bijgewerkt')
     expect(formatStatus('approved_waiting')).toBe('goedgekeurd, wacht op start')
@@ -135,5 +170,17 @@ describe('locale contract', () => {
     setDashboardLocale('en-GB')
     expect(formatStatus('pending_approval')).toBe('pending approval')
     expect(formatDate(null)).toBe('Not scheduled')
+  })
+
+  it('localizes the carried preconstruction staffing basis and its safety limits', () => {
+    expect(operatorText('nl-NL', 'Preconstruction crew estimate')).toBe('Voorcalculatie bezetting')
+    expect(operatorText('nl-NL', 'maximum {count} workers per supervisor', { count: 4 }))
+      .toBe('maximaal 4 uitvoerenden per supervisor')
+    expect(operatorText('nl-NL', 'Planning estimate only. It does not create tasks, assign workers, validate statutory ratios, or replace approval.'))
+      .toContain('wettelijke verhoudingen worden niet gecontroleerd')
+    expect(operatorText('nl-NL', 'Pursuit estimate versus planned hours')).toBe('Voorcalculatie vergeleken met geplande uren')
+    expect(operatorText('nl-NL', '{estimated} h estimated · {planned} h planned · variance {variance} h', {
+      estimated: 24, planned: 8, variance: -16
+    })).toBe('24 u geraamd · 8 u gepland · verschil -16 u')
   })
 })

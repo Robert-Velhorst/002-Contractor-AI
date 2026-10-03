@@ -31,6 +31,7 @@ function emptyPlanDraft(operatorName = '') {
     preparedBy: operatorName,
     responsibleWorkerId: '',
     jhaId: '',
+    linkedTaskIds: [],
     workPermitId: '',
     sdsSheetIds: [],
     evidenceReference: '',
@@ -42,6 +43,10 @@ function emptyPlanDraft(operatorName = '') {
 
 function splitLines(value) {
   return String(value || '').split(/\r?\n|,/).map(item => item.trim()).filter(Boolean)
+}
+
+function jhaTaskIds(jha) {
+  return jha?.linkedTaskIds || jha?.data?.linkedTaskIds || []
 }
 
 export default function PreTaskPlanControl({
@@ -62,6 +67,7 @@ export default function PreTaskPlanControl({
   const [plans, setPlans] = useState([])
   const [jobDetail, setJobDetail] = useState(null)
   const [draft, setDraft] = useState(() => emptyPlanDraft(operatorName))
+  const [jhaApplicabilityDraft, setJhaApplicabilityDraft] = useState({ taskId: '', status: 'required', reason: '', entryKey: createFieldEvidenceDraftId() })
   const [acknowledgement, setAcknowledgement] = useState({ entryKey: createFieldEvidenceDraftId(), evidenceReference: '', acknowledged: false })
   const [suspension, setSuspension] = useState({ entryKey: createFieldEvidenceDraftId(), reason: '', evidenceReference: '' })
   const [closure, setClosure] = useState({ entryKey: createFieldEvidenceDraftId(), note: '', evidenceReference: '' })
@@ -75,7 +81,10 @@ export default function PreTaskPlanControl({
   )
   const selectedPlan = plans.find(plan => plan.id === planId) || null
   const assignments = (jobDetail?.assignments || []).filter(assignment => !['released', 'cancelled', 'completed', 'closed', 'rejected'].includes(assignment.status))
+  const activeTasks = (jobDetail?.tasks || []).filter(task => !['completed', 'cancelled', 'canceled', 'deleted'].includes(String(task.status || '').toLowerCase()))
+  const selectedJhaTask = activeTasks.find(task => task.id === jhaApplicabilityDraft.taskId) || activeTasks[0] || null
   const approvedJhas = (jobDetail?.jhas || []).filter(jha => APPROVED_JHA_STATUSES.has(jha.status))
+  const selectedPlanJha = approvedJhas.find(jha => jha.id === draft.jhaId) || null
   const activePermits = (jobDetail?.permits || []).filter(permit => permit.sourceHash && permit.status === 'active')
   const currentSdsSheets = (jobDetail?.sdsSheets || []).filter(sheet => CURRENT_SDS_STATUSES.has(sheet.status) && (!sheet.expiresAt || Date.parse(sheet.expiresAt) > Date.now()))
   const ownAttendee = selectedPlan?.attendees?.[0] || null
@@ -124,9 +133,49 @@ export default function PreTaskPlanControl({
     setJobId(nextJobId)
     setPlanId('')
     setDraft({ ...emptyPlanDraft(operatorName), preparedBy: operatorName })
+    setJhaApplicabilityDraft({ taskId: '', status: 'required', reason: '', entryKey: createFieldEvidenceDraftId() })
     setAcknowledgement({ entryKey: createFieldEvidenceDraftId(), evidenceReference: '', acknowledged: false })
     setSuspension({ entryKey: createFieldEvidenceDraftId(), reason: '', evidenceReference: '' })
     setClosure({ entryKey: createFieldEvidenceDraftId(), note: '', evidenceReference: '' })
+  }
+
+  function selectJhaTask(taskId) {
+    const task = activeTasks.find(item => item.id === taskId)
+    const currentStatus = task?.jhaApplicability?.status
+    const mayRecordNotRequired = ['owner', 'approver'].includes(operator?.role)
+    setJhaApplicabilityDraft({
+      taskId,
+      status: currentStatus === 'required' || (currentStatus === 'not_required' && mayRecordNotRequired) ? currentStatus : 'required',
+      reason: task?.jhaApplicability?.reason || '',
+      entryKey: createFieldEvidenceDraftId()
+    })
+  }
+
+  async function saveJhaApplicability(event) {
+    event.preventDefault()
+    if (!canCoordinate || !selectedJhaTask || jhaApplicabilityDraft.reason.trim().length < 10) {
+      setError('Select an active task and retain at least 10 characters explaining the JHA applicability review.')
+      return
+    }
+    setSubmitting(true)
+    setError('')
+    try {
+      const result = await apiRequest(`/api/ledger/jobs/${encodeURIComponent(jobId)}/tasks/${encodeURIComponent(selectedJhaTask.id)}/jha-applicability`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          status: jhaApplicabilityDraft.status,
+          reason: jhaApplicabilityDraft.reason.trim(),
+          entryKey: jhaApplicabilityDraft.entryKey
+        })
+      })
+      notify(result.replayed ? 'This task JHA review was already retained.' : 'Task JHA applicability review recorded in the audit trail.')
+      await Promise.all([loadPlanData(jobId, planId), refresh()])
+      setJhaApplicabilityDraft(current => ({ ...current, entryKey: createFieldEvidenceDraftId() }))
+    } catch (requestError) {
+      setError(requestError.message)
+    } finally {
+      setSubmitting(false)
+    }
   }
 
   function updateStep(index, field, value) {
@@ -156,6 +205,15 @@ export default function PreTaskPlanControl({
     }))
   }
 
+  function togglePlanTask(taskId) {
+    setDraft(current => ({
+      ...current,
+      linkedTaskIds: current.linkedTaskIds.includes(taskId)
+        ? current.linkedTaskIds.filter(id => id !== taskId)
+        : [...current.linkedTaskIds, taskId].sort(),
+    }))
+  }
+
   async function createPlan(event) {
     event.preventDefault()
     const steps = draft.steps.map((step, index) => ({
@@ -166,6 +224,10 @@ export default function PreTaskPlanControl({
     }))
     if (!canCoordinate || !jobId || !draft.jhaId || steps.some(step => step.description.length < 3 || !step.hazards.length || !step.controls.length)) {
       setError('Retain an approved JHA and at least one hazard and control for every work step.')
+      return
+    }
+    if (jhaTaskIds(selectedPlanJha).length && !draft.linkedTaskIds.length) {
+      setError('Select at least one task covered by this task-linked JHA.')
       return
     }
     if (navigator.onLine === false) {
@@ -324,6 +386,7 @@ export default function PreTaskPlanControl({
       preparedBy: operatorName,
       responsibleWorkerId: selectedPlan.responsibleWorkerId || '',
       jhaId: selectedPlan.jhaId,
+      linkedTaskIds: selectedPlan.linkedTaskIds || [],
       workPermitId: selectedPlan.workPermitId || '',
       sdsSheetIds: selectedPlan.sdsSheetIds || [],
       evidenceReference: selectedPlan.evidenceReference,
@@ -376,6 +439,43 @@ export default function PreTaskPlanControl({
 
       {error ? <div className="pre-task-error" role="alert"><ShieldAlert size={16} /><span>{error}</span></div> : null}
 
+      {canCoordinate && activeTasks.length ? (
+        <section className="pre-task-jha-applicability" aria-label="Task JHA applicability review">
+          <div className="pre-task-create-heading">
+            <strong>Task JHA applicability</strong>
+            <span>Unreviewed or changed task scope blocks start release.</span>
+          </div>
+          <div className="pre-task-jha-task-list">
+            {activeTasks.map(task => <div key={task.id}>
+              <strong>{task.title}</strong>
+              <span className={`status status-${task.jhaApplicability?.status || 'unreviewed'}`}>{formatStatus(task.jhaApplicability?.status || 'unreviewed')}</span>
+            </div>)}
+          </div>
+          <form className="pre-task-jha-review-form" onSubmit={saveJhaApplicability}>
+            <label>
+              Task
+              <select required value={selectedJhaTask?.id || ''} onChange={event => selectJhaTask(event.target.value)} disabled={submitting || loading}>
+                {activeTasks.map(task => <option key={task.id} value={task.id}>{task.title}</option>)}
+              </select>
+            </label>
+            <label>
+              Assessment
+              <select value={jhaApplicabilityDraft.status} onChange={event => setJhaApplicabilityDraft(current => ({ ...current, status: event.target.value }))} disabled={submitting || loading}>
+                <option value="required">JHA required</option>
+                <option value="not_required" disabled={!['owner', 'approver'].includes(operator?.role)}>JHA not required (owner/approver)</option>
+              </select>
+            </label>
+            <label className="form-span">
+              Review rationale
+              <textarea required minLength="10" maxLength="500" value={jhaApplicabilityDraft.reason} onChange={event => setJhaApplicabilityDraft(current => ({ ...current, reason: event.target.value }))} disabled={submitting || loading} />
+            </label>
+            <button className="secondary-button form-span" type="submit" disabled={submitting || loading || !jobId || !selectedJhaTask}>
+              <ClipboardCheck size={16} /> Save task JHA review
+            </button>
+          </form>
+        </section>
+      ) : null}
+
       {selectedPlan ? (
         <div className="pre-task-detail">
           <div className="pre-task-context">
@@ -399,6 +499,7 @@ export default function PreTaskPlanControl({
 
           <div className="pre-task-source-strip">
             <span><strong>JHA</strong>{selectedPlan.jhaId}</span>
+            <span><strong>Task scope</strong>{(selectedPlan.linkedTaskIds || []).map(taskId => activeTasks.find(task => task.id === taskId)?.title).filter(Boolean).join(', ') || 'No task link'}</span>
             <span><strong>Permit</strong>{selectedPlan.workPermitId || 'Not required'}</span>
             <span><strong>SDS</strong>{selectedPlan.sdsSheetIds?.length || 0} linked</span>
             <span><strong>Evidence</strong>{selectedPlan.evidenceReference}</span>
@@ -478,11 +579,25 @@ export default function PreTaskPlanControl({
           </label>
           <label>
             Approved JHA
-            <select required value={draft.jhaId} onChange={event => setDraft({ ...draft, jhaId: event.target.value })}>
+            <select required value={draft.jhaId} onChange={event => {
+              const jha = approvedJhas.find(item => item.id === event.target.value)
+              setDraft(current => ({ ...current, jhaId: event.target.value, linkedTaskIds: jhaTaskIds(jha).filter(taskId => activeTasks.some(task => task.id === taskId)) }))
+            }}>
               <option value="">Select an approved JHA</option>
               {approvedJhas.map(jha => <option key={jha.id} value={jha.id}>{jha.title} / {formatStatus(jha.status)}</option>)}
             </select>
           </label>
+          {jhaTaskIds(selectedPlanJha).length ? (
+            <fieldset className="pre-task-sds form-span">
+              <legend>Tasks covered by this JHA</legend>
+              {activeTasks.filter(task => jhaTaskIds(selectedPlanJha).includes(task.id)).map(task => (
+                <label key={task.id} className="checkbox-label">
+                  <input type="checkbox" checked={draft.linkedTaskIds.includes(task.id)} onChange={() => togglePlanTask(task.id)} disabled={submitting || loading} />
+                  <span>{task.title}</span>
+                </label>
+              ))}
+            </fieldset>
+          ) : null}
           <label>
             Work permit
             <select value={draft.workPermitId} onChange={event => setDraft({ ...draft, workPermitId: event.target.value })}>

@@ -2,9 +2,10 @@ const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { postgresTestDatabaseUrl } = require('../tests/postgres-test-database');
 
 const projectRoot = path.resolve(__dirname, '..');
-const tempRoot = path.resolve(os.tmpdir());
+const tempRoot = fs.realpathSync(os.tmpdir());
 const runtimePrefix = 'contractor-ai-node-tests-';
 
 function createRuntimeDirectory() {
@@ -28,7 +29,7 @@ function allTestFiles() {
 
 function postgresTestFiles(testFiles = allTestFiles()) {
   return testFiles.filter(file => fs.readFileSync(path.join(projectRoot, file), 'utf8')
-    .includes('CONTRACTOR_AI_POSTGRES_TEST_URL'));
+    .match(/CONTRACTOR_AI_POSTGRES_TEST_URL|require\('\.\/postgres-test-database'\)/));
 }
 
 function withTestConcurrency(args, concurrency) {
@@ -45,11 +46,38 @@ function withTestConcurrency(args, concurrency) {
   return [`--test-concurrency=${concurrency}`, ...normalized];
 }
 
+function nodeTestEnvironment(env = process.env) {
+  const platformKeys = new Set([
+    'PATH', 'PATHEXT', 'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'TEMP', 'TMP', 'TMPDIR',
+    'HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'APPDATA', 'LOCALAPPDATA',
+    'PROGRAMFILES', 'PROGRAMFILES(X86)', 'PROGRAMW6432', 'XDG_CACHE_HOME',
+    'XDG_RUNTIME_DIR', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ', 'CI',
+    'FORCE_COLOR', 'NO_COLOR', 'TERM', 'COLORTERM'
+  ]);
+  const connectionString = postgresTestDatabaseUrl(env.CONTRACTOR_AI_POSTGRES_TEST_URL ?? '');
+  return {
+    ...Object.fromEntries(Object.entries(env).filter(([key]) => platformKeys.has(key.toUpperCase()))),
+    ...(connectionString ? {
+      CONTRACTOR_AI_POSTGRES_TEST_URL: connectionString,
+      ...(env.NODE_EXTRA_CA_CERTS ? { NODE_EXTRA_CA_CERTS: env.NODE_EXTRA_CA_CERTS } : {})
+    } : {}),
+    NODE_ENV: 'test',
+    CONTRACTOR_AI_RUNTIME_MODE: 'local',
+    CONTRACTOR_AI_STORAGE_MODE: 'local',
+    CONTRACTOR_AI_BIND_HOST: '127.0.0.1',
+    CONTRACTOR_AI_AUTONOMOUS_SCHEDULER_ENABLED: 'false',
+    CONTRACTOR_AI_CHAT_AI_ENABLED: 'false',
+    CONTRACTOR_AI_WHATSAPP_ENABLED: 'false',
+    WEATHER_PROVIDER_ENABLED: 'false'
+  };
+}
+
 function executeTests(testArguments, runtimeDirectory) {
-  return spawnSync(process.execPath, ['--test', ...testArguments], {
+  return spawnSync(process.execPath, ['--require', path.join(__dirname, 'node-test-runtime.js'), '--test', ...testArguments], {
     cwd: projectRoot,
     env: {
-      ...process.env,
+      ...nodeTestEnvironment(),
+      CONTRACTOR_AI_NODE_TEST_RUNTIME_DIR: runtimeDirectory,
       TEMP: runtimeDirectory,
       TMP: runtimeDirectory,
       TMPDIR: runtimeDirectory
@@ -59,6 +87,7 @@ function executeTests(testArguments, runtimeDirectory) {
 }
 
 function runNodeTests(args = process.argv.slice(2)) {
+  postgresTestDatabaseUrl();
   const runtimeDirectory = createRuntimeDirectory();
   const hasExplicitTestFile = args.some(argument => /(?:^|[\\/])[^\\/]+\.test\.js$/i.test(argument));
   let result;
@@ -100,6 +129,7 @@ module.exports = {
   allTestFiles,
   cleanupRuntimeDirectory,
   createRuntimeDirectory,
+  nodeTestEnvironment,
   postgresTestFiles,
   runNodeTests,
   withTestConcurrency

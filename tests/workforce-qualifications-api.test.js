@@ -28,6 +28,11 @@ test('qualification API gates site access and attendance with approved current e
   });
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
   const suffix = Date.now();
+  const catalogResult = await request(baseUrl, '/api/ledger/qualifications/catalog');
+  assert.equal(catalogResult.response.status, 200);
+  assert.ok(catalogResult.body.catalog.some(item => item.key === 'vca'));
+  assert.deepEqual(Object.keys(catalogResult.body.catalog[0]).sort(), ['key', 'label']);
+  assert.equal(Object.hasOwn(catalogResult.body, 'qualificationRegister'), false);
   const scheduledStart = new Date(Date.now() + 7 * 86_400_000).toISOString();
   const scheduledEnd = new Date(Date.now() + 8 * 86_400_000).toISOString();
 

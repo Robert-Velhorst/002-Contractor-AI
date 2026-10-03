@@ -47,7 +47,7 @@ test('operator governs written scope, allowances, pricing, responsive review, an
     const openButton = page.getByRole('button', { name: `Open ${title}` }).first();
     await expect(openButton).toBeEnabled();
     await page.getByLabel(/^(Language|Taal)$/).selectOption('en-GB');
-    await expect(page.getByRole('heading', { name: 'Today' })).toBeVisible();
+    await expect(page.getByRole('heading', { level: 1, exact: true, name: 'Today' })).toBeVisible();
     await openButton.click();
     await expect(page.getByTestId('job-workspace').getByRole('heading', { name: title })).toBeVisible();
   };

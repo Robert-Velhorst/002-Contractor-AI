@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useLayoutEffect, useState } from 'react'
 import { act, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -25,6 +25,15 @@ function ClearableDraftHarness({ scope = 'owner:one' }) {
   return <button type="button" onClick={() => setDraft(null)}>Close saved editor</button>
 }
 
+function NavigationDraftHarness() {
+  const [draft, setDraft] = useState({ pending: false })
+  useSessionDraftRecovery({ enabled: true, scope: 'owner:one', name: 'navigation', value: draft, setValue: setDraft, delayMs: 200 })
+  useLayoutEffect(() => {
+    if (draft.pending) window.dispatchEvent(new Event('pagehide'))
+  }, [draft])
+  return <button type="button" onClick={() => setDraft({ pending: true })}>Retain uncertain upload</button>
+}
+
 describe('session draft recovery', () => {
   beforeEach(() => {
     vi.useRealTimers()
@@ -40,6 +49,17 @@ describe('session draft recovery', () => {
     expect(await screen.findByDisplayValue('Recovered intake')).toBeTruthy()
   })
 
+  it('flushes a pending draft immediately when the page is being hidden', async () => {
+    render(<DraftHarness />)
+    await userEvent.type(screen.getByRole('textbox', { name: 'Title' }), 'Fast navigation draft')
+
+    await act(async () => {
+      window.dispatchEvent(new Event('pagehide'))
+    })
+
+    expect(readSessionDraft(window.sessionStorage, 'owner:one', 'intake').value.title).toBe('Fast navigation draft')
+  })
+
   it('removes a closed editor immediately instead of reopening a stale draft on reload', async () => {
     const key = draftStorageKey('owner:one', 'worker-editor')
     writeSessionDraft(window.sessionStorage, 'owner:one', 'worker-editor', { id: null }, Date.now())
@@ -48,6 +68,12 @@ describe('session draft recovery', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Close saved editor' }))
 
     expect(window.sessionStorage.getItem(key)).toBeNull()
+  })
+
+  it('flushes the latest committed draft when navigation precedes passive autosave effects', async () => {
+    render(<NavigationDraftHarness />)
+    await userEvent.click(screen.getByRole('button', { name: 'Retain uncertain upload' }))
+    expect(readSessionDraft(window.sessionStorage, 'owner:one', 'navigation').value).toEqual({ pending: true })
   })
 
   it('keeps drafts separated by authenticated operator scope', () => {

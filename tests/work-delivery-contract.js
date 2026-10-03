@@ -1,0 +1,76 @@
+const assert = require('node:assert/strict');
+const { randomUUID } = require('node:crypto');
+const { setup, packageInput } = require('./work-context-contract');
+const { WorkDelivery, verifyWorkDeliveries } = require('../work-delivery');
+const { ContractorReview } = require('../contractor-review');
+
+function setupDelivery(ledger) {
+  const f = setup(ledger, { contractValue: 2000, client: { name: 'Delivery customer', email: 'private-client@example.test', address: 'Teststraat 2', city: 'Arnhem', country: 'NL' } }), delivery = new WorkDelivery(ledger);
+  const pack = f.command('save_package', packageInput(f, null)).record;
+  const baseline = ledger.requestProductionBaseline(f.job.id, { lines: [{ lineKey: 'doors', description: 'Deuren', costCode: 'INSTALL', unit: 'st', plannedQuantity: 2, plannedLaborHours: 8 }] });
+  ledger.resolveApproval(baseline.approval.id, { status: 'approved', resolvedBy: 'baseline-approver' });
+  const produce = key => ledger.recordProductionEntry(f.job.id, { baselineId: baseline.baseline.id, lineKey: 'doors', workDate: '2026-09-01', quantity: 1, crewHours: 4, note: 'Een deur gemonteerd', entryKey: `delivery-production-${key}`, workerId: f.worker.id }).entry;
+  const entry = produce('first');
+  const command = (action, record) => delivery.command(f.job.id, { action, record, entryKey: randomUUID(), sourceHash: delivery.read(f.job.id).sourceHash }, 'delivery-office');
+  const input = { packageId: pack.id, title: 'Eerste deur', scope: 'Deur aan de voorzijde geplaatst; tweede deur nog niet uitgevoerd.', entryIds: [entry.id], taskIds: [] };
+  const document = ledger.addDocument(f.job.id, { title: 'Klantreactie eerste deur', type: 'acceptance_evidence', status: 'retained', data: { reference: 'Signed field record retained by office' } });
+  const response = id => ({ id, outcome: 'accepted_with_reservations', evidenceDocumentId: document.id, respondent: 'Private customer representative',
+    authorityReference: 'Ondertekende volmacht gecontroleerd', respondedAt: '2026-09-01', reason: 'Klant accepteert de deur met een kleine beschadiging die nog moet worden hersteld.' });
+  return { ...f, delivery, pack, entry, command, input, document, response, produce };
+}
+function verifyDeliveryContract(ledger) {
+  const f = setupDelivery(ledger), { delivery, command, input, job, entry } = f;
+  const before = ledger.getJobRow(job.id);
+  const first = command('retain', input), id = first.deliveryId;
+  let retained = delivery.source(job.id)[0];
+  assert.equal(retained.physical.status, 'reported');
+  assert.equal(retained.physical.entries[0].quantity, 1);
+  assert.equal(retained.inspection.status, 'not_linked');
+  assert.equal(retained.response.status, 'not_verified');
+  assert.equal(retained.finance.status, 'not_linked');
+  assert.throws(() => command('request_response', { ...f.response(id), respondedAt: '2026-08-31' }), { statusCode: 400 });
+  assert.equal(ledger.getJobRow(job.id).status, before.status);
+  assert.throws(() => command('retain', input), { statusCode: 409 });
+  assert.throws(() => command('retain', { ...input, entryIds: [], taskIds: [job.tasks[0].id] }), { statusCode: 409 });
+  assert.throws(() => command('retain', { ...input, packageId: f.other.id }), { statusCode: 409 });
+  const inspection = ledger.createInspectionRecord(job.id, { title: 'Deurcontrole', status: 'scheduled', result: 'pending' });
+  command('link', { id, inspectionIds: [inspection.id], milestoneIds: [] });
+  assert.equal(delivery.source(job.id)[0].inspection.status, 'review_required');
+  const pending = command('request_response', f.response(id));
+  assert.equal(delivery.source(job.id)[0].response.status, 'not_verified');
+  assert.equal(delivery.source(job.id)[0].response.pending, true);
+  assert.throws(() => command('link', { id, inspectionIds: [], milestoneIds: [] }), { statusCode: 409 });
+  ledger.resolveApproval(pending.approvalId, { status: 'approved', resolvedBy: 'customer-evidence-reviewer' });
+  retained = delivery.source(job.id)[0];
+  assert.equal(retained.response.status, 'accepted_with_reservations');
+  assert.equal(retained.inspection.status, 'review_required');
+  assert.equal(retained.finance.status, 'not_linked');
+  assert.equal(retained.jobClosed, false);
+  const field = f.field.read(job.id, f.worker.id);
+  assert.equal(field.know.workContext.deliveries[0].quantities[0].quantity, 1);
+  for (const secret of ['Private customer', 'volmacht', 'evidenceDocumentId', 'milestoneIds', 'receivedAmount']) assert.equal(JSON.stringify(field).includes(secret), false);
+  const second = f.produce('second');
+  const secondDelivery = command('retain', { ...input, title: 'Tweede deur', scope: 'Tweede deur geplaatst.', entryIds: [second.id] }).deliveryId;
+  assert.equal(delivery.source(job.id)[0].response.status, 'accepted_with_reservations');
+  const milestone = ledger.createBillingMilestone(job.id, { title: 'Termijn eerste deur', amount: 100, taxRate: 21, plannedIssueAt: '2026-09-01', dueAt: '2026-09-30' });
+  command('link', { id, inspectionIds: [inspection.id], milestoneIds: [milestone.id] });
+  assert.throws(() => command('link', { id: secondDelivery, inspectionIds: [], milestoneIds: [milestone.id] }), { statusCode: 409 });
+  const reversal = ledger.requestProductionEntryReversal(job.id, entry.id, { reason: 'Verkeerde werkzone geregistreerd' });
+  assert.equal(delivery.source(job.id)[0].physical.status, 'source_changed');
+  assert.equal(delivery.source(job.id)[0].response.status, 'source_changed');
+  assert.equal(delivery.source(job.id)[0].response.retainedOutcome, 'accepted_with_reservations');
+  assert.ok(new ContractorReview(ledger).inspect(job.id).issues.some(issue => issue.code === 'delivery_source_changed'));
+  assert.throws(() => command('request_response', f.response(id)), { statusCode: 409 });
+  ledger.resolveApproval(reversal.approval.id, { status: 'rejected', resolvedBy: 'reviewer' });
+  assert.equal(delivery.source(job.id)[0].physical.current, true);
+  const correction = command('request_void', { id, reason: 'Deur was ten onrechte in dit pakket opgenomen.' });
+  ledger.resolveApproval(correction.approvalId, { status: 'approved', resolvedBy: 'correction-reviewer' });
+  assert.equal(delivery.source(job.id)[0].status, 'voided');
+  assert.equal(delivery.source(job.id)[0].decisions.length, 2);
+  command('retain', { ...input, title: 'Gecorrigeerde registratie' });
+  assert.equal(delivery.exportRecords().work_deliveries.length, 3);
+  assert.equal(verifyWorkDeliveries(ledger.db), true);
+  assert.equal(ledger.verifyAuditIntegrity().valid, true);
+  return f;
+}
+module.exports = { setupDelivery, verifyDeliveryContract };

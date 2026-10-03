@@ -32,6 +32,7 @@ test('operator enforces a job qualification, submits worker evidence, and verifi
   });
 
   await page.goto('/');
+  await page.getByLabel(/^(Language|Taal)$/).selectOption('en-GB');
   await page.getByRole('button', { name: 'Resources', exact: true }).click();
   await waitForResources(page);
   await page.getByRole('tab', { name: 'Qualifications', exact: true }).click();

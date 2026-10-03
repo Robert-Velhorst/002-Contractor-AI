@@ -131,6 +131,75 @@ test('baseline approval rejects changed or tampered planning evidence atomically
   assert.equal(ledger.diagnose().valid, false);
 });
 
+test('material shortages block baseline and expected receipt dates shift dependent work and stale approvals', t => {
+  const ledger = temporaryLedger(t);
+  const job = createJob(ledger, 'material-impact', []);
+  const material = ledger.addMaterialRequirement(job.id, { name: 'Roof membrane', quantity: 10, unit: 'rolls' });
+  const install = ledger.addTask(job.id, {
+    title: 'Install roof membrane',
+    durationHours: 4,
+    materialRequirementIds: [material.id]
+  });
+  const inspect = ledger.addTask(job.id, { title: 'Inspect roof', durationHours: 2 });
+  ledger.addTaskDependency(job.id, { predecessorTaskId: install.id, successorTaskId: inspect.id });
+  const plannedStart = '2026-09-24T08:00:00.000Z';
+
+  const blocked = ledger.calculateJobSchedule(job.id, { plannedStart });
+  assert.equal(blocked.ready, false);
+  assert.equal(blocked.reason, 'material_availability_unresolved');
+  assert.equal(blocked.materialBlockers[0].reason, 'expected_availability_unknown');
+  assert.throws(
+    () => ledger.requestScheduleBaseline(job.id, { plannedStart }),
+    error => error.code === 'schedule_baseline_not_ready' && error.details.materialBlockers.length === 1
+  );
+  assert.throws(
+    () => ledger.updateMaterialRequirementStatus(job.id, material.id, {
+      status: 'needed',
+      availableQuantity: 0,
+      expectedAvailableAt: '2030-04-10T12:00:00.000Z',
+      notes: 'ETA without a traceable source must be rejected.'
+    }),
+    error => error.statusCode === 400 && /reference/i.test(error.message)
+  );
+
+  ledger.updateMaterialRequirementStatus(job.id, material.id, {
+    status: 'needed',
+    availableQuantity: 0,
+    expectedAvailableAt: '2030-04-10T12:00:00.000Z',
+    verificationReference: 'Supplier confirmation SC-1042',
+    notes: 'Supplier confirmed the estimated replenishment date.'
+  });
+  const planned = ledger.calculateJobSchedule(job.id, { plannedStart });
+  assert.equal(planned.ready, true);
+  assert.equal(planned.materialConstraints[0].blocker, false);
+  assert.equal(planned.tasks.find(task => task.id === install.id).plannedStart, '2030-04-10T12:00:00.000Z');
+  assert.equal(planned.tasks.find(task => task.id === inspect.id).plannedStart, '2030-04-10T16:00:00.000Z');
+
+  const requested = ledger.requestScheduleBaseline(job.id, { plannedStart });
+  ledger.updateMaterialRequirementStatus(job.id, material.id, {
+    status: 'needed',
+    availableQuantity: 0,
+    expectedAvailableAt: '2030-04-12T12:00:00.000Z',
+    verificationReference: 'Supplier update SC-1042',
+    notes: 'Supplier revised the estimated replenishment date.'
+  });
+  assert.throws(
+    () => ledger.resolveApproval(requested.approval.id, { status: 'approved', resolvedBy: 'owner' }),
+    error => error.code === 'schedule_baseline_stale'
+  );
+});
+
+test('work-plan material links must belong to the same job', t => {
+  const ledger = temporaryLedger(t);
+  const job = createJob(ledger, 'material-link-owner', []);
+  const otherJob = createJob(ledger, 'material-link-other', []);
+  const material = ledger.addMaterialRequirement(otherJob.id, { name: 'Restricted material', quantity: 1 });
+  assert.throws(
+    () => ledger.addTask(job.id, { title: 'Use material', durationHours: 1, materialRequirementIds: [material.id] }),
+    error => error.code === 'task_material_requirement_job_mismatch' && error.statusCode === 400
+  );
+});
+
 test('autonomous logic prepares one internal baseline and leaves it approval-gated', t => {
   const ledger = temporaryLedger(t);
   const job = ledger.createIntake({
@@ -213,6 +282,22 @@ test('work-plan API exposes calculation, dependency lifecycle, and baseline appr
   assert.equal(calculated.response.status, 200);
   assert.equal(calculated.body.plan.ready, true);
   assert.equal(calculated.body.plan.projectDurationHours, 24);
+
+  const resourcePreview = await request(baseUrl, `/api/ledger/jobs/${jobId}/work-plan/resource-preview`, {
+    method: 'POST',
+    body: JSON.stringify({ plannedStart: '2026-09-01T07:00:00.000Z', horizonDays: 14 })
+  });
+  assert.equal(resourcePreview.response.status, 200);
+  assert.equal(resourcePreview.body.plan.status, 'incomplete_input');
+  assert.ok(resourcePreview.body.plan.issues.some(issue => issue.code === 'required_trade_missing'));
+  assert.ok(resourcePreview.body.plan.limitations.includes('proposal_only_until_independent_approval'));
+
+  const resourceApproval = await request(baseUrl, `/api/ledger/jobs/${jobId}/work-plan/resource-approval`, {
+    method: 'POST',
+    body: JSON.stringify({ plan: resourcePreview.body.plan })
+  });
+  assert.equal(resourceApproval.response.status, 409);
+  assert.equal(resourceApproval.body.error.code, 'conflict');
 
   const baseline = await request(baseUrl, `/api/ledger/jobs/${jobId}/schedule-baselines`, {
     method: 'POST',

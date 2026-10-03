@@ -49,6 +49,15 @@ function post(baseUrl, route, body, token = tokens.office) {
   });
 }
 
+function patch(baseUrl, route, body, token = tokens.office) {
+  return request(baseUrl, route, {
+    method: 'PATCH',
+    token,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+}
+
 async function uploadPdf(baseUrl, jobId, suffix) {
   const form = new FormData();
   form.append('evidenceFile', new Blob([
@@ -108,6 +117,41 @@ test('SDS revision API enforces source upload, approval, role scope, and field-s
   assert.equal(intake.response.status, 201, JSON.stringify(intake.body));
   const jobId = intake.body.job.id;
 
+  const visibleMaterial = await post(baseUrl, `/api/ledger/jobs/${encodeURIComponent(jobId)}/materials`, {
+    name: 'Low-VOC floor adhesive', quantity: 12, unit: 'kg'
+  });
+  const unrelatedMaterial = await post(baseUrl, `/api/ledger/jobs/${encodeURIComponent(jobId)}/materials`, {
+    name: 'Unrelated sealant', quantity: 4, unit: 'cartridges'
+  });
+  assert.equal(visibleMaterial.response.status, 201);
+  assert.equal(unrelatedMaterial.response.status, 201);
+  const visibleMaterialId = visibleMaterial.body.materialRequirement.id;
+  const materialPolicyRoute = `/api/ledger/jobs/${encodeURIComponent(jobId)}/materials/${encodeURIComponent(visibleMaterialId)}/sds-requirement`;
+  const officeCannotWaiveSds = await patch(baseUrl, materialPolicyRoute, {
+    status: 'not_required', reason: 'Manufacturer documentation reviewed; no SDS required.', entryKey: `sds-policy-office-${suffix}`
+  });
+  assert.equal(officeCannotWaiveSds.response.status, 403);
+  const reviewedNotRequired = await patch(baseUrl, materialPolicyRoute, {
+    status: 'not_required', reason: 'Manufacturer documentation reviewed; no SDS required.', entryKey: `sds-policy-owner-${suffix}`
+  }, tokens.owner);
+  assert.equal(reviewedNotRequired.response.status, 200, JSON.stringify(reviewedNotRequired.body));
+  assert.equal(reviewedNotRequired.body.materialRequirement.sdsRequirementStatus, 'not_required');
+  const policyReplay = await patch(baseUrl, materialPolicyRoute, {
+    status: 'not_required', reason: 'Manufacturer documentation reviewed; no SDS required.', entryKey: `sds-policy-owner-${suffix}`
+  }, tokens.owner);
+  assert.equal(policyReplay.response.status, 200);
+  assert.equal(policyReplay.body.replayed, true);
+  const officeRequiresSds = await patch(baseUrl, materialPolicyRoute, {
+    status: 'required', reason: 'Manufacturer SDS is required before this material is used.', entryKey: `sds-policy-required-${suffix}`
+  });
+  assert.equal(officeRequiresSds.response.status, 200, JSON.stringify(officeRequiresSds.body));
+  assert.equal(officeRequiresSds.body.materialRequirement.sdsRequirementStatus, 'required');
+  const scopedTask = await post(baseUrl, `/api/ledger/jobs/${encodeURIComponent(jobId)}/tasks`, {
+    title: 'Install floor covering', durationHours: 4,
+    materialRequirementIds: [visibleMaterial.body.materialRequirement.id]
+  });
+  assert.equal(scopedTask.response.status, 201, JSON.stringify(scopedTask.body));
+
   assert.equal((await post(baseUrl, '/api/ledger/workers', {
     id: tokens.field.workerId,
     name: 'SDS field installer',
@@ -118,14 +162,19 @@ test('SDS revision API enforces source upload, approval, role scope, and field-s
     workerId: tokens.field.workerId,
     workerName: 'SDS field installer',
     role: 'Installer',
-    status: 'assigned'
+    status: 'assigned',
+    startReleaseRequired: true,
+    workBoardPositionId: `sds-position-${suffix}`,
+    workBoardTaskIds: [scopedTask.body.task.id]
   })).response.status, 201);
 
   const uploadedFirst = await uploadPdf(baseUrl, jobId, `r1-${suffix}`);
   assert.equal(uploadedFirst.response.status, 200, JSON.stringify(uploadedFirst.body));
   assert.equal(uploadedFirst.body.ledgerDocument.mimeType, 'application/pdf');
   assert.match(uploadedFirst.body.ledgerDocument.data.analysis.upload.sha256, /^[a-f0-9]{64}$/);
-  const firstPayload = revisionPayload(uploadedFirst.body.ledgerDocument.id, `sds-api-r1-${suffix}`);
+  const firstPayload = revisionPayload(uploadedFirst.body.ledgerDocument.id, `sds-api-r1-${suffix}`, {
+    linkedMaterialIds: [visibleMaterial.body.materialRequirement.id]
+  });
 
   const fieldDenied = await post(baseUrl, `/api/ledger/jobs/${encodeURIComponent(jobId)}/sds-revisions`, firstPayload, tokens.field.token);
   assert.equal(fieldDenied.response.status, 403);
@@ -134,8 +183,22 @@ test('SDS revision API enforces source upload, approval, role scope, and field-s
   const createdFirst = await post(baseUrl, `/api/ledger/jobs/${encodeURIComponent(jobId)}/sds-revisions`, firstPayload);
   assert.equal(createdFirst.response.status, 201, JSON.stringify(createdFirst.body));
   assert.equal(createdFirst.body.sdsSheet.status, 'pending_approval');
+  const requiredMaterialPolicy = createdFirst.body.job.materials.find(row => row.id === visibleMaterialId);
+  assert.equal(requiredMaterialPolicy.sdsRequirementStatus, 'required');
+  const unsafeWaiver = await patch(baseUrl, materialPolicyRoute, {
+    status: 'not_required', reason: 'Manufacturer documentation reviewed; no SDS required.', entryKey: `sds-policy-waiver-${suffix}`
+  }, tokens.owner);
+  assert.equal(unsafeWaiver.response.status, 409);
+  assert.equal(unsafeWaiver.body.error.code, 'material_sds_requirement_conflicts_with_sheet');
   assert.match(createdFirst.body.sdsSheet.sourceHash, /^[a-f0-9]{64}$/);
   assert.equal(createdFirst.body.approval.status, 'pending');
+
+  const fieldBeforeApprovalPack = await request(baseUrl, `/api/ledger/jobs/${encodeURIComponent(jobId)}/work-pack`, { token: tokens.field.token });
+  assert.equal(fieldBeforeApprovalPack.response.status, 200, JSON.stringify(fieldBeforeApprovalPack.body));
+  assert.equal(fieldBeforeApprovalPack.body.pack.know.sdsReadiness.status, 'blocked');
+  assert.ok(fieldBeforeApprovalPack.body.pack.know.sdsReadiness.blockers.some(row => row.type === 'material_sds_missing'));
+  assert.equal(fieldBeforeApprovalPack.body.pack.startReleaseEligibility[0].eligible, false);
+  assert.ok(fieldBeforeApprovalPack.body.pack.startReleaseEligibility[0].blockers.some(text => text.includes('current approved SDS PDF is missing')));
 
   const fieldBeforeApproval = await request(baseUrl, `/api/ledger/jobs/${encodeURIComponent(jobId)}/sds-sheets`, { token: tokens.field.token });
   assert.equal(fieldBeforeApproval.response.status, 200);
@@ -148,6 +211,18 @@ test('SDS revision API enforces source upload, approval, role scope, and field-s
   }, tokens.approver);
   assert.equal(approvedFirst.response.status, 200, JSON.stringify(approvedFirst.body));
 
+  const uploadedUnrelated = await uploadPdf(baseUrl, jobId, `unrelated-${suffix}`);
+  assert.equal(uploadedUnrelated.response.status, 200, JSON.stringify(uploadedUnrelated.body));
+  const unrelatedRevision = await post(baseUrl, `/api/ledger/jobs/${encodeURIComponent(jobId)}/sds-revisions`, revisionPayload(
+    uploadedUnrelated.body.ledgerDocument.id,
+    `sds-api-unrelated-${suffix}`,
+    { material: 'Unrelated sealant', productCode: `SEAL-${suffix}`, linkedMaterialIds: [unrelatedMaterial.body.materialRequirement.id] }
+  ));
+  assert.equal(unrelatedRevision.response.status, 201, JSON.stringify(unrelatedRevision.body));
+  assert.equal((await post(baseUrl, `/api/ledger/approvals/${encodeURIComponent(unrelatedRevision.body.approval.id)}/resolve`, {
+    status: 'approved', resolvedBy: 'API SDS approver', reason: 'Unrelated product source and controls verified.'
+  }, tokens.approver)).response.status, 200);
+
   const fieldCurrent = await request(baseUrl, `/api/ledger/jobs/${encodeURIComponent(jobId)}/sds-sheets`, { token: tokens.field.token });
   assert.equal(fieldCurrent.response.status, 200, JSON.stringify(fieldCurrent.body));
   assert.equal(fieldCurrent.body.sdsSheets.length, 1);
@@ -159,6 +234,39 @@ test('SDS revision API enforces source upload, approval, role scope, and field-s
   assert.equal(fieldCurrent.body.sdsSheets[0].entryKey, undefined);
   assert.equal(fieldCurrent.body.sdsSheets[0].entryFingerprint, undefined);
   assert.equal(fieldCurrent.body.sdsSheets[0].data, undefined);
+
+  const workerPack = await request(baseUrl, `/api/ledger/jobs/${encodeURIComponent(jobId)}/work-pack`, { token: tokens.field.token });
+  assert.equal(workerPack.response.status, 200, JSON.stringify(workerPack.body));
+  const workPackSds = workerPack.body.pack.know.sdsSheets[0];
+  assert.equal(workPackSds.id, createdFirst.body.sdsSheet.id);
+  assert.deepEqual(workPackSds.linkedMaterialIds, [visibleMaterial.body.materialRequirement.id]);
+  assert.deepEqual(workPackSds.linkedMaterials.map(row => row.name), ['Low-VOC floor adhesive']);
+  assert.equal(workerPack.body.pack.know.sdsSheets.some(row => row.id === unrelatedRevision.body.sdsSheet.id), false);
+  assert.equal(workPackSds.file.mimeType, 'application/pdf');
+  assert.equal(workPackSds.file.sha256, uploadedFirst.body.ledgerDocument.data.analysis.upload.sha256);
+  assert.equal(workPackSds.file.storageRef, undefined);
+
+  const sdsContentRoute = `/api/ledger/jobs/${encodeURIComponent(jobId)}/work-pack/sds/${encodeURIComponent(workPackSds.id)}/content?sourceHash=${encodeURIComponent(workerPack.body.pack.sourceHash)}`;
+  const sdsContent = await request(baseUrl, sdsContentRoute, { token: tokens.field.token });
+  assert.equal(sdsContent.response.status, 200, String(sdsContent.body));
+  assert.equal(sdsContent.response.headers.get('content-type'), 'application/pdf');
+  assert.match(sdsContent.response.headers.get('content-disposition'), /manufacturer-sds-r1-/);
+  assert.match(sdsContent.body, /^%PDF-1\.7/);
+  const genericSdsDownload = await request(baseUrl, `/api/ledger/documents/${encodeURIComponent(uploadedFirst.body.ledgerDocument.id)}/content`, { token: tokens.field.token });
+  assert.equal(genericSdsDownload.response.status, 404, 'SDS files require the current source-hash-bound work-pack route');
+  const staleSdsContent = await request(baseUrl, `/api/ledger/jobs/${encodeURIComponent(jobId)}/work-pack/sds/${encodeURIComponent(workPackSds.id)}/content?sourceHash=${'f'.repeat(64)}`, { token: tokens.field.token });
+  assert.equal(staleSdsContent.response.status, 409);
+  const forgedWorkerContent = await request(baseUrl, `${sdsContentRoute}&workerId=someone-else`, { token: tokens.field.token });
+  assert.equal(forgedWorkerContent.response.status, 403);
+  const unrelatedJob = await post(baseUrl, '/api/ledger/intake', {
+    title: `Unassigned SDS project ${suffix}`,
+    clientName: `Unassigned SDS client ${suffix}`,
+    status: 'in_progress',
+    assignAutomatically: false
+  });
+  assert.equal(unrelatedJob.response.status, 201);
+  const crossJobSdsContent = await request(baseUrl, `/api/ledger/jobs/${encodeURIComponent(unrelatedJob.body.job.id)}/work-pack/sds/${encodeURIComponent(workPackSds.id)}/content?sourceHash=${encodeURIComponent(workerPack.body.pack.sourceHash)}`, { token: tokens.field.token });
+  assert.equal(crossJobSdsContent.response.status, 403);
 
   const uploadedSecond = await uploadPdf(baseUrl, jobId, `r2-${suffix}`);
   assert.equal(uploadedSecond.response.status, 200, JSON.stringify(uploadedSecond.body));
@@ -187,10 +295,18 @@ test('SDS revision API enforces source upload, approval, role scope, and field-s
   assert.equal(fieldAfterApproval.body.sdsSheets.length, 1);
   assert.equal(fieldAfterApproval.body.sdsSheets[0].id, createdSecond.body.sdsSheet.id);
   assert.equal(fieldAfterApproval.body.sdsSheets[0].revisionNumber, 2);
+  const latestWorkerPack = await request(baseUrl, `/api/ledger/jobs/${encodeURIComponent(jobId)}/work-pack`, { token: tokens.field.token });
+  assert.equal(latestWorkerPack.response.status, 200);
+  assert.equal(latestWorkerPack.body.pack.know.sdsSheets[0].id, createdSecond.body.sdsSheet.id);
+  const retiredSdsContent = await request(baseUrl, `/api/ledger/jobs/${encodeURIComponent(jobId)}/work-pack/sds/${encodeURIComponent(createdFirst.body.sdsSheet.id)}/content?sourceHash=${encodeURIComponent(latestWorkerPack.body.pack.sourceHash)}`, { token: tokens.field.token });
+  assert.equal(retiredSdsContent.response.status, 404);
+  const latestSdsContent = await request(baseUrl, `/api/ledger/jobs/${encodeURIComponent(jobId)}/work-pack/sds/${encodeURIComponent(createdSecond.body.sdsSheet.id)}/content?sourceHash=${encodeURIComponent(latestWorkerPack.body.pack.sourceHash)}`, { token: tokens.field.token });
+  assert.equal(latestSdsContent.response.status, 200, String(latestSdsContent.body));
+  assert.match(latestSdsContent.body, /^%PDF-1\.7/);
 
   const officeHistory = await request(baseUrl, `/api/ledger/jobs/${encodeURIComponent(jobId)}/sds-sheets`, { token: tokens.office });
   assert.equal(officeHistory.response.status, 200);
-  assert.equal(officeHistory.body.sdsSheets.length, 2);
+  assert.equal(officeHistory.body.sdsSheets.length, 3);
   assert.deepEqual(new Set(officeHistory.body.sdsSheets.map(sheet => sheet.status)), new Set(['current', 'superseded']));
 
   const capabilities = await request(baseUrl, '/api/operations/capabilities', { token: tokens.owner });
@@ -205,5 +321,5 @@ test('SDS revision API enforces source upload, approval, role scope, and field-s
   const diagnostics = await request(baseUrl, '/api/ledger/debug', { token: tokens.owner });
   assert.equal(diagnostics.response.status, 200);
   assert.equal(diagnostics.body.diagnostics.valid, true, JSON.stringify(diagnostics.body.diagnostics.issues));
-  assert.equal(diagnostics.body.diagnostics.migrations.currentVersion, '072_operator_locale_preferences');
+  assert.equal(diagnostics.body.diagnostics.migrations.currentVersion, '096_loading_read_indexes');
 });

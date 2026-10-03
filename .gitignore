@@ -11,6 +11,13 @@ __pycache__/
 
 .env
 .env.hosted
+.env.identity
+.env.identity-*
+.env.handover-*
+*.authority-key.json
+*.authority.json
+*.authority.json.*.pending
+identity-companies.json
 .env.local
 .env.*.local
 !.env.example

@@ -12,6 +12,7 @@ async function expectNoHorizontalOverflow(page, locator) {
 test('owner safety dialog suspends and resumes autonomous work accessibly', async ({ page, request }) => {
   test.setTimeout(120_000)
   await page.goto('/')
+  await page.getByLabel(/^(Language|Taal)$/).selectOption('en-GB')
   await page.getByRole('button', { name: 'Operations', exact: true }).click()
   await expect(page.getByRole('heading', { level: 1, name: 'Operations' })).toBeVisible()
 
@@ -115,6 +116,7 @@ test('owner previews and archives QA records through a verified maintenance deci
   const tool = (await toolResponse.json()).tool
 
   await page.goto('/')
+  await page.getByLabel(/^(Language|Taal)$/).selectOption('en-GB')
   await page.getByRole('button', { name: 'Operations', exact: true }).click()
   await expect(page.getByRole('heading', { level: 1, name: 'Operations' })).toBeVisible()
   const opener = page.getByRole('button', { name: 'Archive QA records' })

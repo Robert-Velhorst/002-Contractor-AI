@@ -109,7 +109,7 @@ test('browser operator session preserves role authorization without storing the 
     assert.equal(login.body.role, 'office_operator');
     assert.ok(Date.parse(login.body.expiresAt) > Date.now());
     const issued = sessionCookie(login.response);
-    assert.match(issued.setCookie, /^contractor_ai_session=/);
+    assert.match(issued.setCookie, /^contractor_ai_session_[a-f0-9]{16}=/);
     assert.match(issued.setCookie, /HttpOnly/i);
     assert.match(issued.setCookie, /SameSite=Strict/i);
     assert.match(issued.setCookie, /Max-Age=3600/i);
@@ -125,6 +125,7 @@ test('browser operator session preserves role authorization without storing the 
     assert.equal(authenticatedSession.body.operator.capabilities.tenders, true);
     assert.equal(authenticatedSession.body.operator.capabilities.approvals, false);
     assert.equal(authenticatedSession.body.operator.preferences.locale, 'en-GB');
+    assert.equal(authenticatedSession.body.operator.preferences.isPersisted, false);
 
     const preferenceWithoutOrigin = await request(baseUrl, '/api/preferences', {
       method: 'PATCH',
@@ -141,10 +142,12 @@ test('browser operator session preserves role authorization without storing the 
     });
     assert.equal(preference.response.status, 200);
     assert.equal(preference.body.preferences.locale, 'nl-NL');
+    assert.equal(preference.body.preferences.isPersisted, true);
     assert.equal(preference.body.preferences.principalId, 'role:office_operator');
 
     const localeSession = await request(baseUrl, '/api/session', { headers: { Cookie: issued.cookie } });
     assert.equal(localeSession.body.operator.preferences.locale, 'nl-NL');
+    assert.equal(localeSession.body.operator.preferences.isPersisted, true);
 
     const unsupportedPreference = await request(baseUrl, '/api/preferences', {
       method: 'PATCH',

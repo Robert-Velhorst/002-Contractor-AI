@@ -56,7 +56,7 @@ test('managed operator lifecycle retains only credential hashes and revokes sess
   const secondKey = 'cai_second-managed-access-key-with-more-than-32-characters';
 
   const ledger = new ContractorOperatingLedger({ dbFile });
-  assert.equal(ledger.migrationStatus().currentVersion, '072_operator_locale_preferences');
+  assert.equal(ledger.migrationStatus().currentVersion, '096_loading_read_indexes');
   const worker = ledger.upsertWorker({ name: 'Managed field worker', status: 'available' });
   const fieldAccount = ledger.createManagedOperatorAccount({
     id: 'field-managed-1',
@@ -173,6 +173,12 @@ test('owner manages redacted operator access through the production authorizatio
   });
   assert.equal(scopedJob.response.status, 201);
   assert.equal(otherJob.response.status, 201);
+  const workerAssignment = await request(baseUrl, `/api/ledger/jobs/${scopedJob.body.job.id}/assignments`, {
+    method: 'POST',
+    headers: bearer(ownerToken),
+    body: JSON.stringify({ workerId: fieldWorker.body.worker.id, status: 'assigned', role: 'Installer' })
+  });
+  assert.equal(workerAssignment.response.status, 201);
   const fieldAccount = await request(baseUrl, '/api/operations/operators', {
     method: 'POST',
     headers: bearer(ownerToken),

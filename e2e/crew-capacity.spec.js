@@ -89,6 +89,7 @@ test('crew planner retains capacity and allocations before approving a source-cu
   expect(assignmentResponse.ok()).toBeTruthy();
 
   await page.goto('/');
+  await page.getByLabel(/^(Language|Taal)$/).selectOption('en-GB');
   await page.getByRole('button', { name: 'Schedule', exact: true }).click();
   const board = page.getByTestId('crew-capacity-board');
   await expect(board.getByRole('heading', { name: 'Crew capacity and two-week plan' })).toBeVisible();
@@ -103,6 +104,19 @@ test('crew planner retains capacity and allocations before approving a source-cu
   await board.locator('.crew-profile-list').getByRole('button', { name: new RegExp(workerName) }).click();
   const profile = board.locator('.crew-profile-editor');
   await expect(profile.getByRole('heading', { name: workerName })).toBeVisible();
+  await profile.getByLabel('Monday interval 1 start time').fill('07:30');
+  await page.reload();
+  await page.getByRole('button', { name: 'Schedule', exact: true }).click();
+  const restoredProfile = board.locator('.crew-profile-editor');
+  await expect(restoredProfile.getByRole('heading', { name: workerName })).toBeVisible();
+  await expect(restoredProfile.getByLabel('Monday interval 1 start time')).toHaveValue('07:30');
+  for (const day of ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']) {
+    await profile.getByLabel(`${day} interval 1 start time`).fill('08:00');
+    await profile.getByLabel(`${day} interval 1 end time`).fill('12:00');
+    await profile.getByRole('button', { name: `Add interval for ${day}` }).click();
+    await profile.getByLabel(`${day} interval 2 start time`).fill('13:00');
+    await profile.getByLabel(`${day} interval 2 end time`).fill('17:00');
+  }
   await profile.getByRole('button', { name: 'Save profile' }).click();
   await expect(board.getByText('40h').first()).toBeVisible();
 

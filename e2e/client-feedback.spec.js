@@ -121,6 +121,7 @@ test('client feedback stays scoped, creates internal recovery, and appears in th
 
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.goto('/');
+  await page.getByLabel(/^(Language|Taal)$/).selectOption('en-GB');
   await page.getByRole('button', { name: `Open ${title}` }).first().click();
   const workspace = page.getByTestId('job-workspace');
   const closeout = workspace.getByTestId('closeout-register');
@@ -130,6 +131,7 @@ test('client feedback stays scoped, creates internal recovery, and appears in th
   await expect(closeout.getByText('Recovery in progress')).toBeVisible();
 
   await closeout.getByRole('tab', { name: /Aftercare/ }).click();
-  await expect(closeout.getByText('Review low client feedback and prepare service recovery')).toBeVisible();
+  await expect(closeout.getByTestId(`closeout-${recovered.aftercare[0].id}`)
+    .getByText('Review low client feedback and prepare service recovery')).toBeVisible();
   await expect(consoleErrors).toEqual([]);
 });

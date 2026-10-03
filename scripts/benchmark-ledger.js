@@ -2,6 +2,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { performance } = require('node:perf_hooks');
+const { createHash } = require('node:crypto');
 const {
   AUDIT_CHAIN_ALGORITHM,
   AUDIT_CHAIN_FORMAT,
@@ -418,7 +419,7 @@ function evaluateThresholds(report, thresholds) {
   atMost('scaled ledger reopen', report.phases.reopenMs, thresholds.reopenMs);
   for (const operation of report.operations) {
     let limit = thresholds.operationP95Ms;
-    if (operation.name === 'dashboard summary') limit = thresholds.dashboardP95Ms;
+    if (operation.name.startsWith('dashboard summary')) limit = thresholds.dashboardP95Ms;
     if (operation.name === 'audit integrity verification') limit = thresholds.integrityP95Ms;
     if (operation.name === 'canonical intake write') limit = thresholds.writeP95Ms;
     atMost(`${operation.name} p95`, operation.p95Ms, limit);
@@ -476,7 +477,15 @@ function runLedgerBenchmark(options = {}) {
       measure('pending approval queue', () => ledger.listApprovals({ status: 'pending', limit: 100 }), iterations),
       measure('audit history page', () => ledger.listAuditPage({ limit: 100, includeFacets: true }), iterations),
       measure('opportunity forecast', () => ledger.opportunityForecast(), iterations),
+      measure('dashboard summary cold', () => {
+        ledger.dashboardSummaryCache = null;
+        return ledger.dashboardSummary();
+      }, iterations, { warm: false }),
       measure('dashboard summary', () => ledger.dashboardSummary(), iterations),
+      measure('dashboard summary protected request', () => {
+        ledger.recordApiRateLimitRequest(createHash('sha256').update('contractor-ai-benchmark-client').digest('hex'));
+        return ledger.dashboardSummary();
+      }, iterations),
       measure('audit integrity verification', () => ledger.verifyAuditIntegrity(), 1),
       measure('canonical intake write', index => ledger.createIntake({
         client: {

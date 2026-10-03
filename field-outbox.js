@@ -1,3 +1,5 @@
+import { scopedCompany } from './company-scope.mjs';
+
 const DATABASE_NAME = 'contractor-ai-field-outbox';
 const DATABASE_VERSION = 2;
 const EVIDENCE_STORE_NAME = 'evidence-drafts';
@@ -19,16 +21,19 @@ export function createFieldEvidenceDraftId() {
 }
 
 export function fieldOutboxOperatorScope(operator = {}) {
+  const company = scopedCompany(operator);
+  if (!company) return '';
+  const prefix = `company:${company.id}:ledger:${company.ledgerId}:`;
   const role = String(operator.role || 'owner').trim().toLowerCase().replace(/[^a-z0-9_-]/g, '') || 'owner';
   const operatorId = String(operator.id || operator.worker?.id || '').trim().replace(/[^A-Za-z0-9._:-]/g, '');
-  if (operator.authenticated && operatorId) return `${role}:${operatorId}`;
-  if (role === 'field_worker' && operator.worker?.id) return `${role}:${String(operator.worker.id)}`;
-  return `${role}:${operator.authenticated ? 'authenticated' : 'local'}`;
+  if (operator.authenticated && operatorId) return `${prefix}${role}:${operatorId}`;
+  if (role === 'field_worker' && operator.worker?.id) return `${prefix}${role}:${String(operator.worker.id)}`;
+  return `${prefix}${role}:${operator.authenticated ? 'authenticated' : 'local'}`;
 }
 
 export function draftMatchesOperatorScope(draft, operatorScope) {
   if (!operatorScope) return false;
-  if (!draft?.operatorScope) return operatorScope === 'owner:local';
+  if (!draft?.operatorScope) return false;
   return draft.operatorScope === operatorScope;
 }
 

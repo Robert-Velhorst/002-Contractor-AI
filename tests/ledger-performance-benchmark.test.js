@@ -46,6 +46,17 @@ test('threshold evaluation fails closed when a measured contract is exceeded', (
   assert.equal(checks.filter(check => !check.passed).length, 1);
 });
 
+test('cold and protected dashboard paths use the same enforced budget as warm reads', () => {
+  const thresholds = PROFILE_DEFINITIONS.smoke.thresholds;
+  const checks = evaluateThresholds({
+    phases: { initialStartupMs: 1, seedMs: 1, reopenMs: 1 },
+    operations: ['dashboard summary', 'dashboard summary cold', 'dashboard summary protected request']
+      .map(name => ({ name, p95Ms: thresholds.dashboardP95Ms + 1 })),
+    resources: { databaseBytes: 1, rssDeltaMb: 1 }
+  }, thresholds);
+  assert.equal(checks.filter(check => !check.passed).length, 3);
+});
+
 test('smoke benchmark retains more than one database page and verifies scaled contracts', { timeout: 30_000 }, () => {
   const report = runLedgerBenchmark({ profile: 'smoke', iterations: 1 });
   assert.equal(report.format, BENCHMARK_FORMAT);
@@ -57,5 +68,7 @@ test('smoke benchmark retains more than one database page and verifies scaled co
   assert.equal(report.fixture.checks.every(check => check.passed), true);
   assert.equal(report.thresholdChecks.every(check => check.passed), true);
   assert.ok(report.operations.some(operation => operation.name === 'dashboard summary'));
+  assert.ok(report.operations.some(operation => operation.name === 'dashboard summary cold'));
+  assert.ok(report.operations.some(operation => operation.name === 'dashboard summary protected request'));
   assert.ok(report.operations.some(operation => operation.name === 'canonical intake write'));
 });

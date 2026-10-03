@@ -1,8 +1,12 @@
-import { useEffect, useState } from 'react'
-import { CalendarDays, CircleAlert, CircleCheckBig, Download, FileSignature, FileText, HardHat, ListChecks, LoaderCircle, MessageSquareText, Send, ShieldCheck, Star } from 'lucide-react'
+import { lazy, Suspense, useEffect, useState } from 'react'
+import { companyFetch } from './company-request.mjs'
+import { CalendarDays, CircleAlert, CircleCheckBig, Download, FileSignature, FileText, HardHat, ListChecks, LoaderCircle, MessageSquareText, PackageCheck, RefreshCw, ShieldCheck, Star } from 'lucide-react'
 import { draftScopeFingerprint, useSessionDraftRecovery } from './draft-recovery'
+import { readClientSnapshot, removeClientSnapshot, saveClientSnapshot } from './client-message-outbox.mjs'
 import { DEFAULT_PORTAL_LOCALE, normalizeLocale, portalText, SUPPORTED_LOCALES } from './locale'
 import './ClientPortal.css'
+import Conversation from './components/Conversation'
+const ClientDeliveryResponses = lazy(() => import('./components/ClientDeliveryResponses'))
 
 function formatPortalDate(value, locale) {
   if (!value) return portalText(locale, 'Nog niet gepland')
@@ -34,7 +38,7 @@ function createResponseId() {
 }
 
 function portalRequest(token, path = '', options = {}) {
-  return fetch(`/api/client-portal${path}`, {
+  return companyFetch(`/api/client-portal${path}`, {
     ...options,
     headers: {
       Authorization: `Bearer ${token}`,
@@ -193,16 +197,16 @@ function ClientVariation({ variation, draft, result, submitting, downloading, on
 
 export default function ClientPortal() {
   const [token] = useState(() => new URLSearchParams(window.location.hash.slice(1)).get('token') || '')
+  const [offlineShellReady, setOfflineShellReady] = useState(false)
+  const [offlineSnapshotAt, setOfflineSnapshotAt] = useState('')
+  const [portalRefresh, setPortalRefresh] = useState(0)
   const [locale, setLocale] = useState(DEFAULT_PORTAL_LOCALE)
   const [localeSaving, setLocaleSaving] = useState(false)
   const [localeError, setLocaleError] = useState('')
   const [job, setJob] = useState(null)
+  const [conversationRefresh, setConversationRefresh] = useState(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-  const [subject, setSubject] = useState('Vraag over mijn project')
-  const [body, setBody] = useState('')
-  const [submitting, setSubmitting] = useState(false)
-  const [messageResult, setMessageResult] = useState('')
   const [selectionDrafts, setSelectionDrafts] = useState({})
   const [selectionResults, setSelectionResults] = useState({})
   const [selectionSubmitting, setSelectionSubmitting] = useState('')
@@ -214,15 +218,29 @@ export default function ClientPortal() {
   const [feedbackSubmitted, setFeedbackSubmitted] = useState(false)
   const [feedbackSubmitting, setFeedbackSubmitting] = useState(false)
   const [feedbackResult, setFeedbackResult] = useState('')
+  const [completionReview, setCompletionReview] = useState(null)
+  const [completionDraft, setCompletionDraft] = useState({ outcome: '', respondentName: '', authorityConfirmed: false, note: '' })
+  const [completionBusy, setCompletionBusy] = useState(false)
+  const [completionDownloading, setCompletionDownloading] = useState(false)
+  const [completionResult, setCompletionResult] = useState('')
   const portalDraftScope = `client-portal:${draftScopeFingerprint(token)}`
   const portalDraftRecoveryEnabled = token.length >= 32
   const t = (key, variables) => portalText(locale, key, variables)
 
-  useSessionDraftRecovery({ enabled: portalDraftRecoveryEnabled, scope: portalDraftScope, name: 'message-subject', value: subject, setValue: setSubject })
-  useSessionDraftRecovery({ enabled: portalDraftRecoveryEnabled, scope: portalDraftScope, name: 'message-body', value: body, setValue: setBody })
   useSessionDraftRecovery({ enabled: portalDraftRecoveryEnabled, scope: portalDraftScope, name: 'selections', value: selectionDrafts, setValue: setSelectionDrafts })
   useSessionDraftRecovery({ enabled: portalDraftRecoveryEnabled, scope: portalDraftScope, name: 'variations', value: variationDrafts, setValue: setVariationDrafts })
   useSessionDraftRecovery({ enabled: portalDraftRecoveryEnabled, scope: portalDraftScope, name: 'feedback', value: feedbackDraft, setValue: setFeedbackDraft })
+
+  useEffect(() => {
+    if (!portalDraftRecoveryEnabled || !('serviceWorker' in navigator)) return undefined
+    let active = true
+    const serviceWorker = navigator.serviceWorker
+    const onControllerChange = () => { if (active && serviceWorker.controller) setOfflineShellReady(true) }
+    serviceWorker.addEventListener('controllerchange', onControllerChange)
+    serviceWorker.register('/field-sw.js').then(() => serviceWorker.ready).then(() => onControllerChange()).catch(() => {})
+    onControllerChange()
+    return () => { active = false; serviceWorker.removeEventListener('controllerchange', onControllerChange) }
+  }, [portalDraftRecoveryEnabled])
 
   useEffect(() => {
     const previousTitle = document.title
@@ -252,18 +270,34 @@ export default function ClientPortal() {
     }
 
     const controller = new AbortController()
+    setLoading(true); setError('')
     const loadPortal = async () => {
       try {
-        const response = await portalRequest(token, '', { signal: controller.signal })
+        let response
+        try { response = await portalRequest(token, '', { signal: controller.signal }) }
+        catch (networkError) {
+          if (networkError.name === 'AbortError') throw networkError
+          const cached = await readClientSnapshot('portal', token, portalDraftScope).catch(() => null)
+          if (!cached || controller.signal.aborted) throw networkError
+          setLocale(normalizeLocale(cached.value.locale, DEFAULT_PORTAL_LOCALE))
+          setJob(cached.value.job)
+          setCompletionReview(null)
+          setFeedbackSubmitted(cached.value.feedbackSubmitted === true)
+          setOfflineSnapshotAt(cached.updatedAt)
+          return
+        }
         const payload = await response.json().catch(() => ({}))
-        if (!response.ok) throw new Error(payload?.error?.message || portalText(DEFAULT_PORTAL_LOCALE, 'Deze projectlink is niet beschikbaar.'))
+        if (!response.ok) {
+          if ([401, 403].includes(response.status)) await removeClientSnapshot('portal', portalDraftScope).catch(() => {})
+          throw new Error(payload?.error?.message || portalText(DEFAULT_PORTAL_LOCALE, 'Deze projectlink is niet beschikbaar.'))
+        }
         const retainedLocale = normalizeLocale(payload.portal?.locale, DEFAULT_PORTAL_LOCALE)
         setLocale(retainedLocale)
-        setSubject(current => current === 'Vraag over mijn project' || current === 'Question about my project'
-          ? portalText(retainedLocale, 'Vraag over mijn project')
-          : current)
         setJob(payload.job)
+        setCompletionReview(payload.portal?.completionReview || null)
         setFeedbackSubmitted(payload.portal?.feedback?.submitted === true)
+        setOfflineSnapshotAt('')
+        void saveClientSnapshot('portal', { job: payload.job, locale: retainedLocale, feedbackSubmitted: payload.portal?.feedback?.submitted === true }, token, portalDraftScope).catch(() => {})
         setSelectionDrafts(current => Object.fromEntries((payload.job?.selections || [])
           .filter(selection => selection.responseAllowed)
           .map(selection => [selection.id, { ...emptySelectionDraft(selection), ...(current[selection.id] || {}) }])))
@@ -278,7 +312,7 @@ export default function ClientPortal() {
     }
     loadPortal()
     return () => controller.abort()
-  }, [token])
+  }, [portalDraftScope, portalRefresh, token])
 
   async function updatePortalLocale(nextLocale) {
     const normalized = normalizeLocale(nextLocale, DEFAULT_PORTAL_LOCALE)
@@ -403,28 +437,6 @@ export default function ClientPortal() {
     }
   }
 
-  async function submitMessage(event) {
-    event.preventDefault()
-    if (!body.trim() || submitting) return
-    setSubmitting(true)
-    setMessageResult(t('Bericht wordt opgeslagen...'))
-    try {
-      const response = await portalRequest(token, '/messages', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ subject: subject.trim(), body: body.trim() })
-      })
-      const payload = await response.json().catch(() => ({}))
-      if (!response.ok) throw new Error(payload?.error?.message || t('Bericht kon niet worden opgeslagen.'))
-      setBody('')
-      setMessageResult(t('Uw bericht is toegevoegd aan het projectdossier.'))
-    } catch (requestError) {
-      setMessageResult(requestError.message || t('Bericht kon niet worden opgeslagen.'))
-    } finally {
-      setSubmitting(false)
-    }
-  }
-
   async function submitFeedback(event) {
     event.preventDefault()
     if (feedbackSubmitting || feedbackSubmitted) return
@@ -448,6 +460,47 @@ export default function ClientPortal() {
     }
   }
 
+  async function downloadCompletionPackage() {
+    if (completionDownloading) return
+    setCompletionDownloading(true)
+    setCompletionResult(t('Het opleverdossier wordt voorbereid...'))
+    try {
+      const response = await portalRequest(token, '/handover-package')
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}))
+        throw new Error(payload?.error?.message || t('Het opleverdossier kan niet worden gedownload.'))
+      }
+      const url = URL.createObjectURL(await response.blob())
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = attachmentFilename(response, 'opleverdossier.html')
+      document.body.append(anchor); anchor.click(); anchor.remove(); URL.revokeObjectURL(url)
+      setCompletionResult(t('Download gestart.'))
+    } catch (requestError) {
+      setCompletionResult(requestError.message || t('Het opleverdossier kan niet worden gedownload.'))
+    } finally { setCompletionDownloading(false) }
+  }
+
+  async function submitCompletionReview(event) {
+    event.preventDefault()
+    if (completionBusy || !completionReview?.responseAllowed || !completionDraft.outcome) return
+    setCompletionBusy(true)
+    setCompletionResult(t('Uw opleverreactie wordt opgeslagen...'))
+    try {
+      const response = await portalRequest(token, '/completion-review', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...completionDraft, sourceHash: completionReview.sourceHash, entryKey: createResponseId() })
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload?.error?.message || t('Uw opleverreactie kon niet worden opgeslagen.'))
+      setCompletionReview(current => ({ ...current, response: payload.response, responseAllowed: false, sourceCurrent: true }))
+      setCompletionDraft({ outcome: '', respondentName: '', authorityConfirmed: false, note: '' })
+      setCompletionResult(t('Uw reactie is ontvangen en wacht op interne beoordeling.'))
+    } catch (requestError) {
+      setCompletionResult(requestError.message || t('Uw opleverreactie kon niet worden opgeslagen.'))
+    } finally { setCompletionBusy(false) }
+  }
+
   return <div className="client-portal-shell">
     <header className="client-portal-header">
       <div><span className="client-portal-mark"><HardHat size={19} /></span><strong>Contractor.AI</strong></div>
@@ -466,6 +519,14 @@ export default function ClientPortal() {
       {loading ? <div className="client-portal-state" role="status"><LoaderCircle className="spin" size={24} />{t('Uw project wordt geladen...')}</div> : null}
       {!loading && error ? <div className="client-portal-state client-portal-error" role="alert"><ShieldCheck size={22} /><div><strong>{t('Projectlink niet beschikbaar')}</strong><p>{error}</p></div></div> : null}
       {!loading && !error && job ? <>
+        {offlineSnapshotAt ? <>
+          <section className="client-portal-intro" aria-labelledby="client-project-title">
+            <div><span className="client-portal-kicker">{t('Offline projectweergave')}</span><h1 id="client-project-title">{job.title || t('Uw project')}</h1></div>
+            <button type="button" disabled={!navigator.onLine} onClick={() => setPortalRefresh(value => value + 1)}><RefreshCw size={16} />{t('Project vernieuwen')}</button>
+          </section>
+          <p className="client-portal-note" role="status">{t('Dit is een versleutelde momentopname van')} {new Intl.DateTimeFormat(locale, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(offlineSnapshotAt))}. {t('Projectgegevens en eerdere berichten kunnen verouderd zijn. Alleen klantberichten kunnen lokaal worden bewaard; keuzes en contractbesluiten zijn offline uitgeschakeld.')}</p>
+          <Conversation base="/api/client-portal/conversation" token={token} locale={locale} refreshKey={conversationRefresh} draftScope={`${portalDraftScope}:conversation`} offlineShellReady={offlineShellReady} />
+        </> : <>
         <section className="client-portal-intro" aria-labelledby="client-project-title">
           <div>
             <span className="client-portal-kicker">{t('Uw project')}</span>
@@ -483,6 +544,8 @@ export default function ClientPortal() {
         </section>
 
         <div className="client-portal-grid">
+          <div className="client-portal-wide"><Suspense fallback={<p role="status">{locale.startsWith('nl') ? 'Aangeboden werk laden...' : 'Loading offered work...'}</p>}><ClientDeliveryResponses token={token} locale={locale} onResponse={() => setConversationRefresh(value => value + 1)} /></Suspense></div>
+          <div className="client-portal-wide"><Conversation base="/api/client-portal/conversation" token={token} locale={locale} refreshKey={conversationRefresh} draftScope={`${portalDraftScope}:conversation`} offlineShellReady={offlineShellReady} /></div>
           <section className="client-portal-panel">
             <div className="client-portal-panel-title"><CalendarDays size={18} /><h2>{t('Afspraken')}</h2></div>
             <PortalList items={job.siteVisits} empty={t('Nog geen afspraak gepland.')} render={item => `${item.visitType || t('Afspraak')}: ${formatPortalStatus(item.status, locale, 'gepland')} - ${formatPortalDate(item.scheduledAt, locale)}`} />
@@ -530,6 +593,27 @@ export default function ClientPortal() {
             <div className="client-portal-panel-title"><FileText size={18} /><h2>{t('Beschikbare documenten')}</h2></div>
             <PortalList items={job.documents} empty={t('Er zijn nog geen documenten beschikbaar.')} render={item => `${item.title || 'Document'} (${item.type || 'document'})`} />
           </section>
+          <section className="client-portal-panel client-portal-wide client-completion-review" data-testid="client-completion-review">
+            <div className="client-portal-panel-title"><PackageCheck size={18} /><h2>{t('Opleverdossier beoordelen')}</h2></div>
+            {completionReview?.available ? <>
+              <p className="client-portal-note">{t('Dossier {reference}, versie {hash}. Uw reactie wordt als verklaring vastgelegd en is geen elektronische handtekening. Contractor.AI beoordeelt de reactie intern. Dit wijzigt niet automatisch de contractstatus, contractsom of betaling.', { reference: completionReview.package.issueReference, hash: completionReview.package.packageHash.slice(0, 12) })}</p>
+              <button type="button" className="client-completion-download" disabled={completionDownloading} onClick={downloadCompletionPackage}><Download size={16} />{completionDownloading ? t('Download voorbereiden...') : t('Download opleverdossier')}</button>
+              {completionReview.response ? <div className="client-completion-received" role="status"><strong>{t('Opleverreactie ontvangen')}</strong><span>{t(completionReview.response.outcome)} / {completionReview.response.respondentName} / {formatPortalDate(completionReview.response.submittedAt, locale)}</span><p>{completionReview.response.note}</p><small>{completionReview.sourceCurrent === false ? t('De beoordeelde dossierbron is gewijzigd of niet meer actueel. Controle vereist.') : t('Wacht op interne beoordeling; er is nog geen automatische acceptatie verwerkt.')}</small></div> : null}
+              {completionReview.responseAllowed ? <form className="client-completion-form" onSubmit={submitCompletionReview}>
+                <fieldset><legend>{t('Uw reactie')}</legend>
+                  <label><input required type="radio" name="completion-outcome" value="accepted" checked={completionDraft.outcome === 'accepted'} onChange={event => setCompletionDraft(value => ({ ...value, outcome: event.target.value }))} />{t('Ik accepteer het opleverdossier')}</label>
+                  <label><input required type="radio" name="completion-outcome" value="accepted_with_items" checked={completionDraft.outcome === 'accepted_with_items'} onChange={event => setCompletionDraft(value => ({ ...value, outcome: event.target.value }))} />{t('Ik accepteer met restpunten')}</label>
+                  <label><input required type="radio" name="completion-outcome" value="not_accepted" checked={completionDraft.outcome === 'not_accepted'} onChange={event => setCompletionDraft(value => ({ ...value, outcome: event.target.value }))} />{t('Ik accepteer het dossier niet')}</label>
+                </fieldset>
+                <label>{t('Uw naam')}<input required minLength="2" maxLength="160" value={completionDraft.respondentName} onChange={event => setCompletionDraft(value => ({ ...value, respondentName: event.target.value }))} /></label>
+                {completionDraft.outcome && completionDraft.outcome !== 'not_accepted' ? <label className="client-completion-authority"><input type="checkbox" checked={completionDraft.authorityConfirmed} onChange={event => setCompletionDraft(value => ({ ...value, authorityConfirmed: event.target.checked }))} />{t('Ik verklaar bevoegd te zijn om namens de opdrachtgever te reageren.')}</label> : null}
+                <label>{t(completionDraft.outcome === 'accepted' ? 'Toelichting (optioneel)' : 'Toelichting of restpunten')}<textarea required={completionDraft.outcome !== 'accepted'} minLength={completionDraft.outcome === 'accepted' ? undefined : 5} maxLength="2000" value={completionDraft.note} onChange={event => setCompletionDraft(value => ({ ...value, note: event.target.value }))} /></label>
+                <p className="client-portal-note">{t('Dit is geen gekwalificeerde elektronische handtekening of juridisch oordeel. Bewaar belangrijke formele afspraken ook via de overeengekomen contractuele route.')}</p>
+                <button type="submit" disabled={completionBusy || !completionDraft.outcome || completionDraft.respondentName.trim().length < 2 || (completionDraft.outcome !== 'not_accepted' && !completionDraft.authorityConfirmed) || (completionDraft.outcome !== 'accepted' && completionDraft.note.trim().length < 5)}><ShieldCheck size={16} />{completionBusy ? t('Indienen...') : t('Opleverreactie indienen')}</button>
+              </form> : null}
+              <p className="client-completion-result" role="status" aria-live="polite">{completionResult}</p>
+            </> : completionReview?.response ? <div className="client-completion-received" role="status"><strong>{t('Eerdere opleverreactie')}</strong><span>{t(completionReview.response.outcome)} / {completionReview.response.respondentName} / {formatPortalDate(completionReview.response.submittedAt, locale)}</span><p>{completionReview.response.note}</p><small>{t('De bron is niet langer actueel. Neem contact op met de aannemer voor een nieuwe dossierbeoordeling.')}</small></div> : <p className="client-portal-empty">{t('Er is nog geen actueel, gecontroleerd en aan u verstrekt opleverdossier beschikbaar.')}</p>}
+          </section>
           <section className="client-portal-panel client-portal-wide" data-testid="client-feedback-panel">
             <div className="client-portal-panel-title"><Star size={18} /><h2>{t('Uw ervaring')}</h2></div>
             {feedbackSubmitted ? <div className="client-feedback-thanks" role="status"><CircleCheckBig size={20} /><div><strong>{t('Feedback ontvangen')}</strong><p>{feedbackResult || t('Uw eerdere reactie is veilig vastgelegd in het projectdossier.')}</p></div></div> : <>
@@ -545,16 +629,8 @@ export default function ClientPortal() {
               </form>
             </>}
           </section>
-          <section className="client-portal-panel client-portal-wide">
-            <div className="client-portal-panel-title"><MessageSquareText size={18} /><h2>{t('Stuur een bericht')}</h2></div>
-            <p className="client-portal-note">{t('Uw bericht komt als verzoek in het projectdossier. Het bevestigt geen prijs, planning, extra werk of veiligheid.')}</p>
-            <form className="client-portal-form" onSubmit={submitMessage}>
-              <label>{t('Onderwerp')}<input maxLength="240" required value={subject} onChange={event => setSubject(event.target.value)} /></label>
-              <label>{t('Bericht')}<textarea maxLength="5000" required value={body} onChange={event => setBody(event.target.value)} /></label>
-              <div className="client-portal-submit"><button type="submit" disabled={submitting || !body.trim()}><Send size={16} />{submitting ? t('Opslaan...') : t('Verstuur bericht')}</button><span role="status" aria-live="polite">{messageResult}</span></div>
-            </form>
-          </section>
         </div>
+        </>}
       </> : null}
     </main>
   </div>

@@ -83,8 +83,14 @@ function approve(ledger, approvalId) {
 
 test('governed SDS revisions retain exact evidence, supersede atomically, and never infer current status', t => {
   const { ledger, job, dbFile } = fixture(t);
+  const linkedMaterial = ledger.addMaterialRequirement(job.id, { name: 'Two-component epoxy coating', quantity: 8, unit: 'kg' });
+  const unrelatedMaterial = ledger.addMaterialRequirement(job.id, { name: 'Unrelated sealant', quantity: 2, unit: 'cartridges' });
   const firstDocument = addPdf(ledger, job.id, 'r1');
-  const firstPayload = revisionPayload(firstDocument.id, 'sds-revision-r1-001');
+  const firstPayload = revisionPayload(firstDocument.id, 'sds-revision-r1-001', { linkedMaterialIds: [linkedMaterial.id] });
+  assert.throws(
+    () => ledger.createSdsRevision(job.id, { ...firstPayload, entryKey: 'sds-invalid-scope-001', linkedMaterialIds: ['material-from-another-job'] }),
+    error => error.code === 'sds_revision_material_scope_invalid'
+  );
   const first = ledger.createSdsRevision(job.id, firstPayload, { actor: 'office_operator' });
 
   assert.equal(first.replayed, false);
@@ -94,6 +100,9 @@ test('governed SDS revisions retain exact evidence, supersede atomically, and ne
   assert.equal(first.current, false);
   assert.equal(first.approval.targetType, 'sds_sheet');
   assert.equal(first.data.externalCommitments, 0);
+  assert.deepEqual(first.linkedMaterialIds, [linkedMaterial.id]);
+  assert.deepEqual(first.snapshot.linkedMaterialIds, [linkedMaterial.id]);
+  assert.equal(ledger.getJobDetail(job.id).materials.find(row => row.id === linkedMaterial.id).sdsRequirementStatus, 'required');
 
   const pendingReplay = ledger.createSdsRevision(job.id, firstPayload, { actor: 'offline_retry' });
   assert.equal(pendingReplay.replayed, true);
@@ -103,13 +112,24 @@ test('governed SDS revisions retain exact evidence, supersede atomically, and ne
   const currentFirst = ledger.getSdsSheet(first.id);
   assert.equal(currentFirst.status, 'current');
   assert.equal(currentFirst.current, true);
+  assert.deepEqual(currentFirst.linkedMaterialIds, [linkedMaterial.id]);
   assert.ok(currentFirst.reviewedAt);
+  const originalFirstData = ledger.db.prepare('SELECT data_json FROM sds_sheets WHERE id = ?').get(first.id).data_json;
+  ledger.db.prepare('UPDATE sds_sheets SET data_json = ? WHERE id = ?').run(JSON.stringify({
+    ...JSON.parse(originalFirstData), linkedMaterialIds: [unrelatedMaterial.id]
+  }), first.id);
+  assert.equal(ledger.getSdsSheet(first.id).integrityValid, false);
+  ledger.db.prepare('UPDATE sds_sheets SET data_json = ? WHERE id = ?').run(originalFirstData, first.id);
   const approvedReplay = ledger.createSdsRevision(job.id, firstPayload, { actor: 'offline_retry' });
   assert.equal(approvedReplay.replayed, true);
   assert.equal(approvedReplay.id, first.id);
 
   assert.throws(
     () => ledger.createSdsRevision(job.id, { ...firstPayload, notes: 'Different retained content.' }, { actor: 'office_operator' }),
+    error => error.code === 'sds_revision_entry_key_conflict'
+  );
+  assert.throws(
+    () => ledger.createSdsRevision(job.id, { ...firstPayload, linkedMaterialIds: [unrelatedMaterial.id] }, { actor: 'office_operator' }),
     error => error.code === 'sds_revision_entry_key_conflict'
   );
   assert.throws(
@@ -139,6 +159,8 @@ test('governed SDS revisions retain exact evidence, supersede atomically, and ne
   });
   const second = ledger.createSdsRevision(job.id, secondPayload, { actor: 'office_operator' });
   assert.equal(second.revisionNumber, 2);
+  assert.deepEqual(second.linkedMaterialIds, [linkedMaterial.id]);
+  assert.equal(ledger.getJobDetail(job.id).materials.find(row => row.id === linkedMaterial.id).sdsRequirementStatus, 'required');
   assert.equal(ledger.createSdsRevision(job.id, secondPayload, { actor: 'offline_retry' }).replayed, true);
   assert.throws(
     () => ledger.createSdsRevision(job.id, {
@@ -203,7 +225,7 @@ test('governed SDS revisions retain exact evidence, supersede atomically, and ne
   assert.equal(reviewTask.data.currentStatusInferred, false);
   assert.equal(ledger.runAutonomousCycle({ actionTypes: ['review_sds_revision'], jobIds: [job.id] }).applied.length, 0);
   assert.equal(ledger.diagnose().valid, true, JSON.stringify(ledger.diagnose().issues));
-  assert.equal(ledger.migrationStatus().currentVersion, '072_operator_locale_preferences');
+  assert.equal(ledger.migrationStatus().currentVersion, '096_loading_read_indexes');
 
   ledger.close();
   const restarted = new ContractorOperatingLedger({ dbFile });

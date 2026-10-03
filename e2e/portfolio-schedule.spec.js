@@ -87,10 +87,11 @@ test('portfolio schedule connects look-ahead risk, baseline approval, job planni
   expect(unscheduledResponse.ok()).toBeTruthy();
 
   await page.goto('/');
+  await page.getByLabel(/^(Language|Taal)$/).selectOption('en-GB');
   await page.getByRole('button', { name: 'Schedule', exact: true }).click();
   const schedule = page.getByTestId('portfolio-schedule');
   await expect(schedule.getByRole('heading', { name: 'Portfolio schedule' })).toBeVisible();
-  await expect(schedule.getByText(conflictBTitle)).toBeVisible();
+  await expect(schedule.getByRole('heading', { name: conflictBTitle, exact: true })).toBeVisible();
   await expect(schedule.locator('.portfolio-timeline-span').first()).toBeVisible();
   const desktopScreenshot = visualQaPath('portfolio-schedule-desktop.png');
   if (desktopScreenshot) await page.screenshot({ path: desktopScreenshot, fullPage: true });
@@ -98,11 +99,11 @@ test('portfolio schedule connects look-ahead risk, baseline approval, job planni
   const search = schedule.getByPlaceholder('Job, client, location, or task');
   await search.fill(conflictBTitle);
   await expect(schedule.locator('.portfolio-schedule-row')).toHaveCount(1);
-  await expect(schedule.getByText(conflictBTitle)).toBeVisible();
+  await expect(schedule.getByRole('heading', { name: conflictBTitle, exact: true })).toBeVisible();
   await search.fill('');
 
   await schedule.getByRole('tab', { name: 'Conflicts' }).click();
-  await expect(schedule.getByText(conflictBTitle)).toBeVisible();
+  await expect(schedule.getByRole('heading', { name: conflictBTitle, exact: true })).toBeVisible();
   await expect(schedule.locator('.portfolio-schedule-row .status-conflict').first()).toBeVisible();
 
   await schedule.getByRole('tab', { name: 'Baselines' }).click();

@@ -1,8 +1,10 @@
 const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
+const { jpegFixture } = require('./image-fixtures');
 
 const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'contractor-ai-photo-evidence-api-'));
 const jobId = 'photo-evidence-api-job';
@@ -65,7 +67,7 @@ function uploadForm(setId, phase, capturedAt, entryKey) {
   const form = new FormData();
   form.append(
     'evidenceFile',
-    new Blob([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from(`${phase} governed site photo`)], { type: 'image/jpeg' }),
+    new Blob([jpegFixture(`${phase} governed site photo`)], { type: 'image/jpeg' }),
     `${phase}-site-photo.jpg`
   );
   form.append('jobId', jobId);
@@ -208,7 +210,7 @@ test('photo-evidence API atomically binds private uploads to assigned-worker pha
     body: uploadForm(setId, 'before', captureTimes[0], 'photo-evidence-api-wrong-worker')
   });
   assert.equal(wrongWorker.response.status, 403);
-  assert.equal(wrongWorker.body.error.code, 'photo_evidence_worker_scope_forbidden');
+  assert.equal(wrongWorker.body.error.code, 'field_job_scope_forbidden');
 
   const officeCapture = await request(baseUrl, '/api/ledger/upload', tokens.office_operator, {
     method: 'POST',
@@ -266,6 +268,49 @@ test('photo-evidence API atomically binds private uploads to assigned-worker pha
   assert.equal(released.status, 'released');
   assert.equal(released.readyForTaskCompletion, true);
   assert.equal(released.captures.length, 3);
+
+  const portalCreated = await request(baseUrl, `/api/ledger/jobs/${jobId}/client-portal-access`, tokens.owner, {
+    method: 'POST', body: JSON.stringify({})
+  });
+  assert.equal(portalCreated.response.status, 201);
+  const portalAccess = portalCreated.body.access;
+  const portalApproval = await request(baseUrl, `/api/ledger/approvals/${portalAccess.approval.id}/resolve`, tokens.approver, {
+    method: 'POST', body: JSON.stringify({ status: 'approved', reason: 'Client portal scope verified.' })
+  });
+  assert.equal(portalApproval.response.status, 200);
+  const conversation = `/api/ledger/jobs/${jobId}/conversations/${portalAccess.id}`;
+  const candidates = await request(baseUrl, `${conversation}/photo-evidence`, tokens.office_operator);
+  assert.equal(candidates.response.status, 200);
+  assert.equal(candidates.body.photos.length, 3);
+  const selected = candidates.body.photos.find(photo => photo.phase === 'before');
+  const drafted = await request(baseUrl, `${conversation}/photo-evidence/${selected.id}/draft`, tokens.office_operator, {
+    method: 'POST', body: JSON.stringify({ origin: selected.origin, entryKey: 'released-photo-client-draft-0001', body: 'De uitgang is voorbereid; zie de foto.' })
+  });
+  assert.equal(drafted.response.status, 201, JSON.stringify(drafted.body));
+  assert.equal(drafted.body.message.attachment.sha256, selected.origin.sha256);
+  const privateView = await request(baseUrl, '/api/client-portal/conversation', portalAccess.portalToken);
+  assert.equal(privateView.response.status, 200);
+  assert.equal(privateView.body.messages.length, 0);
+  const messageApproval = await request(baseUrl, `/api/ledger/approvals/${drafted.body.message.approvalId}/resolve`, tokens.approver, {
+    method: 'POST', body: JSON.stringify({ status: 'approved', reason: 'Customer wording and released image checked.' })
+  });
+  assert.equal(messageApproval.response.status, 200);
+  assert.equal(messageApproval.body.approval.decision.preview.photoEvidenceSource.phase, 'before');
+  const published = await request(baseUrl, `${conversation}/messages/${drafted.body.message.id}/publish`, tokens.approver, {
+    method: 'POST', body: JSON.stringify({ sourceHash: drafted.body.message.sourceHash })
+  });
+  assert.equal(published.response.status, 200);
+  const clientView = await request(baseUrl, '/api/client-portal/conversation', portalAccess.portalToken);
+  assert.equal(clientView.body.messages.length, 1);
+  assert.equal(Object.hasOwn(clientView.body.messages[0], 'sourceReference'), false);
+  assert.equal(JSON.stringify(clientView.body.messages[0]).includes(selected.origin.documentId), false);
+  const sharedPhoto = await fetch(`${baseUrl}/api/client-portal/conversation/messages/${drafted.body.message.id}/photo`, {
+    headers: { Authorization: `Bearer ${portalAccess.portalToken}` }
+  });
+  assert.equal(sharedPhoto.status, 200);
+  const sharedBytes = Buffer.from(await sharedPhoto.arrayBuffer());
+  assert.equal(crypto.createHash('sha256').update(sharedBytes).digest('hex'), selected.origin.sha256);
+  assert.equal(sharedPhoto.headers.get('cache-control'), 'no-store');
 
   const capabilities = await request(baseUrl, '/api/operations/capabilities', tokens.owner);
   assert.equal(capabilities.response.status, 200);

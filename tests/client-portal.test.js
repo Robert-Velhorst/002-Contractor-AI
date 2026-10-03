@@ -57,6 +57,15 @@ test('client portal access is approval-gated, scoped, auditable, and revocable',
   });
   assert.equal(selection.response.status, 201);
   assert.equal(selection.body.clientSelection.status, 'pending_client');
+  const linkedMaterial = await request(baseUrl, `/api/ledger/jobs/${jobId}/materials`, {
+    method: 'POST', body: JSON.stringify({ name: 'Paving sample material', quantity: 10, unit: 'm2' })
+  });
+  assert.equal(linkedMaterial.response.status, 201);
+  const internalLink = await request(baseUrl, `/api/ledger/jobs/${jobId}/client-selections/${selection.body.clientSelection.id}/impact-links`, {
+    method: 'POST', body: JSON.stringify({ links: [{ targetType: 'material_requirement', targetId: linkedMaterial.body.materialRequirement.id,
+      rationale: 'Internal note: compare the client sample against the measured paving area.' }] })
+  });
+  assert.equal(internalLink.response.status, 200);
 
   const created = await request(baseUrl, `/api/ledger/jobs/${jobId}/client-portal-access`, {
     method: 'POST',
@@ -170,6 +179,16 @@ test('client portal access is approval-gated, scoped, auditable, and revocable',
   assert.equal(message.body.communication.direction, 'inbound');
   assert.equal(message.body.communication.status, 'received');
   assert.equal(message.body.communication.approvalId || null, null);
+  assert.equal(message.body.notSent, true);
+  assert.equal(message.body.message.id, message.body.communication.id);
+  assert.equal(message.body.message.body, 'Can we confirm the grey paver sample first?');
+  const unifiedConversation = await request(baseUrl, '/api/client-portal/conversation', {
+    preservePathToken: true,
+    headers: { Authorization: `Bearer ${created.body.access.portalToken}` }
+  });
+  assert.equal(unifiedConversation.response.status, 200);
+  assert.deepEqual(unifiedConversation.body.messages.map(item => item.id), [message.body.message.id]);
+  assert.equal(unifiedConversation.body.messages[0].channel, 'portal_compatibility');
 
   const selectionResponsePayload = {
     responseId: 'portal-response-0001',
@@ -187,6 +206,8 @@ test('client portal access is approval-gated, scoped, auditable, and revocable',
   assert.equal(selectionResponse.body.externalCommitments, 0);
   assert.equal(selectionResponse.body.response.status, 'pending_review');
   assert.equal(selectionResponse.body.response.selectedOption, 'Grey');
+  assert.equal(Object.hasOwn(selectionResponse.body.selection, 'data'), false);
+  assert.doesNotMatch(JSON.stringify(selectionResponse.body), /Internal note: compare the client sample/);
   assert.equal(selectionResponse.body.approval.targetType, 'client_selection_response');
   assert.equal(selectionResponse.body.approval.status, 'pending');
   assert.match(selectionResponse.body.approval.decision.primaryEffect, /Grey|selected option/i);

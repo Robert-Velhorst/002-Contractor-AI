@@ -7,6 +7,14 @@ const REQUIRED_PATHS = [
   'ClientPortal.css',
   'ClientPortal.jsx',
   'draft-recovery.js',
+  'client-date-commitments.js',
+  'components/ClientDateCommitmentsControl.jsx',
+  'frontend-tests/ClientDateCommitmentsControl.test.jsx',
+  'e2e/client-date-commitments.spec.js',
+  'components/ClientDateImpactReview.jsx',
+  'frontend-tests/ClientDateImpactReview.test.jsx',
+  'tests/client-date-commitments.test.js',
+  'tests/client-date-commitments-api.test.js',
   'components/CashFlowForecastControl.jsx',
   'components/AutomationSafetyDialog.css',
   'components/AutomationSafetyDialog.jsx',
@@ -40,7 +48,30 @@ const REQUIRED_PATHS = [
   'docs/WINDOWS_STANDALONE.md',
   'docker-compose.hosted.yml',
   'backup-manifest.js',
+  'company-runtime.js',
+  'company-authority.js',
+  'company-handover.js',
+  'backup-evidence.js',
+  'scripts/company-handover.js',
+  'scripts/company-handover-smoke.js',
+  'tests/company-handover.test.js',
+  'tests/company-handover-postgres.test.js',
+  'e2e/company-handover.spec.js',
+  'docs/COMPANY_HANDOVER.md',
+  'docs/adr/0003-company-authority-handover.md',
+  'docker-compose.authority.yml',
+  'identity-registry.js',
+  'identity-runtime.js',
+  'identity-server.js',
+  'identity-oidc-adapter.js',
+  'identity-recovery.js',
+  'docs/IDENTITY_AND_MEMBERSHIP.md',
+  'docs/IDENTITY_RECOVERY.md',
+  'company-request.mjs',
+  'company-scope.mjs',
+  'docs/COMPANY_ENVIRONMENTS.md',
   'evidence-storage.js',
+  'image-processor.js',
   'e2e/accessibility-helpers.js',
   'e2e/accessibility.spec.js',
   'e2e/draft-recovery.spec.js',
@@ -66,9 +97,16 @@ const REQUIRED_PATHS = [
   'scripts/benchmark-ledger.js',
   'scripts/doctor.js',
   'scripts/restore-local-backup.js',
+  'scripts/runtime-healthcheck.js',
+  'scripts/identity-maintenance.js',
   'scripts/run-node-tests.js',
+  'scripts/node-test-runtime.js',
   'scripts/start-ngrok.js',
   'scripts/verify-bundle-budget.js',
+  'preload-chunk-minifier.mjs',
+  'components/OperatorActionDialogs.jsx',
+  'components/DeferredActionDialog.jsx',
+  'components/ClientDeliveryPhotos.jsx',
   'scripts/verify-container-runtime.js',
   'vitest.config.js'
 ];
@@ -89,6 +127,7 @@ const RETIRED_PATHS = [
 ];
 
 const REQUIRED_HOSTED_ENV_KEYS = [
+  'CONTRACTOR_AI_COMPANY_ID',
   'CONTRACTOR_AI_PUBLIC_URL',
   'CONTRACTOR_AI_HOSTING_PROVIDER',
   'CONTRACTOR_AI_HOSTING_REGION',
@@ -165,6 +204,12 @@ function findOperationalPrincipalPriorityViolations(source = '') {
 
 function verifyReleaseContract(root = path.resolve(__dirname, '..')) {
   const failures = [];
+  try {
+    const inventory = require('./runtime-source-inventory').verifyRuntimeSourceInventory(root);
+    failures.push(...inventory.failures);
+  } catch (error) {
+    failures.push(`Runtime source inventory could not be verified: ${error.message}`);
+  }
   const unreadableDirectories = [];
   const sourceFiles = walkFiles(root, '', unreadableDirectories);
   const exists = relative => fs.existsSync(path.join(root, relative));

@@ -4,13 +4,36 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const dashboardRootSource = fs.readFileSync(path.join(__dirname, '..', 'App.jsx'), 'utf8');
+const dashboardChunksSource = fs.readFileSync(path.join(__dirname, '..', 'dashboard-chunks.js'), 'utf8');
+const pipelineWorkspaceSource = fs.readFileSync(path.join(__dirname, '..', 'components', 'PipelineWorkspace.jsx'), 'utf8');
+const bidPackageWorkspaceSource = fs.readFileSync(path.join(__dirname, '..', 'components', 'BidPackageWorkspace.jsx'), 'utf8');
+const jobControlNames = ['CloseoutRegister', 'CommercialControl', 'DayworkControl',
+  'FieldAssuranceWorkspace', 'FieldRiskControl', 'InspectionChecklistControl',
+  'NonconformanceControl', 'PhotoEvidenceControl', 'ProductionControl',
+  'ProjectControls', 'TakeoffControl', 'WorkPlanControl'];
+const financeWorkspaceSource = fs.readFileSync(path.join(__dirname, '..', 'components', 'FinanceWorkspace.jsx'), 'utf8');
+const financeActionDialogSource = fs.readFileSync(path.join(__dirname, '..', 'components', 'FinanceActionDialog.jsx'), 'utf8');
 const fiveSWorkspaceSource = fs.readFileSync(path.join(__dirname, '..', 'components', 'FiveSWorkspace.jsx'), 'utf8');
 const lmraControlSource = fs.readFileSync(path.join(__dirname, '..', 'components', 'LmraControl.jsx'), 'utf8');
 const qaResetDialogSource = fs.readFileSync(path.join(__dirname, '..', 'components', 'QaResetDialog.jsx'), 'utf8');
 const dashboardSource = [
   dashboardRootSource,
+  pipelineWorkspaceSource,
+  bidPackageWorkspaceSource,
+  fs.readFileSync(path.join(__dirname, '..', 'components', 'PortfolioScheduleWorkspace.jsx'), 'utf8'),
+  fs.readFileSync(path.join(__dirname, '..', 'components', 'DispatchWorkspace.jsx'), 'utf8'),
+  fs.readFileSync(path.join(__dirname, '..', 'components', 'DashboardMetric.jsx'), 'utf8'),
+  financeWorkspaceSource,
+  financeActionDialogSource,
+  fs.readFileSync(path.join(__dirname, '..', 'components', 'OperatorActionDialogs.jsx'), 'utf8'),
+  fs.readFileSync(path.join(__dirname, '..', 'finance-actions.js'), 'utf8'),
   fs.readFileSync(path.join(__dirname, '..', 'dashboard-format.js'), 'utf8'),
   fs.readFileSync(path.join(__dirname, '..', 'components', 'JobWorkspaceControls.jsx'), 'utf8'),
+  ...jobControlNames.map(name => fs.readFileSync(path.join(__dirname, '..', 'components', `${name}.jsx`), 'utf8')),
+  fs.readFileSync(path.join(__dirname, '..', 'components', 'job-pricing-display.mjs'), 'utf8'),
+  fs.readFileSync(path.join(__dirname, '..', 'components', 'ClientsWorkspace.jsx'), 'utf8'),
+  fs.readFileSync(path.join(__dirname, '..', 'components', 'AutomationControl.jsx'), 'utf8'),
+  fs.readFileSync(path.join(__dirname, '..', 'components', 'CapabilitySetupControl.jsx'), 'utf8'),
   fs.readFileSync(path.join(__dirname, '..', 'components', 'ResourcesWorkspace.jsx'), 'utf8'),
   fs.readFileSync(path.join(__dirname, '..', 'components', 'AuditHistory.jsx'), 'utf8'),
   fs.readFileSync(path.join(__dirname, '..', 'components', 'CashFlowForecastControl.jsx'), 'utf8'),
@@ -32,11 +55,27 @@ test('React dashboard uses ledger endpoints instead of cached or simulated contr
 });
 
 test('large navigation and job controls are loaded through local suspense boundaries', () => {
-  assert.match(dashboardRootSource, /lazy\(\(\) => import\('\.\/components\/ResourcesWorkspace'\)\)/);
+  for (const [component, loader] of [
+    ['ResourcesWorkspace', 'loadResources'],
+    ['FinanceWorkspace', 'loadFinance'],
+    ['PerformanceScorecard', 'loadPerformance'],
+    ['ClientsWorkspace', 'loadClients'],
+    ['AutomationControl', 'loadAutomation'],
+    ['CapabilitySetupControl', 'loadCapabilitySetup'],
+    ...jobControlNames.map(name => [name, `load${name}`]),
+  ]) {
+    assert.match(dashboardRootSource, new RegExp(`const ${component} = lazy\\(${loader}\\)`));
+    assert.match(dashboardChunksSource, new RegExp(`export const ${loader} = moduleLoader\\(\\(\\) => import\\('\\./components/${component}'\\)\\)`));
+  }
+  assert.doesNotMatch(dashboardRootSource, /loadJobWorkspaceControls/);
+  assert.match(dashboardChunksSource, /export const loadJobWorkspaceControls = moduleLoader\(\(\) => import\('\.\/components\/JobWorkspaceControls'\)\)/);
+  assert.match(dashboardChunksSource, /clients: loadClients/);
+  assert.match(dashboardChunksSource, /operations: loadAutomation/);
   assert.match(dashboardRootSource, /const AuditHistory = lazy\(\(\) => import\('\.\/components\/AuditHistory'\)\)/);
-  assert.match(dashboardRootSource, /const CashFlowForecastControl = lazy\(\(\) => import\('\.\/components\/CashFlowForecastControl'\)\)/);
-  assert.match(dashboardRootSource, /const PerformanceScorecard = lazy\(\(\) => import\('\.\/components\/PerformanceScorecard'\)\)/);
-  assert.match(dashboardRootSource, /const loadJobWorkspaceControls = \(\) => import\('\.\/components\/JobWorkspaceControls'\)/);
+  assert.doesNotMatch(dashboardRootSource, /function FinanceWorkspace/);
+  assert.match(financeWorkspaceSource, /const CashFlowForecastControl = lazy\(\(\) => import\('\.\/CashFlowForecastControl'\)\)/);
+  assert.match(financeWorkspaceSource, /request=\{request\}/);
+  assert.match(dashboardRootSource, /<LazyControlBoundary label=\{ot\('Finance'\)\}>[\s\S]*<FinanceWorkspace[\s\S]*request=\{api\}/);
   assert.match(dashboardRootSource, /<LazyControlBoundary label="resource controls">/);
   assert.match(dashboardRootSource, /<LazyControlBoundary label="audit history">/);
   assert.match(dashboardRootSource, /<ResourcesWorkspace[\s\S]*locale=\{operatorLocale\}/);
@@ -132,7 +171,8 @@ test('dashboard mutations remain API-backed and confirmation-gated where they af
 test('finance dashboard plans and invoices retained billing milestones without editable source values', () => {
   assert.match(dashboardSource, /\/billing-milestones`/);
   assert.match(dashboardSource, /create_billing_milestone/);
-  assert.match(dashboardSource, /Request milestone approval/);
+  assert.match(financeActionDialogSource, /Request milestone approval/);
+  assert.match(dashboardRootSource, /<FinanceActionDialog[\s\S]*financeActionDraft=\{financeActionDraft\}/);
   assert.match(dashboardSource, /data-testid="invoice-milestone-source"/);
   assert.match(dashboardSource, /billingMilestoneId: milestone\?\.id \|\| ''/);
   assert.match(dashboardSource, /readOnly=\{Boolean\(invoiceDraft\.billingMilestoneId\)\}/);
@@ -151,12 +191,12 @@ test('finance dashboard completes standalone purchase orders through approved im
 
 test('tender comparison and purchasing controls share the retained operator locale', () => {
   assert.match(dashboardRootSource, /<PipelineWorkspace[\s\S]*text=\{ot\}/);
-  assert.match(dashboardRootSource, /<BidPackageWorkspace[\s\S]*text=\{t\}/);
-  assert.match(dashboardRootSource, /function BidPackageWorkspace\(\{[\s\S]*text,/);
+  assert.match(pipelineWorkspaceSource, /<BidPackageWorkspace[\s\S]*text=\{t\}/);
+  assert.match(bidPackageWorkspaceSource, /function BidPackageWorkspace\(\{[\s\S]*text,/);
   assert.match(dashboardRootSource, /ot\('Internal bid package retained\. No invitation or message was sent\.'\)/);
   assert.match(dashboardRootSource, /ot\('Selected bid frozen into purchasing approval\. No supplier contact, award, order, or payment occurred\.'\)/);
   assert.match(dashboardRootSource, /ot\('Verified provider receipt retained for \{reference\}\. The order is now an external commitment; no payment was initiated\.'/);
-  assert.match(dashboardRootSource, /t\('No supplier contact, award, order transmission, subcontract signature, or payment occurred\.'\)/);
+  assert.match(bidPackageWorkspaceSource, /t\('No supplier contact, award, order transmission, subcontract signature, or payment occurred\.'\)/);
 });
 
 test('finance dashboard freezes server-derived cost forecasts through approval-backed snapshots', () => {
@@ -305,8 +345,8 @@ test('material receiving connects purchasing, field readiness, approvals, and su
   assert.match(dashboardSource, /type === 'material_receipt'\s*\?\s*'material-receipts'/);
   assert.match(dashboardSource, /material-receipts\/\$\{encodeURIComponent\(materialReceiptReversal\.id\)\}\/reversal/);
   assert.match(dashboardSource, /materialReceiptId: financeActionDraft\.materialReceiptId \|\| null/);
-  assert.match(dashboardSource, /Retained goods receipt/);
-  assert.match(dashboardSource, /verified three-way match/);
+  assert.match(financeActionDialogSource, /Retained goods receipt/);
+  assert.match(financeActionDialogSource, /verified three-way match/);
 });
 
 test('governed expense receipts connect field capture, offline replay, approval, finance cost, and reversal', () => {
@@ -441,7 +481,7 @@ test('operations view lists, verifies, and exports portable checksummed local ba
   assert.match(dashboardSource, /verified authenticated tunnel/);
   assert.match(dashboardSource, /tunnel verification pending/);
   assert.match(dashboardSource, /data-testid="hai-connector-readiness"/);
-  assert.match(dashboardSource, /href="\/api\/integrations\/hai\/feed\?limit=100"/);
+  assert.match(dashboardSource, /href=\{companyApiUrl\('\/api\/integrations\/hai\/feed\?limit=100'\)\}/);
   assert.match(dashboardSource, /Download HAI feed/);
   assert.match(dashboardSource, /api\('\/api\/integrations\/hai\/publish'/);
   assert.match(dashboardSource, /Publish to HAI/);
@@ -529,8 +569,15 @@ test('client success exposes immutable handover readiness, preparation, and down
 
 test('client portal is a scoped React workflow without imperative HTML rendering', () => {
   assert.match(clientPortalSource, /Authorization: `Bearer \$\{token\}`/);
-  assert.match(clientPortalSource, /fetch\(`\/api\/client-portal\$\{path\}`/);
-  assert.match(clientPortalSource, /portalRequest\(token, '\/messages'/);
+  assert.match(clientPortalSource, /companyFetch\(`\/api\/client-portal\$\{path\}`/);
+  assert.match(clientPortalSource, /<Conversation base="\/api\/client-portal\/conversation" token=\{token\}/);
+  const conversationSource = fs.readFileSync(path.join(__dirname, '..', 'components', 'Conversation.jsx'), 'utf8');
+  const conversationRequestSource = fs.readFileSync(path.join(__dirname, '..', 'conversation-request.mjs'), 'utf8');
+  assert.match(conversationSource, /import \{ conversationRequest as request \} from '\.\.\/conversation-request\.mjs'/);
+  assert.match(conversationRequestSource, /Authorization: `Bearer \$\{token\}`/);
+  assert.match(conversationRequestSource, /companyFetch\(base \+ suffix/);
+  assert.match(conversationSource, /entryKey/);
+  assert.doesNotMatch(conversationSource, /innerHTML|dangerouslySetInnerHTML/);
   assert.match(clientPortalSource, /portalRequest\(token, '\/feedback'/);
   assert.match(clientPortalSource, /\/selections\/\$\{encodeURIComponent\(selection\.id\)\}\/responses/);
   assert.match(clientPortalSource, /\/change-orders\/\$\{encodeURIComponent\(variation\.id\)\}\/responses/);
@@ -546,7 +593,9 @@ test('client portal is a scoped React workflow without imperative HTML rendering
   assert.match(clientPortalSource, /payload\.portal\?\.feedback\?\.submitted === true/);
   assert.match(clientPortalSource, /new URLSearchParams\(window\.location\.hash\.slice\(1\)\)/);
   assert.match(clientPortalSource, /noindex, nofollow/);
-  assert.doesNotMatch(clientPortalSource, /innerHTML|document\.getElementById|addEventListener/);
+  assert.doesNotMatch(clientPortalSource, /innerHTML|document\.getElementById/);
+  assert.match(clientPortalSource, /serviceWorker\.addEventListener\('controllerchange'/);
+  assert.equal((clientPortalSource.match(/addEventListener\(/g) || []).length, 1);
 });
 
 test('operator closeout connects evidence-backed feedback to internal-only recovery visibility', () => {

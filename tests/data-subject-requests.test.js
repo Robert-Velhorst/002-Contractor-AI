@@ -4,6 +4,7 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 const { ContractorOperatingLedger } = require('../operating-ledger');
+const { WorkBoard } = require('../work-board');
 
 function makeLedger(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'contractor-ai-privacy-ledger-'));
@@ -39,7 +40,7 @@ function approve(ledger, approvalId, actor = 'privacy_approver') {
 
 test('access requests require verified identity, source-current approval, and a human-reviewed export', t => {
   const ledger = makeLedger(t);
-  assert.equal(ledger.migrationStatus().currentVersion, '072_operator_locale_preferences');
+  assert.equal(ledger.migrationStatus().currentVersion, '096_loading_read_indexes');
   const client = ledger.createClient({
     name: 'Access Request Client',
     email: 'privacy-access@example.test',
@@ -200,6 +201,148 @@ test('erasure handling is blocker-aware and records partial pseudonymization wit
   assert.equal(pseudonymized.status, 'retired');
   assert.equal(ledger.listAudit({ entityType: 'data_subject_request', entityId: erasure.id, limit: 20 }).length >= 4, true);
   assert.equal(ledger.verifyAuditIntegrity().valid, true);
+});
+
+test('worker privacy exports and approved pseudonymization cover linked work-board identity, applications, offers, and sessions', async t => {
+  const ledger = makeLedger(t);
+  const board = new WorkBoard(ledger);
+  const credentials = { email: 'board-worker@example.test', password: 'A long private password 123!' };
+  const applicant = await board.register({ ...credentials, name: 'Board Worker', phone: '+31 6 11112222',
+    skills: ['Installer'], region: 'Utrecht', company: 'Installatiebedrijf BV', privacyAccepted: true });
+  const job = ledger.createIntake({ title: 'Private customer job', city: 'Utrecht', client: { name: 'Private customer' }, assignAutomatically: false });
+  const position = board.publish(job.id, {
+    entryKey: 'privacy-work-board-position', title: 'Install interior doors', role: 'Installer', city: 'Utrecht',
+    startsAt: '2030-06-01T08:00:00Z', endsAt: '2030-06-01T16:00:00Z', hours: 8, capacity: 1, rate: 45,
+    description: 'Install the specified interior doors.', materials: 'Provided on site', equipment: 'Hand tools',
+    prerequisites: 'Review the current work pack', confirmPublication: true
+  }, 'owner');
+  const application = board.enroll(applicant.id, position.id, position.revision);
+  const admitted = board.admit(applicant.id, { reference: 'Contact and trade checked.' }, 'owner');
+  const workerId = admitted.workerId;
+  assert.equal(workerId, applicant.id, 'admission preserves the applicant privacy-subject identity');
+  const login = await board.login(credentials);
+
+  const access = ledger.createDataSubjectRequest({ subjectType: 'worker', subjectId: workerId, requestType: 'access' });
+  approve(ledger, verifyAndAssess(ledger, access, 'provide_access').approval.id);
+  const exported = ledger.dataSubjectExportPayload(access.id).payload;
+  assert.equal(exported.records.workBoardAccounts[0].email, credentials.email);
+  assert.equal(exported.records.workBoardAccounts[0].data.company, 'Installatiebedrijf BV');
+  assert.equal(exported.records.workBoardApplications[0].id, application.id);
+  assert.equal(exported.records.workBoardApplications[0].position.title, position.title);
+  assert.doesNotMatch(JSON.stringify(exported), /password_hash|token_hash|salt/);
+  assert.equal(exported.records.workBoardSessions.length, 1);
+  assert.equal(exported.records.workBoardSessions[0].revoked_at, null);
+
+  const correction = ledger.createDataSubjectRequest({ subjectType: 'worker', subjectId: workerId, requestType: 'rectification' });
+  const correctionApproval = verifyAndAssess(ledger, correction, 'apply_rectification', {
+    corrections: { name: 'Corrected Board Worker', email: 'board-worker-corrected@example.test', phone: '0610101010' }
+  }).approval;
+  approve(ledger, correctionApproval.id);
+  assert.equal(ledger.getWorker(workerId).email, 'board-worker-corrected@example.test');
+  assert.equal(board.account(applicant.id).email, 'board-worker-corrected@example.test');
+  assert.equal(board.account(applicant.id).name, 'Corrected Board Worker');
+  assert.equal(board.account(applicant.id).phone, '0610101010');
+
+  const erasure = ledger.createDataSubjectRequest({ subjectType: 'worker', subjectId: workerId, requestType: 'erasure' });
+  ledger.verifyDataSubjectRequestIdentity(erasure.id, {
+    method: 'existing_contact', evidenceReference: 'Verified through the retained worker contact.'
+  }, { actor: 'privacy_operator' });
+  assert.throws(() => ledger.assessDataSubjectRequest(erasure.id, {
+    action: 'pseudonymize_current_records', rationale: 'Review the current work-board records before applying the approved decision.',
+    legalBasisReference: 'GDPR Article 17 assessment', retentionPolicyReference: 'Contractor.AI retention policy 2026-01'
+  }), error => error.code === 'data_subject_pseudonymization_blocked'
+    && error.details.blockers.some(blocker => blocker.code === 'open_work_board_applications'));
+
+  board.withdrawInterest(applicant.id, application.id);
+  ledger.retireWorker(workerId, { actor: 'approved_worker_retirement' });
+  const assessed = verifyAndAssess(ledger, erasure, 'pseudonymize_current_records');
+  approve(ledger, assessed.approval.id);
+
+  const account = ledger.db.prepare('SELECT email, password_hash, salt, status, data_json FROM work_board_accounts WHERE id = ?').get(applicant.id);
+  assert.match(account.email, /^redacted\+.+@invalid\.example$/);
+  assert.equal(account.password_hash, '');
+  assert.equal(account.salt, '');
+  assert.equal(account.status, 'suspended');
+  assert.doesNotMatch(account.data_json, /Board Worker|Utrecht|Installatiebedrijf BV|admission/);
+  const session = ledger.db.prepare('SELECT revoked_at, revocation_reason FROM work_board_sessions WHERE account_id = ?').get(applicant.id);
+  assert.equal(session.revocation_reason, 'worker_privacy_pseudonymization');
+  assert.equal(ledger.getDataSubjectRequest(erasure.id).result.revokedWorkBoardSessions, 1);
+  assert.equal(ledger.verifyAuditIntegrity().valid, true);
+  assert.throws(() => board.authenticate(login.token), { statusCode: 401 });
+});
+
+test('pending applicant privacy requests remain attached through admission and support reviewed correction and erasure', async t => {
+  const ledger = makeLedger(t);
+  const board = new WorkBoard(ledger);
+  const credentials = { email: 'pending-applicant@example.test', password: 'Applicant private password 123!' };
+  const applicant = await board.register({ ...credentials, name: 'Pending Applicant', phone: '0612345678',
+    skills: ['Electrician'], region: 'Arnhem', company: 'Example Installaties', privacyAccepted: true });
+
+  const access = ledger.createDataSubjectRequest({ subjectType: 'worker', subjectId: applicant.id, requestType: 'access' });
+  const accessApproval = verifyAndAssess(ledger, access, 'provide_access').approval;
+  approve(ledger, accessApproval.id);
+  const exported = ledger.dataSubjectExportPayload(access.id).payload;
+  assert.equal(exported.records.profile.name, 'Pending Applicant');
+  assert.equal(exported.records.workBoardAccounts[0].email, credentials.email);
+  assert.doesNotMatch(JSON.stringify(exported), /password_hash|token_hash|salt/);
+  assert.equal(ledger.dataSubjectInventory('worker', applicant.id).blockers.some(blocker => blocker.code === 'worker_not_retired'), false);
+
+  const correction = ledger.createDataSubjectRequest({ subjectType: 'worker', subjectId: applicant.id, requestType: 'rectification' });
+  const correctionApproval = verifyAndAssess(ledger, correction, 'apply_rectification', {
+    corrections: { name: 'Corrected Applicant', phone: '0611111111', homeRegion: 'Nijmegen' }
+  }).approval;
+  approve(ledger, correctionApproval.id);
+  assert.equal(board.account(applicant.id).name, 'Corrected Applicant');
+  assert.equal(board.account(applicant.id).phone, '0611111111');
+  assert.equal(board.account(applicant.id).region, 'Nijmegen');
+
+  const erasure = ledger.createDataSubjectRequest({ subjectType: 'worker', subjectId: applicant.id, requestType: 'erasure' });
+  const erasureApproval = verifyAndAssess(ledger, erasure, 'pseudonymize_current_records').approval;
+  approve(ledger, erasureApproval.id);
+  const account = ledger.db.prepare('SELECT email, password_hash, salt, status, data_json FROM work_board_accounts WHERE id = ?').get(applicant.id);
+  assert.match(account.email, /^redacted\+.+@invalid\.example$/);
+  assert.equal(account.password_hash, '');
+  assert.equal(account.salt, '');
+  assert.equal(account.status, 'suspended');
+  assert.doesNotMatch(account.data_json, /Corrected Applicant|0611111111|Nijmegen|Example Installaties/);
+  assert.equal(ledger.db.prepare('SELECT id FROM workers WHERE id = ?').get(applicant.id), undefined);
+  assert.equal(ledger.getDataSubjectRequest(erasure.id).result.fullErasureClaimed, false);
+  assert.equal(ledger.verifyAuditIntegrity().valid, true);
+});
+
+test('an approved applicant processing restriction blocks admission until lifted and remains on the admitted worker', async t => {
+  const ledger = makeLedger(t);
+  const board = new WorkBoard(ledger);
+  const applicant = await board.register({ email: 'restricted-applicant@example.test', password: 'Applicant private password 123!',
+    name: 'Restricted Applicant', phone: '0612345678', skills: ['Carpenter'], region: 'Arnhem', privacyAccepted: true });
+  const restriction = ledger.createDataSubjectRequest({ subjectType: 'worker', subjectId: applicant.id, requestType: 'restriction' });
+  const restrictedApproval = verifyAndAssess(ledger, restriction, 'apply_restriction').approval;
+  approve(ledger, restrictedApproval.id);
+  assert.throws(() => board.admit(applicant.id, { reference: 'Admission review completed.' }, 'owner'),
+    error => error.code === 'data_subject_processing_restricted');
+
+  const lift = ledger.createDataSubjectRequest({ subjectType: 'worker', subjectId: applicant.id, requestType: 'restriction' });
+  const liftApproval = verifyAndAssess(ledger, lift, 'lift_restriction').approval;
+  approve(ledger, liftApproval.id);
+  const admitted = board.admit(applicant.id, { reference: 'Admission review completed.' }, 'owner');
+  assert.equal(admitted.workerId, applicant.id);
+  assert.equal(ledger.getWorker(applicant.id).data.privacy.processingRestricted, false);
+  assert.doesNotThrow(() => ledger.assertDataSubjectProcessingAllowed('worker', applicant.id, 'work_board_enrollment'));
+});
+
+test('admission waits for an in-flight privacy approval so its source inventory cannot be stranded stale', async t => {
+  const ledger = makeLedger(t);
+  const board = new WorkBoard(ledger);
+  const applicant = await board.register({ email: 'reviewing-applicant@example.test', password: 'Applicant private password 123!',
+    name: 'Reviewing Applicant', phone: '0612345678', skills: ['Carpenter'], region: 'Arnhem', privacyAccepted: true });
+  const request = ledger.createDataSubjectRequest({ subjectType: 'worker', subjectId: applicant.id, requestType: 'access' });
+  const approval = verifyAndAssess(ledger, request, 'provide_access').approval;
+  assert.throws(() => board.admit(applicant.id, { reference: 'Admission review completed.' }, 'owner'),
+    error => /privacyverzoek/.test(error.message));
+  approve(ledger, approval.id);
+  const packageData = ledger.dataSubjectExportPayload(request.id);
+  assert.equal(packageData.payload.subject.id, applicant.id);
+  assert.equal(board.admit(applicant.id, { reference: 'Admission review completed.' }, 'owner').workerId, applicant.id);
 });
 
 function loadServer(directory, roleTokens) {

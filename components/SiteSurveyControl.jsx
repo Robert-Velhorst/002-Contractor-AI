@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { companyApiUrl } from '../company-request.mjs'
 import {
   CalendarDays,
   CheckCircle2,
@@ -260,7 +261,7 @@ export default function SiteSurveyControl({
                     ))}
                   />
                   <span><strong>{item.title}</strong><small>{item.filename || item.mimeType || t('Evidence')} / {Math.round((item.sizeBytes || 0) / 1024)} KB</small></span>
-                   <a href={`/api/ledger/opportunity-evidence/${encodeURIComponent(item.id)}/content`} aria-label={t('Download {title}', { title: item.title })} title={t('Download retained evidence')}>
+                   <a href={companyApiUrl(`/api/ledger/opportunity-evidence/${encodeURIComponent(item.id)}/content`)} aria-label={t('Download {title}', { title: item.title })} title={t('Download retained evidence')}>
                     <FileDown size={15} />
                   </a>
                 </label>

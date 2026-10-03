@@ -15,19 +15,19 @@ jobs:
       postgres:
         image: postgres:16-alpine
         env:
-          POSTGRES_DB: contractor_ai
+          POSTGRES_DB: contractor_ai_test_ci
           POSTGRES_USER: contractor_ai
           POSTGRES_PASSWORD: contractor-ai-ci-password
         ports:
           - 5432:5432
         options: >-
           --tmpfs /var/lib/postgresql/data:rw,noexec,nosuid,size=512m
-          --health-cmd "pg_isready -U contractor_ai -d contractor_ai"
+          --health-cmd "pg_isready -U contractor_ai -d contractor_ai_test_ci"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
     env:
-      CONTRACTOR_AI_POSTGRES_TEST_URL: postgresql://contractor_ai:contractor-ai-ci-password@localhost:5432/contractor_ai?sslmode=verify-full
+      CONTRACTOR_AI_POSTGRES_TEST_URL: postgresql://contractor_ai:contractor-ai-ci-password@localhost:5432/contractor_ai_test_ci?sslmode=verify-full
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
@@ -54,18 +54,25 @@ jobs:
             chown postgres:postgres /tmp/contractor-ai-server.key /tmp/contractor-ai-server.crt
           docker exec --user root "$container_id" chmod 600 /tmp/contractor-ai-server.key
           docker exec --user root "$container_id" chmod 644 /tmp/contractor-ai-server.crt
-          docker exec --user postgres "$container_id" psql -U contractor_ai -d contractor_ai -v ON_ERROR_STOP=1 \
+          docker exec --user postgres "$container_id" psql -U contractor_ai -d contractor_ai_test_ci -v ON_ERROR_STOP=1 \
             -c "ALTER SYSTEM SET ssl = 'on'" \
             -c "ALTER SYSTEM SET ssl_key_file = '/tmp/contractor-ai-server.key'" \
             -c "ALTER SYSTEM SET ssl_cert_file = '/tmp/contractor-ai-server.crt'" \
             -c "SELECT pg_reload_conf()"
-          docker exec "$container_id" pg_isready -U contractor_ai -d contractor_ai
-          test "$(docker exec --user postgres "$container_id" psql -U contractor_ai -d contractor_ai -Atc 'SHOW ssl')" = "on"
+          docker exec "$container_id" pg_isready -U contractor_ai -d contractor_ai_test_ci
+          test "$(docker exec --user postgres "$container_id" psql -U contractor_ai -d contractor_ai_test_ci -Atc 'SHOW ssl')" = "on"
       - run: npm run verify:release
       - run: npm run verify:hai-contract
       - run: npm run lint
       - run: npm run build
-      - run: npm run verify:bundle
+      - run: npm run verify:bundle -- --report artifacts/bundle-budget-ci.json
+      - name: Upload bundle-budget evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: bundle-budget-report
+          path: artifacts/bundle-budget-ci.json
+          if-no-files-found: warn
       - run: npm run test:frontend
       - run: npm test
         timeout-minutes: 45
@@ -85,6 +92,15 @@ jobs:
         timeout-minutes: 10
       - run: npm run test:browser
         timeout-minutes: 45
+        env:
+          TMPDIR: ${{ runner.temp }}
+      - name: Upload browser candidate and failure evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: browser-candidate-evidence
+          path: ${{ runner.temp }}/contractor-ai-browser-results-*
+          if-no-files-found: warn
 
   windows-standalone:
     runs-on: windows-latest

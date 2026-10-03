@@ -83,6 +83,7 @@ test('operator carries a selected bid through approved purchase-order delivery',
   await expect(detail.getByText('Internal only; no invitations sent')).toBeVisible();
 
   const firstRow = detail.locator('.bid-participant-row').filter({ hasText: firstPartner.name });
+  await expect(firstRow.getByTestId('supplier-history-none')).toContainText('No linked delivery history; no reliability rate is inferred.');
   await firstRow.getByRole('button', { name: 'Record return' }).click();
   let returnModal = page.getByTestId('bid-return-modal');
   await returnModal.getByLabel('Net amount').fill('82000');

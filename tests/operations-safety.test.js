@@ -5,6 +5,8 @@ const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const zlib = require('node:zlib');
+const { postgresTestDatabaseUrl } = require('./postgres-test-database');
+const postgresTestUrl = postgresTestDatabaseUrl();
 
 function stableJson(value) {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
@@ -301,7 +303,7 @@ test('operational export and backup are local, auditable maintenance controls', 
   assert.equal(readiness.body.status, 'ready');
   assert.equal(readiness.body.runtime.evidenceStorage.status, 'verified');
   assert.equal(readiness.body.runtime.evidenceStorage.verified, true);
-  assert.equal(readiness.body.ledger.migrations.currentVersion, '072_operator_locale_preferences');
+  assert.equal(readiness.body.ledger.migrations.currentVersion, '096_loading_read_indexes');
   assert.equal(readiness.body.ledger.auditIntegrity.valid, true);
   assert.deepEqual(readiness.body.ledger.migrations.pending, []);
 
@@ -332,7 +334,10 @@ test('operational export and backup are local, auditable maintenance controls', 
   assert.equal(capabilities.body.capabilities.backup.portableDownload, true);
   assert.equal(capabilities.body.capabilities.backup.packageFormat, 'tar.gz');
   assert.equal(capabilities.body.capabilities.hostedMigration.available, true);
-  assert.equal(capabilities.body.capabilities.hostedMigration.source, 'verified_backup_v2');
+  assert.equal(capabilities.body.capabilities.hostedMigration.source, 'frozen_signed_backup_v3');
+  assert.equal(capabilities.body.capabilities.hostedMigration.targetedPermitRequired, true);
+  assert.equal(capabilities.body.capabilities.hostedMigration.sourceRetirementRequired, true);
+  assert.equal(capabilities.body.capabilities.hostedMigration.targetActivationRequired, true);
   assert.equal(capabilities.body.capabilities.hostedMigration.target, 'postgresql+s3');
   assert.equal(capabilities.body.capabilities.hostedMigration.evidenceReadBackVerification, true);
   assert.equal(capabilities.body.capabilities.hostedMigration.emptyTargetRequired, true);
@@ -545,7 +550,7 @@ test('owner safety stop blocks autonomous drafting and support bundle excludes o
   assert.equal(support.body.application.releaseSha, '0123456789abcdef');
   assert.equal(support.body.privacy.customerRecordsIncluded, false);
   assert.equal(support.body.privacy.credentialsIncluded, false);
-  assert.equal(support.body.database.migrations.currentVersion, '072_operator_locale_preferences');
+  assert.equal(support.body.database.migrations.currentVersion, '096_loading_read_indexes');
   assert.equal(support.body.control.automation.suspended, true);
   assert.match(support.response.headers.get('content-disposition') || '', /contractor-ai-support-/);
   const serializedSupport = JSON.stringify(support.body);
@@ -759,7 +764,7 @@ test('manual scheduler requests use a persisted lease and do not immediately rep
   assert.equal(repeated.body.claim.reason, 'not_due');
 });
 
-test('hosted readiness uses the PostgreSQL ledger adapter when durable services are configured', { skip: !process.env.CONTRACTOR_AI_POSTGRES_TEST_URL }, async t => {
+test('hosted readiness uses the PostgreSQL ledger adapter when durable services are configured', { skip: !postgresTestUrl }, async t => {
   const storageEndpoint = 'https://s3.eu-central-1.example.test';
   const originalFetch = global.fetch;
   global.fetch = async (input, options = {}) => {
@@ -773,10 +778,12 @@ test('hosted readiness uses the PostgreSQL ledger adapter when durable services 
   const app = loadServer({
     NODE_ENV: 'production',
     CONTRACTOR_AI_RUNTIME_MODE: 'hosted',
+    CONTRACTOR_AI_COMPANY_ID: 'contractor-postgres-tests',
+    CONTRACTOR_AI_S3_PREFIX: 'companies/contractor-postgres-tests/evidence',
     CONTRACTOR_AI_STORAGE_MODE: 's3',
     CONTRACTOR_AI_EVIDENCE_STORAGE_MAX_BYTES: '1073741824',
     CONTRACTOR_AI_AUTH_TOKEN: 'production-token-with-sufficient-length',
-    CONTRACTOR_AI_DATABASE_URL: process.env.CONTRACTOR_AI_POSTGRES_TEST_URL,
+    CONTRACTOR_AI_DATABASE_URL: postgresTestUrl,
     CONTRACTOR_AI_PUBLIC_URL: 'https://contractor-ai.test',
     CONTRACTOR_AI_HOSTING_PROVIDER: 'EU Test Provider',
     CONTRACTOR_AI_HOSTING_REGION: 'eu-central-1',
@@ -865,7 +872,7 @@ test('hosted readiness uses the PostgreSQL ledger adapter when durable services 
   assert.equal(publicReadiness.body.runtime, undefined);
 });
 
-test('hosted readiness fails closed when object storage rejects the verification marker', { skip: !process.env.CONTRACTOR_AI_POSTGRES_TEST_URL }, async t => {
+test('hosted readiness fails closed when object storage rejects the verification marker', { skip: !postgresTestUrl }, async t => {
   const storageEndpoint = 'https://s3-denied.eu-central-1.example.test';
   const originalFetch = global.fetch;
   global.fetch = async (input, options = {}) => {
@@ -876,10 +883,12 @@ test('hosted readiness fails closed when object storage rejects the verification
   const app = loadServer({
     NODE_ENV: 'production',
     CONTRACTOR_AI_RUNTIME_MODE: 'hosted',
+    CONTRACTOR_AI_COMPANY_ID: 'contractor-postgres-tests',
+    CONTRACTOR_AI_S3_PREFIX: 'companies/contractor-postgres-tests/evidence',
     CONTRACTOR_AI_STORAGE_MODE: 's3',
     CONTRACTOR_AI_EVIDENCE_STORAGE_MAX_BYTES: '1073741824',
     CONTRACTOR_AI_AUTH_TOKEN: 'production-token-with-sufficient-length',
-    CONTRACTOR_AI_DATABASE_URL: process.env.CONTRACTOR_AI_POSTGRES_TEST_URL,
+    CONTRACTOR_AI_DATABASE_URL: postgresTestUrl,
     CONTRACTOR_AI_PUBLIC_URL: 'https://contractor-ai.test',
     CONTRACTOR_AI_HOSTING_PROVIDER: 'EU Test Provider',
     CONTRACTOR_AI_HOSTING_REGION: 'eu-central-1',

@@ -1,0 +1,46 @@
+.contractor-review { margin: 20px 0; padding: 16px 0; border-top: 1px solid #cbd3da; border-bottom: 1px solid #cbd3da; min-width: 0; }
+.contractor-review header, .review-toolbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.contractor-review h2, .contractor-review h3 { margin: 0; font-size: 17px; }
+.contractor-review h2 button { display: flex; align-items: center; gap: 10px; background: none; border: 0; padding: 4px 0; font: inherit; color: inherit; text-align: left; }
+.contractor-review h4 { margin: 16px 0 8px; font-size: 14px; }
+.contractor-review p, .contractor-review li, .contractor-review label, .contractor-review summary { font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
+.review-toolbar { margin: 12px 0; }
+.review-scope { color: #46505b; }
+.review-layout { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(0, 3fr); gap: 24px; margin-top: 20px; }
+.review-dossiers, .impact-review { min-width: 0; }
+.review-dossiers ul { padding: 0; list-style: none; }
+.review-dossiers li { border-bottom: 1px solid #dce1e5; }
+.review-dossiers li button { width: 100%; display: flex; justify-content: space-between; gap: 12px; padding: 12px 8px; border: 0; background: transparent; text-align: left; overflow-wrap: anywhere; color: #263b38; }
+.review-dossiers li button[aria-pressed="true"] { background: #e6f1eb; font-weight: 600; }
+.review-dossiers svg, .contractor-review header svg { flex-shrink: 0; }
+.impact-review header { justify-content: space-between; }
+.impact-review h3 { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.impact-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; border: 0; padding: 12px 0; margin: 12px 0 0; min-width: 0; }
+.impact-form legend { font-size: 14px; font-weight: 600; }
+.impact-form-title { grid-column: 1 / -1; font-size: 14px; }
+.impact-quantity-changes { grid-column: 1 / -1; min-width: 0; border-top: 1px solid #dce1e5; padding-top: 8px; }
+.impact-quantity-row { display: grid; grid-template-columns: minmax(0, 2fr) minmax(120px, 1fr) auto; align-items: end; gap: 10px; margin: 10px 0; }
+.impact-quantity-row .icon-button { width: 38px; height: 38px; }
+.impact-form label { display: grid; gap: 5px; min-width: 0; }
+.impact-form input, .impact-form select, .impact-form textarea { width: 100%; min-width: 0; box-sizing: border-box; border: 1px solid #9faab4; border-radius: 4px; background: white; color: #202a32; padding: 9px; font: inherit; }
+.impact-form textarea { min-height: 70px; resize: vertical; }
+.impact-reason { grid-column: 1 / -1; }
+.impact-form button { justify-self: start; }
+.impact-result { border-top: 1px solid #cbd3da; padding-top: 12px; }
+.impact-result dl { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.impact-result dt { font-size: 12px; color: #46505b; }
+.impact-result dd { margin: 4px 0 0; font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+.review-warning { color: #82361d; font-weight: 600; }
+.decision-impact-links { margin: 8px 0 14px; padding: 8px 0; border-top: 1px solid #dce1e5; }
+.decision-impact-links > ul { padding-left: 18px; }
+.decision-impact-links li { margin: 6px 0; }
+.decision-impact-links li > .icon-button { margin-left: 8px; vertical-align: middle; }
+.decision-link-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 10px; }
+.decision-link-form label { display: grid; gap: 5px; min-width: 0; }
+.decision-link-form label:last-of-type { grid-column: 1 / -1; }
+.decision-link-form select, .decision-link-form input { min-width: 0; box-sizing: border-box; border: 1px solid #9faab4; border-radius: 4px; padding: 8px; font: inherit; }
+.decision-link-form button { justify-self: start; }
+.retained-reviews { padding-left: 18px; }
+.contractor-review button:focus-visible, .contractor-review summary:focus-visible { outline: 2px solid #146b50; outline-offset: 3px; }
+@media (max-width: 760px) { .review-layout { grid-template-columns: minmax(0, 1fr); } .impact-result dl { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 440px) { .impact-form, .decision-link-form { grid-template-columns: minmax(0, 1fr); } .impact-quantity-row { grid-template-columns: minmax(0, 1fr) auto; } .impact-quantity-row label:first-child, .decision-link-form label:last-of-type { grid-column: 1 / -1; } .contractor-review .secondary-button { white-space: normal; } }

@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const compression = require('compression');
+const Negotiator = require('negotiator');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
@@ -21,14 +22,29 @@ const {
   JOB_OPERATING_PLAYBOOKS
 } = require('./operating-ledger');
 const { OpenMeteoWeatherService } = require('./weather-service');
+const { ContractorReview } = require('./contractor-review');
+const { FieldWorkPack } = require('./field-work-pack');
+const { fieldTaskScope } = require('./field-task-scope');
+const { jobHasCompanyTargetedWork, verifiedAssignmentsForWorker } = require('./work-board-company-scope');
+const { fieldJhaRecords, fieldSdsRecords } = require('./field-safety-projection');
+const { normalizeSubmittalAttachmentManifest, submittalAttachmentManifest } = require('./submittal-attachment-manifest');
+const { ResourcePlanner } = require('./resource-planner');
+const { registerConversationRoutes } = require('./conversation-routes');
+const { analysisConfig, registerAnalysisRoutes, runDurableConversationAnalysisBatch } = require('./conversation-analysis');
+const { registerWhatsAppWebhook, registerWhatsAppOfficeRoutes } = require('./whatsapp-channel');
 const { EvidenceStorageError, createEvidenceStorage } = require('./evidence-storage');
+const { createImageProcessor } = require('./image-processor');
+const imageProcessor = createImageProcessor();
 const { verifySqliteBackupDatabase } = require('./scripts/restore-local-backup');
 const {
   BACKUP_MANIFEST_V3,
   signBackupManifest,
   verifyBackupManifestAuthenticity
 } = require('./backup-manifest');
-const { acquireRuntimeLock } = require('./runtime-lock');
+const { acquireRuntimeLock, acquireLedgerRuntimeLock } = require('./runtime-lock');
+const { readPrivateKeyFile } = require('./company-authority');
+const { copyEvidenceBackup } = require('./backup-evidence');
+const { assertSameCompany, bindCompanyDirectories, companyScopeKey, inspectCompanyDirectories, normalizeCompanyId } = require('./company-runtime');
 const {
   boundedFeedLimit,
   buildHaiFeed,
@@ -53,6 +69,7 @@ const dataDir = process.env.CONTRACTOR_AI_DATA_DIR
     : path.join(__dirname, 'data');
 const distDir = path.join(__dirname, 'dist');
 const runtimeMode = String(process.env.CONTRACTOR_AI_RUNTIME_MODE || 'local').trim().toLowerCase();
+const configuredCompanyId = normalizeCompanyId(process.env.CONTRACTOR_AI_COMPANY_ID);
 const storageMode = String(process.env.CONTRACTOR_AI_STORAGE_MODE || 'local').trim().toLowerCase();
 const runtimeProcessLockRequired = runtimeMode === 'local'
   && (process.env.CONTRACTOR_AI_PROCESS_LOCK_REQUIRED === 'true' || process.env.NODE_ENV === 'production');
@@ -128,7 +145,7 @@ const evidenceStorageOptions = {
   region: process.env.CONTRACTOR_AI_S3_REGION || 'eu-central-1',
   accessKeyId: process.env.CONTRACTOR_AI_S3_ACCESS_KEY_ID,
   secretAccessKey: process.env.CONTRACTOR_AI_S3_SECRET_ACCESS_KEY,
-  prefix: process.env.CONTRACTOR_AI_S3_PREFIX || 'contractor-ai/evidence',
+  prefix: process.env.CONTRACTOR_AI_S3_PREFIX || (configuredCompanyId ? `companies/${configuredCompanyId}/evidence` : 'contractor-ai/evidence'),
   timeoutMs: process.env.CONTRACTOR_AI_STORAGE_TIMEOUT_MS
 };
 let evidenceStorage;
@@ -171,23 +188,26 @@ const maxMultipartParts = boundedInteger(process.env.CONTRACTOR_AI_MULTIPART_MAX
 const maxMultipartFields = boundedInteger(process.env.CONTRACTOR_AI_MULTIPART_MAX_FIELDS, 32, 4, 128);
 const maxMultipartHeaderPairs = boundedInteger(process.env.CONTRACTOR_AI_MULTIPART_MAX_HEADER_PAIRS, 16, 4, 64);
 const maxMultipartFieldBytes = boundedInteger(process.env.CONTRACTOR_AI_MULTIPART_MAX_FIELD_BYTES, 65_536, 1_024, 262_144);
-let allowedOrigins = (process.env.CORS_ORIGINS || 'http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,http://127.0.0.1:5173')
+let allowedOrigins = (process.env.CORS_ORIGINS || 'http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,http://127.0.0.1:5173,http://localhost:34123,http://127.0.0.1:34123')
   .split(',')
   .map(origin => origin.trim())
   .filter(Boolean);
 const isProduction = process.env.NODE_ENV === 'production';
 const dashboardAuthRequired = isProduction || runtimeMode === 'hosted' || process.env.CONTRACTOR_AI_REQUIRE_AUTH === 'true';
+const { IdentityRuntime, identityRuntimeConfiguration } = require('./identity-runtime');
+const identityConfiguration = identityRuntimeConfiguration(process.env, { local: !isProduction && runtimeMode === 'local', authenticationRequired: dashboardAuthRequired });
+let identityAccess = null;
 const dashboardAuthToken = process.env.CONTRACTOR_AI_AUTH_TOKEN || process.env.DASHBOARD_AUTH_TOKEN || '';
 const backupSigningKey = String(process.env.CONTRACTOR_AI_BACKUP_SIGNING_KEY || '');
 const backupSigningKeyValid = Buffer.byteLength(backupSigningKey, 'utf8') >= 32 && !isTemplatePlaceholder(backupSigningKey);
 const minimumOperatorTokenLength = 32;
 const roleTokenConfig = parseRoleTokens(process.env.CONTRACTOR_AI_ROLE_TOKENS);
-const operatorSessionCookieName = 'contractor_ai_session';
+let operatorSessionCookieName = 'contractor_ai_session';
 const operatorSessionTtlSeconds = boundedInteger(process.env.CONTRACTOR_AI_SESSION_TTL_SECONDS, 28_800, 900, 86_400);
 const authLoginRateWindowMs = boundedInteger(process.env.CONTRACTOR_AI_LOGIN_RATE_WINDOW_MS, 900_000, 60_000, 86_400_000);
 const authLoginRateLimit = boundedInteger(process.env.CONTRACTOR_AI_LOGIN_RATE_LIMIT, 10, 3, 100);
 const authLoginRateBucketLimit = boundedInteger(process.env.CONTRACTOR_AI_LOGIN_RATE_BUCKET_LIMIT, 5_000, 100, 100_000);
-const operatorSessionSigningKey = createOperatorSessionSigningKey();
+let operatorSessionSigningKey = createOperatorSessionSigningKey();
 const httpKeepAliveTimeoutMs = boundedInteger(process.env.CONTRACTOR_AI_HTTP_KEEP_ALIVE_TIMEOUT_MS, 65_000, 5_000, 300_000);
 const httpHeadersTimeoutMs = boundedInteger(
   process.env.CONTRACTOR_AI_HTTP_HEADERS_TIMEOUT_MS,
@@ -236,6 +256,8 @@ function requestHostname(req) {
 function hostedExternalInitializationProblems() {
   if (runtimeMode !== 'hosted') return [];
   const problems = [];
+  if (!configuredCompanyId) problems.push('hosted_company_id_required');
+  if (configuredCompanyId && !String(evidenceStorageOptions.prefix).startsWith(`companies/${configuredCompanyId}/`)) problems.push('hosted_company_storage_scope_required');
   if (!hostedDatabaseUrl) {
     problems.push('durable_database_required');
   } else if (hostedDatabaseSslMode !== 'verify-full') {
@@ -291,6 +313,12 @@ function isStrongOperatorToken(value) {
 function runtimeConfiguration(options = {}) {
   const issues = [];
   const hosted = runtimeMode === 'hosted';
+  if (hosted && !configuredCompanyId) {
+    issues.push({ code: 'hosted_company_id_required', message: 'Hosted mode requires an explicit CONTRACTOR_AI_COMPANY_ID bound to its own database and storage.' });
+  }
+  if (hosted && configuredCompanyId && !String(evidenceStorageOptions.prefix).startsWith(`companies/${configuredCompanyId}/`)) {
+    issues.push({ code: 'hosted_company_storage_scope_required', message: 'Hosted object keys must use companies/<company-id>/ with provider credentials restricted to that company.' });
+  }
   const storageVerification = options.storageVerification ?? evidenceStorageVerificationCache;
   const hasConfiguredAuthToken = isStrongOperatorToken(dashboardAuthToken) || roleTokenConfig.principals.length > 0;
   const templateValues = [
@@ -529,7 +557,7 @@ function setSecurityHeaders(req, res, next) {
     "base-uri 'self'",
     "frame-ancestors 'none'",
     "form-action 'self'",
-    "img-src 'self' data:",
+    "img-src 'self' data: blob:",
     "style-src 'self'",
     "script-src 'self'",
     "connect-src 'self'"
@@ -736,6 +764,7 @@ async function validateEvidenceUpload(file) {
   if (!signatureMatches) {
     return { valid: false, code: 'upload_signature_mismatch', message: 'The file contents do not match the declared evidence type.' };
   }
+  if (mimeType.startsWith('image/')) return imageProcessor.validate(bytes, mimeType);
   if (
     mimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
     && !(await validateDocxPackage(bytes))
@@ -789,7 +818,7 @@ function parseMultipartBody(buffer, contentType = '') {
 async function storeUploadedFile(file) {
   const validation = await validateEvidenceUpload(file);
   if (!validation.valid) {
-    throw new UploadRequestError(415, validation.code, validation.message);
+    throw new UploadRequestError(validation.statusCode || 415, validation.code, validation.message);
   }
   if (!evidenceStorage) {
     throw new UploadRequestError(503, evidenceStorageInitError?.code || 'storage_unavailable', evidenceStorageInitError?.message || 'Evidence storage is unavailable.');
@@ -984,6 +1013,10 @@ async function verifyEvidenceStorage({ force = false } = {}) {
 }
 
 function logSafeRequestPath(req) {
+  const clientDeliveryPath = String(req.originalUrl || req.path || '').split('?')[0];
+  if (/^\/api\/client-portal\/deliveries(?:\/[^/]+\/responses)?$/.test(clientDeliveryPath)) return clientDeliveryPath.replace(/\/deliveries\/[^/]+\/responses$/, '/deliveries/:offerId/responses');
+  if (String(req.originalUrl || req.path).split('?')[0].startsWith('/api/auth/identity/')) return String(req.originalUrl || req.path).split('?')[0];
+  if (String(req.originalUrl || req.path).split('?')[0] === '/api/integrations/whatsapp/webhook') return '/api/integrations/whatsapp/webhook';
   const path = String(req.originalUrl || req.path || '');
   if (/^\/api\/client-portal(?:[?#]|$|\/(?:messages|feedback|preferences|selections\/|change-orders\/))/.test(path)) {
     return path;
@@ -993,6 +1026,8 @@ function logSafeRequestPath(req) {
 
 function isClientPortalApiPath(pathname) {
   const path = String(pathname || '');
+  if (/^\/api\/client-portal\/deliveries(?:\/[^/]+\/responses)?$/.test(path)) return true;
+  if (/^\/api\/client-portal\/conversation(?:\/messages(?:\/[^/]+\/photo)?)?$/.test(path)) return true;
   const canonical = /^\/api\/client-portal(?:\/messages|\/feedback|\/preferences|\/selections\/[^/]+\/responses|\/change-orders\/[^/]+(?:\/responses|\/package))?$/;
   const retiredPathToken = /^\/api\/client-portal\/[^/]+(?:\/messages|\/feedback|\/preferences|\/selections\/[^/]+\/responses|\/change-orders\/[^/]+(?:\/responses|\/package))?$/;
   return canonical.test(path) || retiredPathToken.test(path);
@@ -1154,13 +1189,13 @@ function configuredOperatorTokens() {
   return entries;
 }
 
-function createOperatorSessionSigningKey() {
+function createOperatorSessionSigningKey(companyScope = '') {
   const material = configuredOperatorTokens()
     .map(entry => `${entry.id}:${entry.role}:${entry.token}`)
     .sort()
     .join('\u0000');
   return material
-    ? crypto.createHash('sha256').update('contractor-ai-operator-session\u0000').update(material).digest()
+    ? crypto.createHash('sha256').update('contractor-ai-operator-session\u0000').update(companyScope).update('\u0000').update(material).digest()
     : crypto.randomBytes(32);
 }
 
@@ -1229,8 +1264,9 @@ function signOperatorSession(operator) {
   const now = Math.floor(Date.now() / 1000);
   const sessionId = crypto.randomBytes(24).toString('base64url');
   const payload = {
-    version: 2,
+    version: 3,
     audience: 'contractor-ai-dashboard',
+    companyScope: companyScopeKey(operatingLedger.company),
     sessionId,
     operatorId: operator.id,
     role: operator.role,
@@ -1260,7 +1296,8 @@ function verifyOperatorSession(value) {
   try {
     const payload = JSON.parse(Buffer.from(parts[0], 'base64url').toString('utf8'));
     const now = Math.floor(Date.now() / 1000);
-    if (payload.version !== 2 || payload.audience !== 'contractor-ai-dashboard') return null;
+    if (payload.version !== 3 || payload.audience !== 'contractor-ai-dashboard') return null;
+    if (payload.companyScope !== companyScopeKey(operatingLedger.company)) return null;
     if (typeof payload.sessionId !== 'string' || payload.sessionId.length !== 32) return null;
     if (!Number.isSafeInteger(payload.issuedAt) || !Number.isSafeInteger(payload.expiresAt)) return null;
     if (payload.issuedAt > now + 60 || payload.expiresAt <= now || payload.expiresAt - payload.issuedAt > operatorSessionTtlSeconds) return null;
@@ -1349,7 +1386,7 @@ function resolveOperatorRole(req) {
       ? { id: operator.id, name: operator.name, role: operator.role, scope: operator.scope, source: operator.source, authMethod: 'token' }
       : null;
   }
-  return verifyOperatorSession(requestCookie(req, operatorSessionCookieName));
+  return verifyOperatorSession(requestCookie(req, operatorSessionCookieName)) || req.identityOperator || null;
 }
 
 function trustedRequestActor(req) {
@@ -1382,7 +1419,7 @@ function requireCredentialFreeLoopbackHost(req, res, next) {
 
 function requireDashboardAuth(req, res, next) {
   const clientPortalRoute = isClientPortalApiPath(req.path);
-  const publicAuthRoute = req.path === '/api/session' || req.path === '/api/auth/login' || req.path === '/api/auth/logout';
+  const publicAuthRoute = req.path === '/api/session' || req.path.startsWith('/api/auth/identity/') || req.path === '/api/auth/login' || req.path === '/api/auth/logout' || require('./work-board-routes').isWorkBoardPath(req.path);
   const operatorAppShell = ['GET', 'HEAD'].includes(req.method) && !req.path.startsWith('/api/');
   const operator = dashboardAuthRequired ? resolveOperatorRole(req) : null;
   req.operator = operator
@@ -1421,6 +1458,10 @@ function allowsOperatorRequest(role, req) {
   const ledgerRead = pathName.startsWith('/api/ledger/');
 
   if (role === 'approver') {
+    if (req.method === 'PATCH' && /^\/api\/ledger\/jobs\/[^/]+\/materials\/[^/]+\/sds-requirement$/.test(pathName)) return true;
+    if (req.method === 'PATCH' && /^\/api\/ledger\/jobs\/[^/]+\/tasks\/[^/]+\/jha-applicability$/.test(pathName)) return true;
+    if (req.method === 'POST' && /^\/api\/ledger\/jobs\/[^/]+\/conversations\/[^/]+\/messages\/[^/]+\/publish$/.test(pathName)) return true;
+    if (req.method === 'POST' && /^\/api\/ledger\/jobs\/[^/]+\/work-pack\/start-release(?:\/revoke)?$/.test(pathName)) return true;
     return (isRead && ledgerRead) || (req.method === 'POST' && /^\/api\/ledger\/approvals\/[^/]+\/resolve$/.test(pathName));
   }
 
@@ -1433,6 +1474,12 @@ function allowsOperatorRequest(role, req) {
   if (role === 'field_worker') {
     if (isRead) {
       return pathName === '/api/health'
+        || pathName === '/api/ledger/work-packs'
+        || /^\/api\/ledger\/jobs\/[^/]+\/work-pack$/.test(pathName)
+        || /^\/api\/ledger\/jobs\/[^/]+\/work-pack\/replies$/.test(pathName)
+        || /^\/api\/ledger\/jobs\/[^/]+\/work-pack\/drawings\/[^/]+\/content$/.test(pathName)
+        || /^\/api\/ledger\/jobs\/[^/]+\/work-pack\/sds\/[^/]+\/content$/.test(pathName)
+        || /^\/api\/ledger\/jobs\/[^/]+\/work-pack\/submittals\/[^/]+\/documents\/[^/]+\/content$/.test(pathName)
         || pathName === '/api/readiness'
         || /^\/api\/ledger\/jobs(?:\/[^/]+)?$/.test(pathName)
         || /^\/api\/ledger\/jobs\/[^/]+\/production$/.test(pathName)
@@ -1467,6 +1514,9 @@ function allowsOperatorRequest(role, req) {
         || /^\/api\/ledger\/documents\/[^/]+\/content$/.test(pathName);
     }
     if (req.method === 'POST' && pathName === '/api/ledger/upload') return true;
+    if (req.method === 'POST' && /^\/api\/ledger\/jobs\/[^/]+\/work-pack\/(acknowledgments|questions|progress)$/.test(pathName)) return true;
+    if (req.method === 'POST' && /^\/api\/ledger\/jobs\/[^/]+\/work-pack\/start-release\/(acknowledgment|revoke)$/.test(pathName)) return true;
+    if (req.method === 'POST' && /^\/api\/ledger\/jobs\/[^/]+\/material-stock-site-issues\/[^/]+\/receipts$/.test(pathName)) return true;
     if (req.method === 'PATCH' && /^\/api\/ledger\/jobs\/[^/]+\/lifecycle\/task\/[^/]+$/.test(pathName)) return true;
     if (req.method === 'POST' && /^\/api\/ledger\/jobs\/[^/]+\/inspections\/[^/]+\/checklist-submissions$/.test(pathName)) return true;
     if (req.method === 'POST' && /^\/api\/ledger\/jobs\/[^/]+\/attendance\/check-in$/.test(pathName)) return true;
@@ -1490,26 +1540,37 @@ function allowsOperatorRequest(role, req) {
   return false;
 }
 
-function fieldWorkerCanAccessJob(req, jobId) {
+function fieldWorkerCanAccessJob(req, jobId, jobDetail = null) {
   if (req.operator?.role !== 'field_worker') return true;
   const scope = req.operator.scope;
   if (!scope || !jobId) return false;
   const normalizedJobId = String(jobId);
-  if (scope.jobIds?.includes(normalizedJobId)) return true;
-  if (!scope.workerId) return false;
+  const declaredJobScope = scope.jobIds?.includes(normalizedJobId) === true;
   try {
-    const detail = operatingLedger.getJobDetail(normalizedJobId);
-    return detail.assignments.some(assignment => (
-      String(assignment.workerId || '') === scope.workerId
-      && !['released', 'cancelled', 'completed', 'closed', 'rejected'].includes(String(assignment.status || '').toLowerCase())
-    ));
+    const detail = jobDetail || operatingLedger.getJobDetail(normalizedJobId, { includeAudit: false });
+    if (scope.workerId) {
+      const workerExists = operatingLedger.db.prepare('SELECT id FROM workers WHERE id = ?').get(scope.workerId);
+      if (!workerExists) return false;
+      return verifiedAssignmentsForWorker(operatingLedger.db, detail.assignments, scope.workerId).length > 0;
+    }
+    return declaredJobScope && !jobHasCompanyTargetedWork(operatingLedger.db, normalizedJobId, detail.assignments);
   } catch {
     return false;
   }
 }
 
+function activeFieldAssignmentsForWorker(detail, workerId) {
+  return verifiedAssignmentsForWorker(operatingLedger.db, detail.assignments, workerId);
+}
+
 function scopedLedgerJobs(req, filters = {}) {
-  const jobs = operatingLedger.listJobs(filters);
+  const scope = req.operator?.role === 'field_worker' ? req.operator.scope || {} : null;
+  const jobs = operatingLedger.listJobs(scope ? {
+    ...filters,
+    workerId: scope.workerId || '',
+    jobIds: scope.jobIds || [],
+    workerScopeRequired: true
+  } : filters);
   return req.operator?.role === 'field_worker'
     ? jobs.filter(job => fieldWorkerCanAccessJob(req, job.id)).map(projectFieldJobSummary)
     : jobs;
@@ -1520,7 +1581,7 @@ const FIELD_RECORD_PRIVATE_KEYS = new Set([
   'checkoutEntryKey', 'checkoutFingerprint', 'data', 'email', 'entryFingerprint', 'entryKey', 'estimatedCost', 'hourlyRate', 'lineItems', 'marginTargetPercent', 'phone', 'planHash', 'portalToken',
   'latestApproval', 'providerMessageId', 'rate', 'receipt', 'receiptRef', 'storageRef', 'subtotal', 'supplier',
   'returnEntryKey', 'returnFingerprint', 'snapshot', 'snapshotHash', 'sourceCurrentHash', 'sourceHash',
-  'huddleEntryKey', 'huddleSnapshot', 'huddleSnapshotHash', 'huddleSourceHash', 'eodEntryKey', 'eodSnapshot', 'eodSnapshotHash', 'eodSourceHash',
+  'huddleEntryKey', 'huddleSnapshot', 'huddleSnapshotHash', 'huddleSourceHash', 'eodEntryKey', 'eodSnapshot', 'eodSnapshotHash', 'eodSourceHash', 'jhaApplicability',
   'taxAmount', 'taxRate', 'token', 'total'
 ]);
 
@@ -1657,72 +1718,349 @@ function fieldWorkerIdentity(req) {
   }
 }
 
+function fieldWorkerProductionScope(req, detail) {
+  const workerId = req.operator?.scope?.workerId;
+  if (!workerId) {
+    const error = new Error('Field-worker production access requires a bound worker identity.');
+    error.statusCode = 403;
+    error.code = 'field_worker_identity_required';
+    throw error;
+  }
+  const assignments = activeFieldAssignmentsForWorker(detail, workerId);
+  const { visibleTaskIds } = fieldTaskScope(detail, workerId, assignments);
+  return { workerId: String(workerId), visibleTaskIds };
+}
+
+function fieldSubmittalRecords(records = [], { hasPositionTaskScope = false, visibleTaskIds = new Set(), detail } = {}) {
+  const fieldVisibleStatuses = new Set(['approved', 'accepted', 'issued', 'sent', 'client_visible']);
+  return records.filter(record => {
+    if (!fieldVisibleStatuses.has(String(record.status || '').toLowerCase()) || !record.approvalId) return false;
+    const linkedTaskIds = Array.isArray(record.data?.taskIds) ? record.data.taskIds : [];
+    if (hasPositionTaskScope && linkedTaskIds.length && !linkedTaskIds.some(taskId => visibleTaskIds.has(taskId))) return false;
+    const approval = operatingLedger.db.prepare(`
+      SELECT status, data_json FROM approvals
+      WHERE id = ? AND target_type = 'submittal_record' AND target_id = ?
+    `).get(record.approvalId, record.id);
+    if (approval?.status !== 'approved') return false;
+    let approvalData = approval.data_json;
+    if (typeof approvalData === 'string') {
+      try { approvalData = JSON.parse(approvalData); } catch { approvalData = null; }
+    }
+    const approvalTaskIds = Array.isArray(approvalData?.taskIds) ? approvalData.taskIds : [];
+    const currentTaskIds = [...new Set(linkedTaskIds)].sort();
+    const attachmentIds = Array.isArray(record.attachments) ? record.attachments.map(String) : [];
+    const approvalAttachmentIds = Array.isArray(approvalData?.attachments) ? approvalData.attachments.map(String) : [];
+    if (!Array.isArray(approvalTaskIds)
+      || JSON.stringify([...new Set(approvalTaskIds.map(String))].sort()) !== JSON.stringify(currentTaskIds)
+      || JSON.stringify([...new Set(approvalAttachmentIds)].sort()) !== JSON.stringify([...new Set(attachmentIds)].sort())) return false;
+    if (Array.isArray(approvalData?.attachmentManifest)) {
+      const approvedManifest = normalizeSubmittalAttachmentManifest(approvalData.attachmentManifest);
+      const currentManifest = normalizeSubmittalAttachmentManifest(submittalAttachmentManifest(detail?.documents || [], record.jobId, attachmentIds));
+      return JSON.stringify(approvedManifest) === JSON.stringify(currentManifest);
+    }
+    return submittalAttachmentManifest(detail?.documents || [], record.jobId, attachmentIds).length === 0;
+  }).map(record => ({
+    id: record.id,
+    jobId: record.jobId,
+    title: record.title,
+    packageName: record.packageName,
+    status: record.status,
+    submittedAt: record.submittedAt,
+    approvedAt: record.approvedAt,
+    updatedAt: record.updatedAt
+  }));
+}
+
+function projectFieldProduction(req, detail, production) {
+  if (req.operator?.role !== 'field_worker') return production;
+  const { workerId, visibleTaskIds } = fieldWorkerProductionScope(req, detail);
+  const baseline = production?.activeBaseline || null;
+  const visiblePlanLines = (baseline?.snapshot?.lines || []).filter(line => line.taskId && visibleTaskIds.has(line.taskId));
+  const visibleLineKeys = new Set(visiblePlanLines.map(line => line.lineKey));
+  const entries = (production?.entries || []).filter(entry => (
+    String(entry.workerId || '') === workerId
+    && visibleLineKeys.has(entry.lineKey)
+    && ['recorded', 'pending_reversal'].includes(entry.status)
+  ));
+  const lines = visiblePlanLines.map(planLine => {
+    const lineEntries = entries.filter(entry => entry.lineKey === planLine.lineKey);
+    const installedQuantity = lineEntries.reduce((sum, entry) => sum + Number(entry.quantity || 0), 0);
+    const crewHours = lineEntries.reduce((sum, entry) => sum + Number(entry.crewHours || 0), 0);
+    const earnedHours = Number(planLine.plannedLaborHours || 0)
+      * Math.min(1, Math.max(0, installedQuantity / Number(planLine.plannedQuantity || 1)));
+    const performanceFactor = crewHours > 0 ? Math.round((earnedHours / crewHours) * 10_000) / 10_000 : null;
+    const atRisk = performanceFactor !== null && earnedHours >= 1 && performanceFactor < 0.8;
+    return {
+      lineKey: planLine.lineKey,
+      taskId: planLine.taskId,
+      description: planLine.description,
+      unit: planLine.unit,
+      plannedQuantity: planLine.plannedQuantity,
+      installedQuantity,
+      crewHours,
+      earnedHours: Math.round(earnedHours * 100) / 100,
+      performanceFactor,
+      quantityProgressPercent: planLine.plannedQuantity > 0
+        ? Math.round((installedQuantity / planLine.plannedQuantity) * 10_000) / 100
+        : 0,
+      complete: installedQuantity + 0.000001 >= planLine.plannedQuantity,
+      atRisk,
+      entryCount: lineEntries.length
+    };
+  });
+  const crewHours = lines.reduce((sum, line) => sum + line.crewHours, 0);
+  const earnedHours = lines.reduce((sum, line) => sum + line.earnedHours, 0);
+  const plannedHours = visiblePlanLines.reduce((sum, line) => sum + Number(line.plannedLaborHours || 0), 0);
+  const performanceFactor = crewHours > 0 ? Math.round((earnedHours / crewHours) * 10_000) / 10_000 : null;
+  const summary = {
+    lineCount: lines.length,
+    completeLines: lines.filter(line => line.complete).length,
+    atRiskLines: lines.filter(line => line.atRisk).length,
+    earnedHours: Math.round(earnedHours * 100) / 100,
+    crewHours: Math.round(crewHours * 100) / 100,
+    performanceFactor,
+    quantityProgressPercent: plannedHours > 0 ? Math.round((earnedHours / plannedHours) * 10_000) / 100 : 0,
+    atRisk: lines.some(line => line.atRisk)
+  };
+  const activeBaseline = baseline && visiblePlanLines.length ? {
+    id: baseline.id,
+    jobId: baseline.jobId,
+    versionNumber: baseline.versionNumber,
+    status: baseline.status,
+    snapshot: {
+      format: baseline.snapshot.format,
+      jobId: baseline.snapshot.jobId,
+      lines: visiblePlanLines.map(line => ({
+        lineKey: line.lineKey,
+        taskId: line.taskId,
+        description: line.description,
+        unit: line.unit,
+        plannedQuantity: line.plannedQuantity
+      }))
+    },
+    fieldScoped: true
+  } : null;
+  return {
+    format: production?.format || 'contractor-ai-production-baseline-v1',
+    jobId: detail.id,
+    ready: Boolean(activeBaseline),
+    status: activeBaseline ? (summary.atRisk ? 'at_risk' : entries.length ? 'tracking' : 'ready_for_entry') : 'scope_links_required',
+    activeBaseline,
+    pendingBaseline: null,
+    baselines: activeBaseline ? [activeBaseline] : [],
+    entries: entries.map(entry => ({
+      id: entry.id,
+      jobId: entry.jobId,
+      baselineId: entry.baselineId,
+      lineKey: entry.lineKey,
+      workerId: entry.workerId,
+      workerName: entry.workerName,
+      workDate: entry.workDate,
+      quantity: entry.quantity,
+      crewHours: entry.crewHours,
+      status: entry.status,
+      note: entry.note,
+      createdAt: entry.createdAt
+    })),
+    lines,
+    summary,
+    warnings: summary.atRisk ? [{ code: 'production_labor_variance' }] : [],
+    fieldScoped: true
+  };
+}
+
+function requireFieldProductionLine(req, jobId, payload = {}) {
+  if (req.operator?.role !== 'field_worker') return payload;
+  const detail = operatingLedger.getJobDetail(jobId, { includeAudit: false });
+  const { visibleTaskIds } = fieldWorkerProductionScope(req, detail);
+  let baseline;
+  try {
+    baseline = operatingLedger.getProductionBaseline(payload.baselineId);
+  } catch {
+    const error = new Error('Production entry requires a valid approved baseline.');
+    error.statusCode = 403;
+    error.code = 'production_line_outside_field_scope';
+    throw error;
+  }
+  const line = baseline.jobId === jobId && baseline.status === 'approved'
+    ? baseline.snapshot.lines.find(item => item.lineKey === payload.lineKey)
+    : null;
+  if (!line?.taskId || !visibleTaskIds.has(line.taskId)) {
+    const error = new Error('Production can only be recorded against a task visible in your assigned work pack.');
+    error.statusCode = 403;
+    error.code = 'production_line_outside_field_scope';
+    throw error;
+  }
+  return payload;
+}
+
 function projectFieldJobDetail(req, detail) {
-  const scopeWorkerId = req.operator?.scope?.workerId || null;
+  if (!fieldWorkerCanAccessJob(req, detail.id, detail)) {
+    const error = new Error('Field-worker access is outside the assigned and verified company scope.');
+    error.statusCode = 403;
+    error.code = 'field_job_scope_forbidden';
+    throw error;
+  }
+  const scopeWorkerId = req.operator?.scope?.workerId;
+  if (!scopeWorkerId) {
+    const error = new Error('Field-worker access requires a bound worker identity.');
+    error.statusCode = 403;
+    error.code = 'field_worker_identity_required';
+    throw error;
+  }
+  const activeAssignments = activeFieldAssignmentsForWorker(detail, scopeWorkerId);
+  const assignmentIds = new Set(activeAssignments.map(row => row.id));
+  const { hasPositionTaskScope, visibleTaskIds } = fieldTaskScope(detail, scopeWorkerId, activeAssignments);
+  const visibleTasks = (detail.tasks || []).filter(row => visibleTaskIds.has(row.id));
+  const scopedMaterialIds = new Set(visibleTasks.flatMap(row => Array.isArray(row.data?.materialRequirementIds) ? row.data.materialRequirementIds : []));
+  const visibleTools = (detail.tools || []).filter(row => operatingLedger.activeToolReservationStatus(row.status)
+    && (!hasPositionTaskScope || visibleTaskIds.has(row.data?.taskId)));
+  const visibleToolIds = new Set(visibleTools.map(row => row.id));
+  const scopedTaskRecord = row => {
+    const taskId = row.taskId || row.data?.taskId;
+    return !hasPositionTaskScope || !taskId || visibleTaskIds.has(taskId);
+  };
+  const workerScopedRecord = row => {
+    const workerId = row.workerId || row.data?.workerId;
+    const assignmentId = row.assignmentId || row.data?.assignmentId;
+    return (!workerId || String(workerId) === String(scopeWorkerId))
+      && (!assignmentId || assignmentIds.has(assignmentId));
+  };
+  const workerSafetyMeetings = (detail.safetyMeetings || []).filter(meeting => (
+    (meeting.attendeeRecords || []).some(attendee => String(attendee.workerId || '') === String(scopeWorkerId)
+      && (!attendee.assignmentId || assignmentIds.has(attendee.assignmentId)))
+  )).map(meeting => safetyMeetingForOperator(req, meeting)).filter(Boolean);
+  const workerPreTaskPlans = (detail.preTaskPlans || []).filter(plan => (
+    (plan.attendees || []).some(attendee => String(attendee.workerId || '') === String(scopeWorkerId)
+      && assignmentIds.has(attendee.assignmentId))
+  ));
+  const visibleDrawings = (detail.drawings || []).filter(row => row.current === true
+    && (!hasPositionTaskScope || (row.data?.linkedTaskIds || []).some(id => visibleTaskIds.has(id))));
+  const visibleDrawingIds = new Set(visibleDrawings.map(row => row.id));
+  const visibleSdsSheetIds = new Set(fieldSdsRecords(
+    operatingLedger,
+    detail.sdsSheets,
+    hasPositionTaskScope ? scopedMaterialIds : null
+  ).map(row => row.id));
+  const visibleSdsDocumentIds = new Set((detail.sdsSheets || [])
+    .filter(row => visibleSdsSheetIds.has(row.id) && row.documentId)
+    .map(row => row.documentId));
+  const privateEvidence = new (require('./work-delivery').WorkDelivery)(operatingLedger).privateEvidenceIds(detail.id);
+  for (const id of new (require('./asset-history').AssetHistory)(operatingLedger).privateEvidenceIds(detail.id)) privateEvidence.add(id);
+  for (const id of new (require('./inspection-coverage').InspectionCoverage)(operatingLedger).privateEvidenceIds(detail.id)) privateEvidence.add(id);
   const timeLogs = scopeWorkerId
     ? (detail.timeLogs || []).filter(log => String(log.workerId || '') === String(scopeWorkerId))
     : [];
+  const fieldProduction = projectFieldProduction(req, detail, detail.productionControl);
   return {
     ...projectFieldJobSummary(detail),
-    tasks: projectFieldRecords(detail.tasks),
-    fieldReports: projectFieldRecords(detail.fieldReports),
-    dailyOperatingCycles: projectFieldRecords(detail.dailyOperatingCycles),
-    rfis: projectFieldRecords(detail.rfis),
-    submittals: projectFieldRecords(detail.submittals),
-    permits: projectFieldRecords(detail.permits),
-    preTaskPlans: (detail.preTaskPlans || []).map(plan => preTaskPlanForOperator(req, plan)),
+    tasks: projectFieldRecords(visibleTasks),
+    fieldReports: projectFieldRecords((detail.fieldReports || []).filter(row => (
+      (!row.workerId || String(row.workerId) === String(scopeWorkerId)) && scopedTaskRecord(row)
+    ))),
+    dailyOperatingCycles: projectFieldRecords((detail.dailyOperatingCycles || []).filter(cycle => (
+      (cycle.crew || []).some(member => String(member.workerId || '') === String(scopeWorkerId))
+      && scopedTaskRecord(cycle)
+    ))),
+    rfis: (detail.rfis || [])
+      .filter(rfi => {
+        if (rfi.data?.source === 'field_work_pack') return String(rfi.data.workerId || '') === String(scopeWorkerId);
+        if (rfi.data?.fieldShareEnabled !== true
+          || !Array.isArray(rfi.data.fieldTaskIds)
+          || !rfi.data.fieldTaskIds.some(taskId => visibleTaskIds.has(String(taskId)))) return false;
+        const approval = rfi.approvalId
+          ? operatingLedger.db.prepare('SELECT status FROM approvals WHERE id = ?').get(rfi.approvalId)
+          : null;
+        return approval?.status === 'approved' && ['answered', 'resolved', 'closed'].includes(String(rfi.status || '').toLowerCase());
+      })
+      .map(rfi => {
+        const projected = projectFieldRecord(rfi);
+        const approval = rfi.approvalId ? operatingLedger.db.prepare('SELECT status FROM approvals WHERE id = ?').get(rfi.approvalId) : null;
+        const approvedReply = ['answered', 'resolved', 'closed'].includes(rfi.status) && approval?.status === 'approved';
+        return { ...projected, response: approvedReply ? rfi.response : null };
+      }),
+    submittals: fieldSubmittalRecords(detail.submittals, { hasPositionTaskScope, visibleTaskIds, detail }),
+    permits: projectFieldRecords((detail.permits || []).filter(row => workerScopedRecord(row) && scopedTaskRecord(row))),
+    preTaskPlans: workerPreTaskPlans.map(plan => preTaskPlanForOperator(req, plan)),
     lmraAssessments: (detail.lmraAssessments || [])
       .filter(assessment => scopeWorkerId && String(assessment.workerId || '') === String(scopeWorkerId))
       .map(projectFieldRecord),
-    inspections: projectFieldRecords((detail.inspections || []).filter(inspection => (
+    inspections: projectFieldRecords((detail.inspections || []).filter(inspection => scopedTaskRecord(inspection) && (
       !inspection.installationQc
       || (scopeWorkerId && String(inspection.installationQc.assignedWorkerId || '') === String(scopeWorkerId))
     ))),
     installationQcControls: projectFieldRecords((detail.installationQcControls || []).filter(control => (
-      scopeWorkerId && String(control.assignedWorkerId || '') === String(scopeWorkerId)
+      scopeWorkerId && String(control.assignedWorkerId || '') === String(scopeWorkerId) && scopedTaskRecord(control)
     ))),
     photoEvidenceSets: projectFieldRecords((detail.photoEvidenceSets || []).filter(set => (
-      scopeWorkerId && String(set.assignedWorkerId || '') === String(scopeWorkerId)
+      scopeWorkerId && String(set.assignedWorkerId || '') === String(scopeWorkerId) && scopedTaskRecord(set)
     ))),
-    nonconformances: projectFieldRecords(detail.nonconformances),
-    observations: projectFieldRecords(detail.observations),
-    incidents: projectFieldRecords(detail.incidents),
-    safetyMeetings: (detail.safetyMeetings || []).map(meeting => safetyMeetingForOperator(req, meeting)),
-    orientations: projectFieldRecords(detail.orientations),
-    jhas: projectFieldRecords(detail.jhas),
-    sdsSheets: projectFieldRecords((detail.sdsSheets || []).filter(sheet => sheet.current === true)),
-    drawings: projectFieldRecords((detail.drawings || []).filter(drawing => drawing.current === true)),
-    siteAccessLogs: projectFieldRecords(detail.siteAccessLogs),
+    nonconformances: projectFieldRecords((detail.nonconformances || []).filter(row => (
+      workerScopedRecord(row) && scopedTaskRecord(row)
+    ))),
+    observations: projectFieldRecords((detail.observations || []).filter(scopedTaskRecord)),
+    incidents: projectFieldRecords((detail.incidents || []).filter(row => (
+      String(row.data?.reporterWorkerId || '') === String(scopeWorkerId) && scopedTaskRecord(row)
+    ))),
+    safetyMeetings: workerSafetyMeetings,
+    orientations: projectFieldRecords((detail.orientations || []).filter(row => (
+      String(row.workerId || '') === String(scopeWorkerId)
+      && (!row.assignmentId || assignmentIds.has(row.assignmentId))
+    ))),
+    jhas: fieldJhaRecords(operatingLedger, detail.jhas, hasPositionTaskScope ? visibleTaskIds : null),
+    sdsSheets: fieldSdsRecords(operatingLedger, detail.sdsSheets, hasPositionTaskScope ? scopedMaterialIds : null),
+    drawings: projectFieldRecords(visibleDrawings),
+    siteAccessLogs: projectFieldRecords((detail.siteAccessLogs || []).filter(row => (
+      String(row.workerId || '') === String(scopeWorkerId)
+      && (!row.assignmentId || assignmentIds.has(row.assignmentId))
+    ))),
     qualificationRequirements: projectFieldRecords(detail.qualificationRequirements),
-    assignments: projectFieldRecords(detail.assignments),
-    tools: projectFieldRecords(detail.tools),
-    equipmentCustody: projectFieldRecords(detail.equipmentCustody),
-    materials: projectFieldRecords(detail.materials),
-    materialReceipts: projectFieldRecords(detail.materialReceipts),
+    assignments: projectFieldRecords(activeAssignments),
+    tools: projectFieldRecords(visibleTools),
+    equipmentCustody: projectFieldRecords((detail.equipmentCustody || [])
+      .filter(row => visibleToolIds.has(row.reservationId) && ['checked_out', 'exception'].includes(row.status))
+      .map(row => ({ id: row.id, toolId: row.toolId, toolName: row.toolName, jobId: row.jobId, reservationId: row.reservationId,
+        status: row.status, dueBackAt: row.dueBackAt || null, heldByYou: row.workerId === scopeWorkerId }))),
+    materials: projectFieldRecords(hasPositionTaskScope
+      ? (detail.materials || []).filter(row => scopedMaterialIds.has(row.id))
+      : detail.materials),
+    materialReceipts: projectFieldRecords(hasPositionTaskScope
+      ? (detail.materialReceipts || []).filter(row => scopedMaterialIds.has(row.materialRequirementId))
+      : detail.materialReceipts),
     documents: projectFieldRecords((detail.documents || []).filter(document => (
-      document.type !== 'drawing_revision' || document.current === true
+      !privateEvidence.has(document.id)
+      && (visibleDrawingIds.has(document.id) || visibleSdsDocumentIds.has(document.id))
     ))),
-    progress: projectFieldRecords(detail.progress),
-    productionBaselines: projectFieldRecords(detail.productionBaselines),
-    productionEntries: projectFieldRecords(detail.productionEntries),
-    productionControl: projectFieldRecord(detail.productionControl),
+    progress: projectFieldRecords((detail.progress || []).filter(scopedTaskRecord)),
+    productionBaselines: fieldProduction.baselines,
+    productionEntries: fieldProduction.entries,
+    productionControl: fieldProduction,
     dayworkTickets: (detail.dayworkTickets || [])
-      .filter(ticket => scopeWorkerId && String(ticket.workerId || '') === String(scopeWorkerId))
+      .filter(ticket => scopeWorkerId && String(ticket.workerId || '') === String(scopeWorkerId) && scopedTaskRecord(ticket))
       .map(projectFieldDayworkTicket),
     attendanceSessions: projectFieldRecords(
       scopeWorkerId
-        ? (detail.attendanceSessions || []).filter(session => String(session.workerId || '') === String(scopeWorkerId))
+        ? (detail.attendanceSessions || []).filter(session => String(session.workerId || '') === String(scopeWorkerId)
+          && (!session.assignmentId || assignmentIds.has(session.assignmentId)))
         : []
     ),
     timeLogs: projectFieldRecords(timeLogs),
     environmentalActivities: (detail.environmentalActivities || [])
-      .filter(activity => scopeWorkerId && String(activity.workerId || '') === String(scopeWorkerId))
+      .filter(activity => scopeWorkerId && String(activity.workerId || '') === String(scopeWorkerId) && scopedTaskRecord(activity))
       .map(projectFieldEnvironmentalActivity),
-    qualityChecks: projectFieldRecords(detail.qualityChecks),
-    safetyChecks: projectFieldRecords(detail.safetyChecks),
-    punchItems: projectFieldRecords(detail.punchItems),
-    workerInstructions: projectFieldRecords(detail.workerInstructions),
+    qualityChecks: projectFieldRecords((detail.qualityChecks || []).filter(scopedTaskRecord)),
+    safetyChecks: projectFieldRecords((detail.safetyChecks || []).filter(scopedTaskRecord)),
+    punchItems: projectFieldRecords((detail.punchItems || []).filter(scopedTaskRecord)),
+    workerInstructions: projectFieldRecords((detail.workerInstructions || []).filter(row => (
+      (!row.workerId || String(row.workerId) === String(scopeWorkerId))
+      && (!row.assignmentId || activeAssignments.some(assignment => assignment.id === row.assignmentId))
+      && scopedTaskRecord(row)
+    ))),
     weather: projectFieldRecords(detail.weather),
+    expenseReceipts: projectFieldRecords((detail.expenses || []).filter(row => (
+      String(row.workerId || row.data?.workerId || '') === String(scopeWorkerId)
+      && scopedTaskRecord(row)
+    ))),
     approvals: [],
     communications: []
   };
@@ -1735,10 +2073,51 @@ function jobForOperator(req, jobId, options = {}) {
   return req.operator?.role === 'field_worker' ? projectFieldJobDetail(req, detail) : detail;
 }
 
+function fieldProjectionRecords(req, records, projectionKey) {
+  if (req.operator?.role !== 'field_worker') return records;
+  const visibleIdsByJob = req.fieldProjectionCache || (req.fieldProjectionCache = new Map());
+  return (records || []).filter(record => {
+    const jobId = String(record?.jobId || '');
+    const recordId = String(record?.id || record?.inspectionId || '');
+    if (!jobId || !recordId) return false;
+    const cacheKey = `${projectionKey}:${jobId}`;
+    if (!visibleIdsByJob.has(cacheKey)) {
+      try {
+        const projection = jobForOperator(req, jobId);
+        visibleIdsByJob.set(cacheKey, new Set((projection[projectionKey] || [])
+          .map(item => String(item.id || item.inspectionId || ''))
+          .filter(Boolean)));
+      } catch {
+        visibleIdsByJob.set(cacheKey, new Set());
+      }
+    }
+    return visibleIdsByJob.get(cacheKey).has(recordId);
+  });
+}
+
 function dashboardForOperator(req) {
   if (req.operator?.role !== 'field_worker') return operatingLedger.dashboardSummary();
   const jobs = scopedLedgerJobs(req, { limit: 500 });
   return { fieldScoped: true, jobCount: jobs.length };
+}
+
+function fieldVisibleSdsIds(req, jobId) {
+  const workerId = req.operator?.scope?.workerId;
+  if (req.operator?.role !== 'field_worker' || !workerId) return null;
+  const detail = operatingLedger.getJobDetail(jobId, { includeAudit: false });
+  const assignments = activeFieldAssignmentsForWorker(detail, workerId);
+  const { hasPositionTaskScope, visibleTaskIds } = fieldTaskScope(detail, workerId, assignments);
+  const materialIds = new Set(detail.tasks
+    .filter(task => visibleTaskIds.has(task.id))
+    .flatMap(task => Array.isArray(task.data?.materialRequirementIds) ? task.data.materialRequirementIds : []));
+  return new Set(fieldSdsRecords(operatingLedger, detail.sdsSheets, hasPositionTaskScope ? materialIds : null).map(sheet => sheet.id));
+}
+
+function fieldWorkerCanAccessDrawing(req, drawing) {
+  if (req.operator?.role !== 'field_worker') return true;
+  const workerId = req.operator.scope?.workerId;
+  return Boolean(workerId) && new FieldWorkPack(operatingLedger).snapshot(drawing.jobId, workerId)
+    .know.drawings.some(row => row.id === drawing.id);
 }
 
 function compactLedgerResponseRequested(req) {
@@ -1846,7 +2225,14 @@ function environmentalActivityPayloadForOperator(req, payload = {}) {
 }
 
 function safetyAcknowledgementPayloadForOperator(req, payload = {}) {
-  if (req.operator?.role !== 'field_worker') return payload;
+  const briefingContentHash = String(payload.briefingContentHash || payload.briefing_content_hash || '').trim();
+  if (!/^[a-f0-9]{64}$/.test(briefingContentHash)) {
+    const error = new Error('Refresh the current safety briefing before recording attendance.');
+    error.statusCode = 400;
+    error.code = 'safety_briefing_content_hash_required';
+    throw error;
+  }
+  if (req.operator?.role !== 'field_worker') return { ...payload, briefingContentHash };
   const identity = fieldWorkerIdentity(req);
   if (!identity.workerId) {
     const error = new Error('Field safety acknowledgement requires an operator token linked to one worker identity.');
@@ -1856,6 +2242,7 @@ function safetyAcknowledgementPayloadForOperator(req, payload = {}) {
   }
   return {
     ...payload,
+    briefingContentHash,
     workerId: identity.workerId,
     worker_id: identity.workerId,
     workerName: identity.workerName,
@@ -1871,9 +2258,12 @@ function safetyAcknowledgementPayloadForOperator(req, payload = {}) {
 function safetyMeetingForOperator(req, meeting) {
   if (req.operator?.role !== 'field_worker') return meeting;
   const workerId = req.operator.scope?.workerId || null;
-  const attendeeRecords = workerId
-    ? (meeting.attendeeRecords || []).filter(attendee => String(attendee.workerId || '') === String(workerId))
-    : [];
+  const assignmentIds = activeFieldAssignmentIds(meeting.jobId, workerId);
+  const attendeeRecords = workerId ? (meeting.attendeeRecords || []).filter(attendee => (
+    String(attendee.workerId || '') === String(workerId)
+    && (!attendee.assignmentId || assignmentIds.has(attendee.assignmentId))
+  )) : [];
+  if (!attendeeRecords.length) return null;
   return projectFieldRecord({
     ...meeting,
     attendees: attendeeRecords.map(attendee => attendee.attendeeName),
@@ -1954,9 +2344,11 @@ function preTaskPlanAcknowledgementPayloadForOperator(req, payload = {}) {
 function preTaskPlanForOperator(req, plan) {
   if (req.operator?.role !== 'field_worker') return plan;
   const workerId = req.operator.scope?.workerId || null;
-  const attendees = workerId
-    ? (plan.attendees || []).filter(attendee => String(attendee.workerId || '') === String(workerId))
-    : [];
+  const assignmentIds = activeFieldAssignmentIds(plan.jobId, workerId);
+  const attendees = workerId ? (plan.attendees || []).filter(attendee => (
+    String(attendee.workerId || '') === String(workerId) && assignmentIds.has(attendee.assignmentId)
+  )) : [];
+  if (!attendees.length) return null;
   const ownAcknowledgement = attendees[0] || null;
   return projectFieldRecord({
     ...plan,
@@ -1972,6 +2364,14 @@ function preTaskPlanForOperator(req, plan) {
       && ownAcknowledgement.integrityValid === true,
     fieldScoped: true
   });
+}
+
+function activeFieldAssignmentIds(jobId, workerId) {
+  if (!jobId || !workerId) return new Set();
+  return new Set(operatingLedger.db.prepare(`
+    SELECT id FROM assignments
+    WHERE job_id = ? AND worker_id = ? AND ${operatingLedger.activeAssignmentStatusSql()}
+  `).all(jobId, workerId).map(row => row.id));
 }
 
 function lmraPayloadForOperator(req, payload = {}) {
@@ -2030,8 +2430,8 @@ function attendancePayloadForOperator(req, payload = {}) {
   };
 }
 
-function inspectionChecklistPayloadForOperator(req, payload = {}, options = {}) {
-  if (req.operator?.role !== 'field_worker' || options.requireWorkerIdentity !== true) return payload;
+function inspectionChecklistPayloadForOperator(req, payload = {}) {
+  if (req.operator?.role !== 'field_worker') return payload;
   const identity = fieldWorkerIdentity(req);
   if (!identity.workerId) {
     const error = new Error('Installation and inspection checklist capture requires an operator token linked to one worker identity.');
@@ -2058,17 +2458,10 @@ function taskLifecyclePayloadForOperator(req) {
     throw error;
   }
 
-  const detail = operatingLedger.getJobDetail(req.params.id, { includeAudit: false });
+  const detail = jobForOperator(req, req.params.id);
   const task = (detail.tasks || []).find(item => String(item.id) === String(req.params.recordId));
   if (!task) {
-    const error = new Error('Task not found for this job');
-    error.statusCode = 404;
-    error.code = 'task_not_found';
-    throw error;
-  }
-  const workerId = req.operator.scope?.workerId || null;
-  if (task.assigneeId && (!workerId || String(task.assigneeId) !== String(workerId))) {
-    const error = new Error('This task is assigned to another crew member.');
+    const error = new Error('This task is outside your assigned work pack.');
     error.statusCode = 403;
     error.code = 'field_task_scope_forbidden';
     throw error;
@@ -2096,13 +2489,21 @@ function requestedLedgerJobId(req) {
 }
 
 function requireOperatorAuthorization(req, res, next) {
+  if (require('./work-board-routes').isWorkBoardPath(req.path)) return next();
   const clientPortalRoute = isClientPortalApiPath(req.path);
-  if (clientPortalRoute || req.path === '/api/session' || req.path === '/api/auth/login' || req.path === '/api/auth/logout') return next();
+  if (clientPortalRoute || req.path === '/api/session' || req.path.startsWith('/api/auth/identity/') || req.path === '/api/auth/login' || req.path === '/api/auth/logout') return next();
   if (!allowsOperatorRequest(req.operator?.role || 'owner', req)) {
     return sendError(req, res, 403, 'insufficient_role', 'Your operator role cannot perform this action.');
   }
   const jobId = requestedLedgerJobId(req);
   if (jobId && !fieldWorkerCanAccessJob(req, jobId)) {
+    const inspectionMatch = req.path.match(/^\/api\/ledger\/jobs\/[^/]+\/inspections\/([^/]+)\/checklist-submissions$/);
+    if (inspectionMatch) {
+      const control = operatingLedger.getInstallationQcControl(decodeURIComponent(inspectionMatch[1]), { jobId });
+      if (control && String(control.assignedWorkerId) !== String(req.operator?.scope?.workerId || '')) {
+        return sendError(req, res, 403, 'installation_qc_worker_scope_forbidden', 'This installation QC control is assigned to another worker.');
+      }
+    }
     return sendError(req, res, 403, 'field_job_scope_forbidden', 'This field worker is not assigned to the requested job.');
   }
   return next();
@@ -2124,7 +2525,7 @@ function requireSessionMutationOrigin(req, res, next) {
     }
     return next();
   }
-  if (req.operator?.authMethod !== 'session') return next();
+  if (!['session', 'identity'].includes(req.operator?.authMethod)) return next();
   if (!origin) {
     return sendError(req, res, 403, 'session_origin_required', 'Cookie-authenticated changes require a same-origin browser request.');
   }
@@ -2172,7 +2573,7 @@ function requireAuthenticationRequestIntegrity(req, res, next) {
   if (req.path === '/api/auth/login' && !req.is('application/json')) {
     return sendError(req, res, 415, 'authentication_json_required', 'Operator sign-in requires an application/json request.');
   }
-  if (req.path === '/api/auth/logout' && req.operator?.authMethod !== 'session') {
+  if (req.path === '/api/auth/logout' && !['session', 'identity'].includes(req.operator?.authMethod) && !identityAccess?.cookie(req)) {
     return sendError(req, res, 401, 'session_authentication_required', 'An authenticated operator session is required to sign out.');
   }
   return next();
@@ -2195,7 +2596,37 @@ app.use(cors({
     return callback(null, false);
   }
 }));
+app.use('/api', (req, res, next) => {
+  const company = operatingLedger.company;
+  res.setHeader('X-Contractor-Company', company.id);
+  res.setHeader('X-Contractor-Ledger', company.ledgerId);
+  if ((req.headers['x-contractor-company'] !== undefined && req.headers['x-contractor-company'] !== company.id)
+      || (req.headers['x-contractor-ledger'] !== undefined && req.headers['x-contractor-ledger'] !== company.ledgerId)
+      || (req.query.__company !== undefined && req.query.__company !== company.id)
+      || (req.query.__ledger !== undefined && req.query.__ledger !== company.ledgerId)) {
+    return sendError(req, res, 409, 'company_runtime_mismatch', 'This request belongs to another company environment. Reopen the original environment; no changes were applied.');
+  }
+  return next();
+});
 app.use(rateLimitApi);
+const whatsappWebhookRouter = express.Router();
+app.use('/api/integrations/whatsapp/webhook', whatsappWebhookRouter);
+app.use(async (req, res, next) => {
+  if (!identityAccess || !req.path.startsWith('/api/') || req.path.startsWith('/api/auth/') || isClientPortalApiPath(req.path)
+      || extractAuthToken(req) || verifyOperatorSession(requestCookie(req, operatorSessionCookieName)) || !identityAccess.cookie(req)) return next();
+  try {
+    req.identityOperator = await identityAccess.authenticate(req);
+    return next();
+  } catch (error) {
+    const unauthorized = error.statusCode === 401 || error.statusCode === 403 || error.code === 'OAUTH_RESPONSE_BODY_ERROR' || error.code === 'OAUTH_WWW_AUTHENTICATE_CHALLENGE';
+    if (req.path === '/api/session') {
+      req.identityProblem = unauthorized ? 'identity_access_revoked' : 'identity_service_unavailable';
+      return next();
+    }
+    return sendError(req, res, unauthorized ? 401 : 503, unauthorized ? 'identity_access_revoked' : 'identity_service_unavailable',
+      unauthorized ? 'Je bedrijfstoegang is verlopen of gewijzigd. Meld je opnieuw aan.' : 'Bedrijfstoegang kan nu niet worden gecontroleerd. Probeer het later opnieuw.');
+  }
+});
 app.use(requireDashboardAuth);
 app.use((req, res, next) => {
   const runtimeRecoveryRoute = [
@@ -2207,7 +2638,7 @@ app.use((req, res, next) => {
     '/api/readiness',
     '/api/operations/capabilities'
   ].includes(req.path);
-  if ((!isProduction && runtimeMode !== 'hosted') || !req.path.startsWith('/api/') || runtimeRecoveryRoute) {
+  if ((!isProduction && runtimeMode !== 'hosted') || !req.path.startsWith('/api/') || runtimeRecoveryRoute || req.path.startsWith('/api/auth/identity/')) {
     return next();
   }
   if (runtimeConfiguration().ready) return next();
@@ -2267,9 +2698,10 @@ app.post('/api/auth/login', rateLimitAuthLogin, (req, res) => {
   });
 });
 
-app.post('/api/auth/logout', (req, res) => {
+app.post('/api/auth/logout', async (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader('Set-Cookie', operatorSessionCookie('', 0));
+  if (identityAccess) await identityAccess.logout(req, res);
   if (req.operator?.authMethod === 'session' && req.operator.sessionIdHash) {
     const revoked = operatingLedger.revokeOperatorSession(req.operator.sessionIdHash, {
       reason: 'operator_logout'
@@ -2291,13 +2723,18 @@ app.get('/api/session', (req, res) => {
   const fieldIdentity = fieldWorker ? fieldWorkerIdentity(req) : null;
   const principalId = trustedRequestActor(req);
   return res.json({
+    company: operatingLedger.company,
     authentication: {
       required: dashboardAuthRequired,
       authenticated: Boolean(req.operator?.authenticated),
       method: req.operator?.authMethod || null,
+      ...(req.identityProblem ? { problem: req.identityProblem } : {}),
       sessionTtlSeconds: dashboardAuthRequired ? operatorSessionTtlSeconds : null
     },
+    identity: identityAccess ? { enabled: true, accountUrl: `${identityConfiguration.issuer}/identity.html`, signInUrl: '/api/auth/identity/start' } : { enabled: false },
     operator: {
+      companyId: operatingLedger.company.id,
+      ledgerId: operatingLedger.company.ledgerId,
       id: req.operator?.id || (req.operator?.authenticated ? role : 'local_owner'),
       name: req.operator?.name || (fieldIdentity?.workerName ?? null),
       role,
@@ -2333,6 +2770,49 @@ app.get('/api/session', (req, res) => {
   });
 });
 
+const identityRoute = fn => async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  try {
+    if (!identityAccess) return sendError(req, res, 503, 'identity_not_configured', 'Gedeelde accounts zijn nog niet geconfigureerd voor deze omgeving.');
+    if (requestOrigin(req) !== identityConfiguration.origin) return sendError(req, res, 403, 'identity_origin_invalid', 'Gebruik de geconfigureerde bedrijfsomgeving.');
+    return await fn(req, res);
+  } catch (error) {
+    return sendError(req, res, error.statusCode || 503, error.statusCode ? error.code || 'identity_request_failed' : 'identity_request_unavailable',
+      error.statusCode ? error.message : 'De accountservice kon de aanvraag niet bevestigen. Controleer de actuele status voordat je opnieuw beslist.');
+  }
+};
+app.get('/api/auth/identity/start', identityRoute((req, res) => identityAccess.begin(req, res)));
+app.get('/api/auth/identity/callback', identityRoute((req, res) => identityAccess.callback(req, res, () => {
+  const previous = verifyOperatorSession(requestCookie(req, operatorSessionCookieName));
+  if (previous?.sessionIdHash) operatingLedger.revokeOperatorSession(previous.sessionIdHash, { reason: 'identity_sign_in' });
+  res.append('Set-Cookie', operatorSessionCookie('', 0));
+})));
+app.get('/api/operations/identity', identityRoute(async (req, res) => {
+  const register = await identityAccess.service('/company', req);
+  const board = new (require('./work-board').WorkBoard)(operatingLedger);
+  res.json({ ...register, accountUrl: `${identityConfiguration.issuer}/identity.html`, legacyAccounts: board.accounts().filter(account => account.authSource !== 'identity') });
+}));
+app.post('/api/operations/identity/invitations', identityRoute(async (req, res) => {
+  await identityAccess.service('/company', req);
+  if (req.body?.role === 'field_worker') operatingLedger.getWorker(req.body.workerId);
+  res.status(201).json(await identityAccess.service('/invitations', req, req.body));
+}));
+app.post('/api/operations/identity/invitations/:id/revoke', identityRoute(async (req, res) => {
+  await identityAccess.service('/company', req);
+  res.json(await identityAccess.service(`/invitations/${encodeURIComponent(req.params.id)}/revoke`, req, {}));
+}));
+app.post('/api/operations/identity/memberships/:id/decision', identityRoute(async (req, res) => {
+  const register = await identityAccess.service('/company', req);
+  const member = register.memberships.find(item => item.id === req.params.id);
+  if (!member) return sendError(req, res, 404, 'identity_membership_missing', 'Toelating niet gevonden binnen dit bedrijf.');
+  const target = { ...member, role: req.body.role || member.role, workerId: req.body.workerId === undefined ? member.workerId : req.body.workerId };
+  const board = new (require('./work-board').WorkBoard)(operatingLedger);
+  if (req.body.status === 'active') board.prepareIdentityLink(target, req.body);
+  const decision = await identityAccess.service(`/memberships/${encodeURIComponent(member.id)}/decision`, req, req.body);
+  const account = board.bindIdentityMember(decision, req.body, trustedRequestActor(req));
+  res.json({ membership: decision, workerAccount: account || null });
+}));
+
 app.patch('/api/preferences', (req, res) => {
   const principalId = trustedRequestActor(req);
   return handleLedgerRequest(req, res, () => ({
@@ -2357,6 +2837,34 @@ function environmentOperatorAccount(principal) {
     updatedAt: null,
     mutable: false
   };
+}
+
+function fieldTaskScopedPayload(req, jobId, payload = {}) {
+  if (req.operator?.role !== 'field_worker') return payload;
+  const visibleTaskIds = new Set(jobForOperator(req, jobId).tasks.map(task => String(task.id)));
+  const taskReferenceKeys = new Set(['taskid', 'linkedtaskids', 'taskids', 'sourcetaskid']);
+  const stack = [payload];
+  const visited = new Set();
+  while (stack.length) {
+    const current = stack.pop();
+    if (!current || typeof current !== 'object' || visited.has(current)) continue;
+    visited.add(current);
+    for (const [key, value] of Object.entries(current)) {
+      if (taskReferenceKeys.has(key.replace(/[_-]/g, '').toLowerCase())) {
+        const ids = Array.isArray(value) ? value : [value];
+        for (const id of ids) {
+          if (id !== null && id !== undefined && String(id).trim() && !visibleTaskIds.has(String(id))) {
+            const error = new Error('This field record references a task outside your assigned work pack.');
+            error.statusCode = 403;
+            error.code = 'field_task_scope_forbidden';
+            throw error;
+          }
+        }
+      }
+      if (value && typeof value === 'object') stack.push(value);
+    }
+  }
+  return payload;
 }
 
 function operatorAccessRegister() {
@@ -2607,17 +3115,42 @@ function analyzeUploadPayload(payload = {}) {
   };
 }
 
+// Hosted state is in PostgreSQL and private object storage, including on read-only containers.
+const companyDirectories = runtimeMode === 'hosted' ? [] : storageMode === 'local' ? [dataDir, uploadDir] : [dataDir];
+const directoryCompany = externalAdaptersQuarantined ? null : inspectCompanyDirectories(configuredCompanyId, companyDirectories);
 let legacyStateForMigration = loadLegacyStateForMigration();
 let operatingLedger;
+let resourcePlanner;
 try {
-  runtimeProcessLock = runtimeProcessLockRequired ? acquireRuntimeLock(dataDir, { purpose: 'runtime' }) : null;
+  const leases = [];
+  runtimeProcessLock = { release() { for (const lease of [...leases].reverse()) lease.release(); } };
+  if (!externalAdaptersQuarantined && runtimeMode === 'local') {
+    if (runtimeProcessLockRequired) leases.push(acquireRuntimeLock(dataDir, { purpose: 'runtime' }));
+    fs.mkdirSync(path.dirname(ledgerFile), { recursive: true });
+    leases.push(acquireLedgerRuntimeLock(ledgerFile, { purpose: 'runtime' }));
+  }
   operatingLedger = new ContractorOperatingLedger({
+    companyId: configuredCompanyId,
+    expectedCompany: directoryCompany,
     dbFile: externalAdaptersQuarantined ? ':memory:' : ledgerFile,
     databaseUrl: externalAdaptersQuarantined ? null : (hostedDatabaseUrl || null),
+    authorityKey: externalAdaptersQuarantined ? null : readPrivateKeyFile(process.env.CONTRACTOR_AI_AUTHORITY_KEY_FILE),
     stateProvider: () => externalAdaptersQuarantined ? { jobs: [], workers: [], tools: [] } : legacyStateForMigration,
     logger: log
   });
+  resourcePlanner = new ResourcePlanner(operatingLedger);
+  if (!externalAdaptersQuarantined) {
+    if (runtimeMode === 'hosted' && operatingLedger.authority && operatingLedger.authority.details.origin !== hostedPublicUrlDetails.origin) {
+      throw Object.assign(new Error('The hosted public origin does not match the activated handover target.'), { code: 'authority_origin_mismatch' });
+    }
+    bindCompanyDirectories(operatingLedger.company, companyDirectories);
+  }
+  const companyScope = companyScopeKey(operatingLedger.company);
+  operatorSessionCookieName = `contractor_ai_session_${crypto.createHash('sha256').update(companyScope).digest('hex').slice(0, 16)}`;
+  operatorSessionSigningKey = createOperatorSessionSigningKey(companyScope);
+  if (identityConfiguration) identityAccess = new IdentityRuntime(operatingLedger, identityConfiguration);
 } catch (error) {
+  operatingLedger?.close();
   runtimeProcessLock?.release();
   throw error;
 }
@@ -2668,7 +3201,30 @@ function runDurableAutonomousCycle(options = {}) {
       blockedCount: result.blocked?.length || 0,
       ranAt: result.ranAt || new Date().toISOString()
     }, { actor: 'durable_scheduler', now: options.now });
-    return { success: true, ran: true, result, completion, scheduler: autonomousSchedulerStatus() };
+    let portfolioReview;
+    let waitlistOffers;
+    let standbyOffers;
+    if (completion.completed) {
+      try {
+        portfolioReview = new ContractorReview(operatingLedger).runBatch({ actor: 'durable_scheduler', now: options.now });
+      } catch (error) {
+        log('error', 'portfolio_review_failed', { error: serializeError(error) });
+        portfolioReview = { ran: false, success: false, reason: 'portfolio_review_failed' };
+      }
+      try {
+        waitlistOffers = new (require('./work-board').WorkBoard)(operatingLedger).runWaitlistOfferSweep({ actor: 'durable_scheduler' });
+      } catch (error) {
+        log('error', 'work_board_waitlist_sweep_failed', { error: serializeError(error) });
+        waitlistOffers = { scanned: 0, offered: 0, success: false };
+      }
+      try {
+        standbyOffers = new (require('./work-board').WorkBoard)(operatingLedger).runStandbyCalloutSweep({ actor: 'durable_scheduler' });
+      } catch (error) {
+        log('error', 'work_board_standby_sweep_failed', { error: serializeError(error) });
+        standbyOffers = { scannedJobs: 0, offered: 0, reviewRequired: 0, results: [], success: false };
+      }
+    }
+    return { success: true, ran: true, result, completion, portfolioReview, waitlistOffers, standbyOffers, scheduler: autonomousSchedulerStatus() };
   } catch (error) {
     const completion = operatingLedger.completeScheduledJob(AUTONOMOUS_SCHEDULER_KEY, claim.leaseId, {
       success: false,
@@ -2689,7 +3245,10 @@ function durableAutonomousCycleResponse(execution, options = {}) {
         completed: Boolean(execution.completion?.completed),
         schedulerKey: AUTONOMOUS_SCHEDULER_KEY
       },
-      scheduler: execution.scheduler
+      scheduler: execution.scheduler,
+      portfolioReview: execution.portfolioReview,
+      waitlistOffers: execution.waitlistOffers,
+      standbyOffers: execution.standbyOffers
     };
   }
   const preview = operatingLedger.runAutonomousCycle({
@@ -2778,7 +3337,7 @@ function createLedgerUploadFollowUps(ledgerDetail, ledgerDocument, payload = {},
       note: `Uploaded evidence recorded: ${filename}. ${analysis.summary || notes}`.trim(),
       photos,
       source: 'upload_evidence'
-    }, { actor: 'upload_api' })
+    }, { actor: options.actor || 'upload_api' })
   };
   const actions = [{ type: 'record_ledger_progress_evidence', id: records.progress.id, message: 'Ledger progress evidence recorded.' }];
   const photoEvidenceSetId = String(
@@ -2822,7 +3381,7 @@ function createLedgerUploadFollowUps(ledgerDetail, ledgerDocument, payload = {},
       status: 'open',
       priority: ['high', 'critical'].includes(String(analysis.riskLevel || '').toLowerCase()) ? 'high' : 'medium',
       source: 'upload_evidence'
-    }, { actor: 'upload_api' });
+    }, { actor: options.actor || 'upload_api' });
     actions.push({ type: 'create_ledger_evidence_review_task', id: records.task.id, message: 'Ledger review task created from uploaded evidence.' });
   }
 
@@ -2834,7 +3393,7 @@ function createLedgerUploadFollowUps(ledgerDetail, ledgerDocument, payload = {},
       notes: notes || analysis.summary,
       hazards: [analysis.summary || 'Uploaded safety evidence requires review'],
       requiresApproval: true
-    }, { actor: 'upload_api' });
+    }, { actor: options.actor || 'upload_api' });
     actions.push({ type: 'create_ledger_safety_review', id: records.safetyCheck.id, approvalId: records.safetyCheck.approvalId || records.safetyCheck.approval?.id || null, message: 'Ledger safety review created.' });
   }
 
@@ -2850,7 +3409,7 @@ function createLedgerUploadFollowUps(ledgerDetail, ledgerDocument, payload = {},
       photos,
       wkbEvidence: true,
       requiresApproval: true
-    }, { actor: 'upload_api' });
+    }, { actor: options.actor || 'upload_api' });
     actions.push({ type: 'create_ledger_quality_review', id: records.qualityCheck.id, approvalId: records.qualityCheck.approvalId || records.qualityCheck.approval?.id || null, message: 'Ledger quality review created.' });
   }
 
@@ -2876,7 +3435,7 @@ app.all('/api/dashboard', (req, res) => res.status(410).json({
 app.get('/api/ledger/dashboard', (req, res) => {
   return handleLedgerRequest(req, res, () => ({
     success: true,
-    dashboard: operatingLedger.dashboardSummary()
+    dashboard: dashboardForOperator(req)
   }));
 });
 
@@ -2909,11 +3468,40 @@ app.get('/api/ledger/weather', (req, res) => {
 app.get('/api/ledger/documents/:id/content', async (req, res) => {
   try {
     const document = operatingLedger.getDocument(req.params.id);
+    let authorizedFieldDrawing = null;
+    if (req.operator?.role === 'field_worker' && new (require('./work-delivery').WorkDelivery)(operatingLedger).privateEvidenceIds(document.jobId).has(document.id)) {
+      return sendError(req, res, 403, 'private_delivery_evidence', 'Customer acceptance evidence is restricted to office review.');
+    }
+    if (req.operator?.role === 'field_worker' && new (require('./asset-history').AssetHistory)(operatingLedger).privateEvidenceIds(document.jobId).has(document.id)) {
+      return sendError(req, res, 403, 'private_asset_evidence', 'Private installation history evidence is restricted to office review.');
+    }
+    if (req.operator?.role === 'field_worker' && new (require('./inspection-coverage').InspectionCoverage)(operatingLedger).privateEvidenceIds(document.jobId).has(document.id)) {
+      return sendError(req, res, 403, 'private_coverage_evidence', 'Inspection coverage review evidence is restricted to office review.');
+    }
+    if (req.operator?.role === 'field_worker' && operatingLedger.isSubmittalAttachment(document.jobId, document.id)) {
+      return sendError(req, res, 404, 'scoped_submittal_download_required', 'Submittal PDFs are available only through their approved, task-scoped work-pack link.');
+    }
     if (!fieldWorkerCanAccessJob(req, document.jobId)) {
       return sendError(req, res, 403, 'field_job_scope_forbidden', 'This field worker is not assigned to the evidence job.');
     }
+    if (req.operator?.role === 'field_worker') {
+      if (document.type !== 'drawing_revision') {
+        return sendError(req, res, 404, 'scoped_field_document_download_required', 'This file is not available through the general field document route.');
+      }
+      authorizedFieldDrawing = new FieldWorkPack(operatingLedger)
+        .drawingFile(document.jobId, req.operator.scope?.workerId, document.id);
+    }
     if (!evidenceStorage) throw evidenceStorageInitError || new EvidenceStorageError('storage_unavailable', 'Evidence storage is unavailable.');
     const evidence = await evidenceStorage.read(document.storageRef);
+    if (authorizedFieldDrawing) {
+      const current = new FieldWorkPack(operatingLedger)
+        .drawingFile(document.jobId, req.operator.scope.workerId, document.id);
+      if (current.sha256 !== authorizedFieldDrawing.sha256
+        || current.document.storageRef !== document.storageRef
+        || current.document.sizeBytes !== document.sizeBytes) {
+        throw Object.assign(new Error('The authorized field drawing changed during retrieval.'), { statusCode: 409, code: 'field_drawing_changed_during_retrieval' });
+      }
+    }
     const expectedChecksum = String(
       document.data?.sourceDocumentChecksum
       || document.data?.analysis?.upload?.sha256
@@ -2993,6 +3581,9 @@ app.get('/api/ledger/opportunity-evidence/:id/content', async (req, res) => {
 
 app.get('/api/ledger/documents/:id/issue-package', (req, res) => {
   try {
+    if (req.operator?.role === 'field_worker') {
+      return sendError(req, res, 403, 'field_issue_package_forbidden', 'Commercial issue packages are restricted to office review.');
+    }
     const issuePackage = operatingLedger.getIssuePackage(req.params.id, {
       actor: trustedRequestActor(req)
     });
@@ -3039,6 +3630,7 @@ app.get('/api/ledger/command-plan', (req, res) => {
   return handleLedgerRequest(req, res, () => ({
     success: true,
     ...operatingLedger.buildTodayCommandPlan(req.query || {}),
+    automationSuspended: operatingLedger.getAutomationControl().suspended === true,
     dashboard: operatingLedger.dashboardSummary()
   }));
 });
@@ -3077,16 +3669,191 @@ app.get('/api/ledger/playbooks', (req, res) => {
 
 app.get('/api/ledger/jobs', (req, res) => {
   return handleLedgerRequest(req, res, () => {
-    const jobs = scopedLedgerJobs(req, req.query || {});
+    const requestedLimit = Number(req.query?.limit || 100);
+    const limit = Number.isSafeInteger(requestedLimit) && requestedLimit > 0
+      ? Math.min(100, requestedLimit)
+      : 100;
+    const candidates = scopedLedgerJobs(req, { ...(req.query || {}), limit: limit + 1 });
+    const hasMore = candidates.length > limit;
+    const jobs = candidates.slice(0, limit);
+    const lastJob = jobs.at(-1);
     return {
       success: true,
       jobs,
+      pagination: {
+        limit,
+        returned: jobs.length,
+        hasMore,
+        nextCursor: hasMore && lastJob?.updatedAt
+          ? { updatedAt: lastJob.updatedAt, jobId: lastJob.id }
+          : null
+      },
       dashboard: req.operator?.role === 'field_worker'
         ? { fieldScoped: true, jobCount: jobs.length }
         : operatingLedger.dashboardSummary()
     };
   });
 });
+
+app.get('/api/ledger/portfolio-review', (req, res) => handleLedgerRequest(req, res, () => {
+  const review = new ContractorReview(operatingLedger);
+  return { success: true, ...review.status(), dossiers: review.dossiers(req.query || {}) };
+}));
+
+app.get('/api/ledger/work-places', (req, res) => handleLedgerRequest(req, res, () => ({
+  success: true, ...new (require('./work-context').WorkContext)(operatingLedger).catalog(req.query || {})
+})));
+app.get('/api/ledger/jobs/:jobId/work-context', (req, res) => handleLedgerRequest(req, res, () => ({
+  success: true, ...new (require('./work-context').WorkContext)(operatingLedger).read(req.params.jobId)
+})));
+app.post('/api/ledger/jobs/:jobId/work-context', (req, res) => handleLedgerRequest(req, res, () => ({
+  success: true, ...new (require('./work-context').WorkContext)(operatingLedger).command(req.params.jobId, req.body, trustedRequestActor(req))
+}), 201));
+
+app.get('/api/ledger/jobs/:jobId/work-deliveries', (req, res) => handleLedgerRequest(req, res, () => ({
+  success: true, ...new (require('./work-delivery').WorkDelivery)(operatingLedger).read(req.params.jobId)
+})));
+app.post('/api/ledger/jobs/:jobId/work-deliveries', (req, res) => handleLedgerRequest(req, res, () => ({
+  success: true, ...new (require('./work-delivery').WorkDelivery)(operatingLedger).command(req.params.jobId, req.body, trustedRequestActor(req))
+}), 201));
+app.get('/api/ledger/jobs/:jobId/inspection-coverage', (req, res) => handleLedgerRequest(req, res, () => ({
+  success: true, ...new (require('./inspection-coverage').InspectionCoverage)(operatingLedger).read(req.params.jobId)
+})));
+app.post('/api/ledger/jobs/:jobId/inspection-coverage', (req, res) => handleLedgerRequest(req, res, () => ({
+  success: true, ...new (require('./inspection-coverage').InspectionCoverage)(operatingLedger).command(req.params.jobId, req.body, trustedRequestActor(req))
+}), 201));
+app.get('/api/ledger/jobs/:jobId/asset-history', (req, res) => handleLedgerRequest(req, res, () => ({
+  success: true, ...new (require('./asset-history').AssetHistory)(operatingLedger).read(req.params.jobId)
+})));
+app.post('/api/ledger/jobs/:jobId/asset-history', (req, res) => handleLedgerRequest(req, res, () => ({
+  success: true, ...new (require('./asset-history').AssetHistory)(operatingLedger).command(req.params.jobId, req.body, trustedRequestActor(req))
+}), 201));
+
+app.get('/api/ledger/work-packs', (req, res) => handleLedgerRequest(req, res, () => ({
+  success: true,
+  ...new FieldWorkPack(operatingLedger).list(req.operator?.role === 'field_worker' ? req.operator.scope || {} : null, req.query || {})
+})));
+
+app.get('/api/ledger/jobs/:jobId/work-pack', (req, res) => handleLedgerRequest(req, res, () => {
+  const service = new FieldWorkPack(operatingLedger);
+  const field = req.operator?.role === 'field_worker';
+  const workerId = field ? req.operator.scope?.workerId : req.query.workerId;
+  if (field && req.query.workerId && req.query.workerId !== workerId) throw Object.assign(new Error('Work-pack identity cannot be overridden.'), { statusCode: 403 });
+  if (field && !workerId) throw Object.assign(new Error('A named worker account is required for a personal work pack.'), { statusCode: 403 });
+  return { success: true, workers: field ? [] : service.workers(req.params.jobId), pack: workerId ? service.read(req.params.jobId, workerId) : null };
+}));
+
+app.get('/api/ledger/jobs/:jobId/work-pack/replies', (req, res) => handleLedgerRequest(req, res, () => {
+  if (req.operator?.role !== 'field_worker' || !req.operator.scope?.workerId) throw Object.assign(new Error('A named assigned worker account is required.'), { statusCode: 403 });
+  return { success: true, questions: new FieldWorkPack(operatingLedger).replies(req.params.jobId, req.operator.scope.workerId) };
+}));
+
+app.post('/api/ledger/jobs/:jobId/work-pack/start-release', (req, res) => {
+  if (!['owner', 'approver'].includes(req.operator?.role)) return sendError(req, res, 403, 'start_release_role_required', 'Only an owner or designated approver can issue a start release.');
+  return handleLedgerRequest(req, res, () => ({ success: true, ...new FieldWorkPack(operatingLedger).issueStartRelease(
+    req.params.jobId, String(req.body?.workerId || ''), req.body || {}, trustedRequestActor(req)
+  ) }), 201);
+});
+
+app.post('/api/ledger/jobs/:jobId/work-pack/start-release/acknowledgment', (req, res) => {
+  if (req.operator?.role !== 'field_worker' || !req.operator.scope?.workerId) return sendError(req, res, 403, 'named_worker_required', 'Only the assigned named worker can acknowledge their start release.');
+  return handleLedgerRequest(req, res, () => ({ success: true, ...new FieldWorkPack(operatingLedger).acknowledgeStartRelease(
+    req.params.jobId, req.operator.scope.workerId, req.body || {}, trustedRequestActor(req)
+  ) }), 201);
+});
+
+app.post('/api/ledger/jobs/:jobId/work-pack/start-release/revoke', (req, res) => {
+  const fieldWorker = req.operator?.role === 'field_worker' && req.operator.scope?.workerId;
+  if (!fieldWorker && !['owner', 'approver'].includes(req.operator?.role)) return sendError(req, res, 403, 'start_release_role_required', 'Only an owner, designated approver or the assigned worker can stop this release.');
+  const workerId = fieldWorker ? req.operator.scope.workerId : String(req.body?.workerId || '');
+  return handleLedgerRequest(req, res, () => ({ success: true, ...new FieldWorkPack(operatingLedger).revokeStartRelease(
+    req.params.jobId, workerId, String(req.body?.releaseId || ''), String(req.body?.entryKey || ''), req.body?.reason, trustedRequestActor(req)
+  ) }), 201);
+});
+
+app.get('/api/ledger/jobs/:jobId/work-pack/drawings/:drawingId/content', async (req, res) => {
+  try {
+    const service = new FieldWorkPack(operatingLedger);
+    const workerId = req.operator?.role === 'field_worker' ? req.operator.scope?.workerId : req.query.workerId;
+    if (!workerId || (req.operator?.role === 'field_worker' && req.query.workerId && req.query.workerId !== workerId)) throw Object.assign(new Error('A matching named worker is required.'), { statusCode: 403 });
+    if (!/^[a-f0-9]{64}$/.test(req.query.sourceHash || '')) throw Object.assign(new Error('The downloaded work-pack source hash is required.'), { statusCode: 400 });
+    const retained = service.drawingFile(req.params.jobId, workerId, req.params.drawingId, req.query.sourceHash);
+    const bytes = await evidenceStorage.read(retained.document.storageRef);
+    const current = service.drawingFile(req.params.jobId, workerId, req.params.drawingId, req.query.sourceHash);
+    if (bytes.length !== current.document.sizeBytes || bytes.length > 8 * 1024 * 1024 || bytes.subarray(0, 5).toString() !== '%PDF-'
+      || crypto.createHash('sha256').update(bytes).digest('hex') !== current.sha256) throw Object.assign(new Error('Drawing file integrity verification failed.'), { statusCode: 409 });
+    res.set({ 'Content-Type': 'application/pdf', 'Content-Length': String(bytes.length), 'Cache-Control': 'private, no-store',
+      'X-Content-Type-Options': 'nosniff', 'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(current.document.filename || 'drawing.pdf')}` });
+    return res.end(bytes);
+  } catch (error) { return sendError(req, res, error.statusCode || 500, 'work_pack_drawing_unavailable', error.statusCode ? error.message : 'Drawing retrieval failed.'); }
+});
+
+app.get('/api/ledger/jobs/:jobId/work-pack/sds/:sdsSheetId/content', async (req, res) => {
+  try {
+    const service = new FieldWorkPack(operatingLedger);
+    const workerId = req.operator?.role === 'field_worker' ? req.operator.scope?.workerId : req.query.workerId;
+    if (!workerId || (req.operator?.role === 'field_worker' && req.query.workerId && req.query.workerId !== workerId)) throw Object.assign(new Error('A matching named worker is required.'), { statusCode: 403 });
+    if (!/^[a-f0-9]{64}$/.test(req.query.sourceHash || '')) throw Object.assign(new Error('The downloaded work-pack source hash is required.'), { statusCode: 400 });
+    const retained = service.sdsFile(req.params.jobId, workerId, req.params.sdsSheetId, req.query.sourceHash);
+    const bytes = await evidenceStorage.read(retained.document.storageRef);
+    const current = service.sdsFile(req.params.jobId, workerId, req.params.sdsSheetId, req.query.sourceHash);
+    if (bytes.length !== current.document.sizeBytes || bytes.length > 8 * 1024 * 1024 || bytes.subarray(0, 5).toString() !== '%PDF-'
+      || crypto.createHash('sha256').update(bytes).digest('hex') !== current.sha256) throw Object.assign(new Error('SDS file integrity verification failed.'), { statusCode: 409 });
+    res.set({ 'Content-Type': 'application/pdf', 'Content-Length': String(bytes.length), 'Cache-Control': 'private, no-store',
+      'X-Content-Type-Options': 'nosniff', 'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(current.document.filename || 'safety-data-sheet.pdf')}` });
+    return res.end(bytes);
+  } catch (error) { return sendError(req, res, error.statusCode || 500, 'work_pack_sds_unavailable', error.statusCode ? error.message : 'Safety data sheet retrieval failed.'); }
+});
+
+app.get('/api/ledger/jobs/:jobId/work-pack/submittals/:submittalId/documents/:documentId/content', async (req, res) => {
+  try {
+    const service = new FieldWorkPack(operatingLedger);
+    const workerId = req.operator?.role === 'field_worker' ? req.operator.scope?.workerId : req.query.workerId;
+    if (!workerId || (req.operator?.role === 'field_worker' && req.query.workerId && req.query.workerId !== workerId)) throw Object.assign(new Error('A matching named worker is required.'), { statusCode: 403 });
+    if (!/^[a-f0-9]{64}$/.test(req.query.sourceHash || '')) throw Object.assign(new Error('The downloaded work-pack source hash is required.'), { statusCode: 400 });
+    const retained = service.submittalFile(req.params.jobId, workerId, req.params.submittalId, req.params.documentId, req.query.sourceHash);
+    const bytes = await evidenceStorage.read(retained.document.storageRef);
+    const current = service.submittalFile(req.params.jobId, workerId, req.params.submittalId, req.params.documentId, req.query.sourceHash);
+    if (bytes.length !== current.document.sizeBytes || bytes.length > 8 * 1024 * 1024 || bytes.subarray(0, 5).toString() !== '%PDF-'
+      || crypto.createHash('sha256').update(bytes).digest('hex') !== current.sha256) throw Object.assign(new Error('Submittal file integrity verification failed.'), { statusCode: 409 });
+    res.set({ 'Content-Type': 'application/pdf', 'Content-Length': String(bytes.length), 'Cache-Control': 'private, no-store',
+      'X-Content-Type-Options': 'nosniff', 'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(current.document.filename || 'submittal.pdf')}` });
+    return res.end(bytes);
+  } catch (error) { return sendError(req, res, error.statusCode || 500, 'work_pack_submittal_unavailable', error.statusCode ? error.message : 'Submittal retrieval failed.'); }
+});
+
+for (const [route, method] of [['acknowledgments', 'acknowledge'], ['questions', 'question'], ['progress', 'progress']]) {
+  app.post(`/api/ledger/jobs/:jobId/work-pack/${route}`, (req, res) => {
+    if (req.operator?.role !== 'field_worker' || !req.operator.scope?.workerId) return sendError(req, res, 403, 'named_worker_required', 'Only the assigned named worker can submit their work-pack response.');
+    return handleLedgerRequest(req, res, () => ({ success: true, ...new FieldWorkPack(operatingLedger)[method](req.params.jobId, req.operator.scope.workerId, req.body || {}, trustedRequestActor(req)) }), 201);
+  });
+}
+
+app.post('/api/ledger/portfolio-review', (req, res) => {
+  if (req.operator?.role !== 'owner') return sendError(req, res, 403, 'insufficient_role', 'Only an owner can run portfolio reviews.');
+  return handleLedgerRequest(req, res, () => ({ success: true, ...new ContractorReview(operatingLedger).runBatch({ actor: trustedRequestActor(req), batchSize: req.body?.batchSize }) }));
+});
+
+app.post('/api/ledger/jobs/:jobId/client-selections/:selectionId/impact-links', (req, res) => {
+  if (!['owner', 'office_operator'].includes(req.operator?.role)) {
+    return sendError(req, res, 403, 'client_selection_impact_role_required', 'Only an owner or office operator can link client decisions to work.');
+  }
+  return handleLedgerRequest(req, res, () => ({ success: true, ...new ContractorReview(operatingLedger)
+    .setClientDecisionImpacts(req.params.jobId, req.params.selectionId, req.body || {}, trustedRequestActor(req)) }));
+});
+
+app.get('/api/ledger/jobs/:jobId/change-impact', (req, res) => handleLedgerRequest(req, res, () => ({ success: true, ...new ContractorReview(operatingLedger).detail(req.params.jobId) })));
+
+app.post('/api/ledger/jobs/:jobId/change-impact', (req, res) => handleLedgerRequest(req, res, () => {
+  const review = new ContractorReview(operatingLedger);
+  const payload = req.body || {};
+  if (!['preview', 'retain', 'prepare_variation'].includes(payload.mode)) throw Object.assign(new Error('Choose preview, retain, or prepare a governed variation from this analysis.'), { statusCode: 400 });
+  return { success: true, ...(payload.mode === 'retain'
+    ? review.retain(req.params.jobId, payload, trustedRequestActor(req))
+    : (payload.mode === 'prepare_variation'
+      ? review.prepareVariation(req.params.jobId, payload, trustedRequestActor(req))
+      : { review: review.preview(req.params.jobId, payload) })) };
+}));
 
 app.get('/api/ledger/opportunities', (req, res) => {
   return handleLedgerRequest(req, res, () => ({
@@ -3498,6 +4265,24 @@ app.post('/api/ledger/jobs/:id/work-plan/calculate', (req, res) => {
   }));
 });
 
+app.post('/api/ledger/jobs/:id/site-access-calendar', (req, res) => {
+  return handleLedgerRequest(req, res, () => ({
+    success: true,
+    ...operatingLedger.setJobSiteAccessCalendar(req.params.id, req.body || {}, {
+      actor: trustedRequestActor(req)
+    })
+  }));
+});
+
+app.post('/api/ledger/jobs/:id/travel-routes', (req, res) => {
+  return handleLedgerRequest(req, res, () => ({
+    success: true,
+    ...operatingLedger.setJobTravelRoute(req.params.id, req.body || {}, {
+      actor: trustedRequestActor(req)
+    })
+  }));
+});
+
 app.post('/api/ledger/jobs/:id/task-dependencies', (req, res) => {
   return handleLedgerRequest(req, res, () => ({
     success: true,
@@ -3526,6 +4311,34 @@ app.post('/api/ledger/jobs/:id/schedule-baselines', (req, res) => {
     }),
     job: operatingLedger.getJobDetail(req.params.id),
     dashboard: operatingLedger.dashboardSummary()
+  }), 201);
+});
+
+app.post('/api/ledger/jobs/:id/work-plan/resource-preview', (req, res) => {
+  return handleLedgerRequest(req, res, async () => ({
+    success: true,
+    plan: await resourcePlanner.preview(req.params.id, req.body || {})
+  }));
+});
+
+app.post('/api/ledger/jobs/:id/work-plan/resource-approval', (req, res) => {
+  return handleLedgerRequest(req, res, () => ({
+    success: true,
+    ...resourcePlanner.requestApproval(req.params.id, req.body || {}, trustedRequestActor(req))
+  }), 201);
+});
+
+app.post('/api/ledger/work-plan/portfolio/resource-preview', (req, res) => {
+  return handleLedgerRequest(req, res, async () => ({
+    success: true,
+    plan: await resourcePlanner.previewPortfolio(req.body || {})
+  }));
+});
+
+app.post('/api/ledger/work-plan/portfolio/resource-approval', (req, res) => {
+  return handleLedgerRequest(req, res, () => ({
+    success: true,
+    ...resourcePlanner.requestPortfolioApproval(req.body || {}, trustedRequestActor(req))
   }), 201);
 });
 
@@ -3758,6 +4571,19 @@ app.post('/api/ledger/jobs/:id/change-orders/:changeOrderId/acceptance', (req, r
   }, 201);
 });
 
+app.post('/api/ledger/jobs/:id/change-orders/:changeOrderId/implementation-plans', (req, res) => {
+  return handleLedgerRequest(req, res, () => {
+    const prepared = new (require('./variation-implementation').VariationImplementation)(operatingLedger)
+      .prepare(req.params.id, req.params.changeOrderId, req.body || {}, { actor: trustedRequestActor(req) });
+    return {
+      success: true,
+      ...prepared,
+      job: operatingLedger.getJobDetail(req.params.id),
+      dashboard: operatingLedger.dashboardSummary()
+    };
+  }, 201);
+});
+
 app.get('/api/ledger/jobs/:id/daywork-tickets', (req, res) => {
   return handleLedgerRequest(req, res, () => {
     const filters = { ...(req.query || {}), jobId: req.params.id };
@@ -3766,7 +4592,7 @@ app.get('/api/ledger/jobs/:id/daywork-tickets', (req, res) => {
     return {
       success: true,
       dayworkTickets: req.operator?.role === 'field_worker'
-        ? dayworkTickets.map(projectFieldDayworkTicket)
+        ? fieldProjectionRecords(req, dayworkTickets, 'dayworkTickets').map(projectFieldDayworkTicket)
         : dayworkTickets,
       policy: {
         quantityCapture: 'observed_evidence_only',
@@ -3783,7 +4609,7 @@ app.post('/api/ledger/jobs/:id/daywork-tickets', (req, res) => {
   return handleLedgerRequest(req, res, () => {
     const result = operatingLedger.createDayworkTicket(
       req.params.id,
-      dayworkTicketPayloadForOperator(req, req.body || {}),
+      dayworkTicketPayloadForOperator(req, fieldTaskScopedPayload(req, req.params.id, req.body || {})),
       { actor: trustedRequestActor(req) }
     );
     return {
@@ -3840,7 +4666,7 @@ app.get('/api/ledger/jobs/:id/nonconformances', (req, res) => {
   return handleLedgerRequest(req, res, () => ({
     success: true,
     nonconformances: req.operator?.role === 'field_worker'
-      ? operatingLedger.listNonconformances({ jobId: req.params.id, limit: req.query.limit }).map(projectFieldRecord)
+      ? fieldProjectionRecords(req, operatingLedger.listNonconformances({ jobId: req.params.id, limit: req.query.limit }), 'nonconformances').map(projectFieldRecord)
       : operatingLedger.listNonconformances({ ...(req.query || {}), jobId: req.params.id }),
     policy: {
       fieldCapture: true,
@@ -3855,7 +4681,7 @@ app.post('/api/ledger/jobs/:id/nonconformances', (req, res) => {
   return handleLedgerRequest(req, res, () => {
     const result = operatingLedger.createNonconformance(
       req.params.id,
-      nonconformancePayloadForOperator(req, req.body || {}),
+      nonconformancePayloadForOperator(req, fieldTaskScopedPayload(req, req.params.id, req.body || {})),
       { actor: trustedRequestActor(req) }
     );
     return {
@@ -3906,12 +4732,20 @@ app.post('/api/ledger/jobs/:id/nonconformances/:recordId/closure', (req, res) =>
 });
 
 app.post('/api/ledger/jobs/:id/field-reports', (req, res) => {
-  return handleLedgerRequest(req, res, () => ({
-    success: true,
-    fieldReport: recordForOperator(req, operatingLedger.createFieldReport(req.params.id, req.body || {}, { actor: trustedRequestActor(req) })),
-    job: jobForOperator(req, req.params.id),
-    dashboard: dashboardForOperator(req)
-  }), 201);
+  return handleLedgerRequest(req, res, () => {
+    const payload = fieldTaskScopedPayload(req, req.params.id, req.body || {});
+    if (req.operator?.role === 'field_worker') {
+      const identity = fieldWorkerIdentity(req);
+      payload.workerId = identity.workerId;
+      payload.workerName = identity.workerName;
+    }
+    return {
+      success: true,
+      fieldReport: recordForOperator(req, operatingLedger.createFieldReport(req.params.id, payload, { actor: trustedRequestActor(req) })),
+      job: jobForOperator(req, req.params.id),
+      dashboard: dashboardForOperator(req)
+    };
+  }, 201);
 });
 
 app.post('/api/ledger/jobs/:id/rfis', (req, res) => {
@@ -3956,7 +4790,9 @@ app.get('/api/ledger/pre-task-plans', (req, res) => {
     if (req.operator?.role === 'field_worker') filters.workerId = fieldWorkerIdentity(req).workerId;
     const plans = operatingLedger.listPreTaskPlans(filters)
       .filter(plan => fieldWorkerCanAccessJob(req, plan.jobId))
-      .map(plan => preTaskPlanForOperator(req, plan));
+      .filter(plan => fieldProjectionRecords(req, [plan], 'preTaskPlans').length > 0)
+      .map(plan => preTaskPlanForOperator(req, plan))
+      .filter(Boolean);
     return {
       success: true,
       preTaskPlans: plans,
@@ -3980,7 +4816,9 @@ app.get('/api/ledger/jobs/:id/pre-task-plans', (req, res) => {
     if (req.operator?.role === 'field_worker') filters.workerId = fieldWorkerIdentity(req).workerId;
     return {
       success: true,
-      preTaskPlans: operatingLedger.listPreTaskPlans(filters).map(plan => preTaskPlanForOperator(req, plan))
+      preTaskPlans: operatingLedger.listPreTaskPlans(filters)
+        .filter(plan => fieldProjectionRecords(req, [plan], 'preTaskPlans').length > 0)
+        .map(plan => preTaskPlanForOperator(req, plan)).filter(Boolean)
     };
   });
 });
@@ -4063,6 +4901,7 @@ app.get('/api/ledger/lmra', (req, res) => {
     if (req.operator?.role === 'field_worker') filters.workerId = fieldWorkerIdentity(req).workerId;
     const assessments = operatingLedger.listLmraAssessments(filters)
       .filter(assessment => fieldWorkerCanAccessJob(req, assessment.jobId))
+      .filter(assessment => fieldProjectionRecords(req, [assessment], 'lmraAssessments').length > 0)
       .map(assessment => lmraForOperator(req, assessment));
     return {
       success: true,
@@ -4088,7 +4927,9 @@ app.get('/api/ledger/jobs/:id/lmra', (req, res) => {
     if (req.operator?.role === 'field_worker') filters.workerId = fieldWorkerIdentity(req).workerId;
     return {
       success: true,
-      lmraAssessments: operatingLedger.listLmraAssessments(filters).map(assessment => lmraForOperator(req, assessment))
+      lmraAssessments: operatingLedger.listLmraAssessments(filters)
+        .filter(assessment => fieldProjectionRecords(req, [assessment], 'lmraAssessments').length > 0)
+        .map(assessment => lmraForOperator(req, assessment))
     };
   });
 });
@@ -4119,6 +4960,7 @@ app.get('/api/ledger/work-permits', (req, res) => {
     if (req.operator?.role === 'field_worker') filters.workerId = fieldWorkerIdentity(req).workerId;
     const permits = operatingLedger.listWorkPermits(filters)
       .filter(permit => fieldWorkerCanAccessJob(req, permit.jobId))
+      .filter(permit => fieldProjectionRecords(req, [permit], 'permits').length > 0)
       .map(permit => workPermitForOperator(req, permit));
     return {
       success: true,
@@ -4140,7 +4982,9 @@ app.get('/api/ledger/jobs/:id/work-permits', (req, res) => {
     if (req.operator?.role === 'field_worker') filters.workerId = fieldWorkerIdentity(req).workerId;
     return {
       success: true,
-      workPermits: operatingLedger.listWorkPermits(filters).map(permit => workPermitForOperator(req, permit))
+      workPermits: operatingLedger.listWorkPermits(filters)
+        .filter(permit => fieldProjectionRecords(req, [permit], 'permits').length > 0)
+        .map(permit => workPermitForOperator(req, permit))
     };
   });
 });
@@ -4219,6 +5063,9 @@ app.get('/api/ledger/installation-qc', (req, res) => {
     const workerId = req.operator?.role === 'field_worker'
       ? req.operator.scope?.workerId
       : (req.query.workerId || req.query.worker_id);
+    const jobScopedAccess = control => req.operator?.role === 'field_worker'
+      && !workerId
+      && req.operator.scope?.jobIds?.includes(String(control.jobId)) === true;
     return {
       success: true,
       controls: operatingLedger.listInstallationQcControls({
@@ -4228,6 +5075,8 @@ app.get('/api/ledger/installation-qc', (req, res) => {
         limit: req.query.limit
       })
         .filter(control => fieldWorkerCanAccessJob(req, control.jobId))
+        .filter(control => jobScopedAccess(control)
+          || fieldProjectionRecords(req, [control], 'installationQcControls').length > 0)
         .map(control => recordForOperator(req, control))
     };
   });
@@ -4245,7 +5094,11 @@ app.get('/api/ledger/jobs/:id/installation-qc', (req, res) => {
         taskId: req.query.taskId || req.query.task_id,
         workerId,
         limit: req.query.limit
-      }).map(control => recordForOperator(req, control))
+      }).filter(control => (req.operator?.role === 'field_worker'
+        && !workerId
+        && req.operator.scope?.jobIds?.includes(String(control.jobId)) === true)
+        || fieldProjectionRecords(req, [control], 'installationQcControls').length > 0)
+        .map(control => recordForOperator(req, control))
     };
   });
 });
@@ -4255,6 +5108,9 @@ app.get('/api/ledger/photo-evidence', (req, res) => {
     const workerId = req.operator?.role === 'field_worker'
       ? req.operator.scope?.workerId
       : (req.query.workerId || req.query.worker_id);
+    const jobScopedAccess = set => req.operator?.role === 'field_worker'
+      && !workerId
+      && req.operator.scope?.jobIds?.includes(String(set.jobId)) === true;
     return {
       success: true,
       photoEvidenceSets: operatingLedger.listPhotoEvidenceSets({
@@ -4265,6 +5121,8 @@ app.get('/api/ledger/photo-evidence', (req, res) => {
         limit: req.query.limit
       })
         .filter(set => fieldWorkerCanAccessJob(req, set.jobId))
+        .filter(set => jobScopedAccess(set)
+          || fieldProjectionRecords(req, [set], 'photoEvidenceSets').length > 0)
         .map(set => recordForOperator(req, set))
     };
   });
@@ -4283,7 +5141,11 @@ app.get('/api/ledger/jobs/:id/photo-evidence', (req, res) => {
         workerId,
         status: req.query.status,
         limit: req.query.limit
-      }).map(set => recordForOperator(req, set))
+      }).filter(set => (req.operator?.role === 'field_worker'
+        && !workerId
+        && req.operator.scope?.jobIds?.includes(String(set.jobId)) === true)
+        || fieldProjectionRecords(req, [set], 'photoEvidenceSets').length > 0)
+        .map(set => recordForOperator(req, set))
     };
   });
 });
@@ -4346,9 +5208,24 @@ app.post('/api/ledger/jobs/:id/inspections/:inspectionId/checklist-submissions',
     const installationQc = operatingLedger.getInstallationQcControl(req.params.inspectionId, {
       jobId: req.params.id
     });
-    const payload = inspectionChecklistPayloadForOperator(req, req.body || {}, {
-      requireWorkerIdentity: Boolean(installationQc)
-    });
+    if (req.operator?.role === 'field_worker') {
+      if (installationQc
+        && String(installationQc.assignedWorkerId) !== String(req.operator.scope?.workerId)) {
+        const error = new Error('This installation QC control is assigned to another worker.');
+        error.statusCode = 403;
+        error.code = 'installation_qc_worker_scope_forbidden';
+        throw error;
+      }
+      const visible = jobForOperator(req, req.params.id).inspections
+        .some(inspection => String(inspection.id) === String(req.params.inspectionId));
+      if (!visible) {
+        const error = new Error('This inspection is not part of your assigned work pack.');
+        error.statusCode = 403;
+        error.code = 'field_inspection_scope_forbidden';
+        throw error;
+      }
+    }
+    const payload = inspectionChecklistPayloadForOperator(req, req.body || {});
     const result = operatingLedger.submitInspectionChecklist(req.params.id, req.params.inspectionId, payload, {
       actor: trustedRequestActor(req),
       workerId: installationQc && req.operator?.role === 'field_worker' ? req.operator.scope?.workerId : null,
@@ -4369,7 +5246,7 @@ app.post('/api/ledger/jobs/:id/inspections/:inspectionId/checklist-submissions',
 
 app.post('/api/ledger/jobs/:id/observations', (req, res) => {
   return handleLedgerRequest(req, res, () => {
-    const observation = operatingLedger.createObservationRecord(req.params.id, req.body || {}, {
+    const observation = operatingLedger.createObservationRecord(req.params.id, fieldTaskScopedPayload(req, req.params.id, req.body || {}), {
       actor: trustedRequestActor(req)
     });
     return {
@@ -4384,7 +5261,19 @@ app.post('/api/ledger/jobs/:id/observations', (req, res) => {
 
 app.post('/api/ledger/jobs/:id/incidents', (req, res) => {
   return handleLedgerRequest(req, res, () => {
-    const incident = operatingLedger.createIncidentRecord(req.params.id, req.body || {}, {
+    const payload = { ...fieldTaskScopedPayload(req, req.params.id, req.body || {}) };
+    if (req.operator?.role === 'field_worker') {
+      const identity = fieldWorkerIdentity(req);
+      payload.reportedBy = identity.workerName;
+      payload.reported_by = identity.workerName;
+      payload.reporterWorkerId = identity.workerId;
+      delete payload.responsible;
+      delete payload.owner;
+      delete payload.assignee;
+      delete payload.dueAt;
+      delete payload.due_at;
+    }
+    const incident = operatingLedger.createIncidentRecord(req.params.id, payload, {
       actor: trustedRequestActor(req)
     });
     return {
@@ -4415,7 +5304,9 @@ app.get('/api/ledger/safety-briefings', (req, res) => {
   return handleLedgerRequest(req, res, () => {
     const meetings = operatingLedger.listSafetyMeetings(req.query || {})
       .filter(meeting => fieldWorkerCanAccessJob(req, meeting.jobId))
-      .map(meeting => safetyMeetingForOperator(req, meeting));
+      .filter(meeting => fieldProjectionRecords(req, [meeting], 'safetyMeetings').length > 0)
+      .map(meeting => safetyMeetingForOperator(req, meeting))
+      .filter(Boolean);
     return { success: true, safetyMeetings: meetings };
   });
 });
@@ -4423,13 +5314,18 @@ app.get('/api/ledger/safety-briefings', (req, res) => {
 app.get('/api/ledger/jobs/:id/safety-meetings', (req, res) => {
   return handleLedgerRequest(req, res, () => ({
     success: true,
-    safetyMeetings: operatingLedger.listSafetyMeetings({ ...(req.query || {}), jobId: req.params.id })
+    safetyMeetings: fieldProjectionRecords(req, operatingLedger.listSafetyMeetings({ ...(req.query || {}), jobId: req.params.id }), 'safetyMeetings')
       .map(meeting => safetyMeetingForOperator(req, meeting))
+      .filter(Boolean)
   }));
 });
 
 app.post('/api/ledger/jobs/:id/safety-meetings/:meetingId/acknowledgments', (req, res) => {
   return handleLedgerRequest(req, res, () => {
+    if (req.operator?.role === 'field_worker'
+      && !jobForOperator(req, req.params.id).safetyMeetings.some(meeting => String(meeting.id) === String(req.params.meetingId))) {
+      throw Object.assign(new Error('This safety briefing is not assigned to your work pack.'), { statusCode: 403, code: 'field_safety_briefing_scope_forbidden' });
+    }
     const result = operatingLedger.acknowledgeSafetyMeeting(
       req.params.id,
       req.params.meetingId,
@@ -4511,22 +5407,36 @@ app.post('/api/ledger/jobs/:id/sds-sheets', (req, res) => {
 });
 
 app.get('/api/ledger/sds-sheets', (req, res) => {
-  return handleLedgerRequest(req, res, () => ({
-    success: true,
-    sdsSheets: operatingLedger.listSdsSheets(req.query || {})
-      .filter(sheet => fieldWorkerCanAccessJob(req, sheet.jobId))
-      .filter(sheet => req.operator?.role !== 'field_worker' || sheet.current === true)
-      .map(sheet => recordForOperator(req, sheet))
-  }));
+  return handleLedgerRequest(req, res, () => {
+    const sheets = operatingLedger.listSdsSheets(req.query || {})
+      .filter(sheet => fieldWorkerCanAccessJob(req, sheet.jobId));
+    const visibleIdsByJob = new Map();
+    if (req.operator?.role === 'field_worker') {
+      for (const jobId of new Set(sheets.map(sheet => sheet.jobId))) visibleIdsByJob.set(jobId, fieldVisibleSdsIds(req, jobId));
+    }
+    return {
+      success: true,
+      sdsSheets: sheets
+        .filter(sheet => req.operator?.role !== 'field_worker' || sheet.current === true)
+        .filter(sheet => req.operator?.role !== 'field_worker' || visibleIdsByJob.get(sheet.jobId)?.has(sheet.id))
+        .map(sheet => recordForOperator(req, sheet))
+    };
+  });
 });
 
 app.get('/api/ledger/jobs/:id/sds-sheets', (req, res) => {
-  return handleLedgerRequest(req, res, () => ({
-    success: true,
-    sdsSheets: operatingLedger.listSdsSheets({ ...(req.query || {}), jobId: req.params.id })
-      .filter(sheet => req.operator?.role !== 'field_worker' || sheet.current === true)
-      .map(sheet => recordForOperator(req, sheet))
-  }));
+  return handleLedgerRequest(req, res, () => {
+    const sheets = operatingLedger.listSdsSheets({ ...(req.query || {}), jobId: req.params.id })
+      .filter(sheet => fieldWorkerCanAccessJob(req, sheet.jobId));
+    const visibleIds = req.operator?.role === 'field_worker' ? fieldVisibleSdsIds(req, req.params.id) : null;
+    return {
+      success: true,
+      sdsSheets: sheets
+        .filter(sheet => req.operator?.role !== 'field_worker' || sheet.current === true)
+        .filter(sheet => req.operator?.role !== 'field_worker' || visibleIds?.has(sheet.id))
+        .map(sheet => recordForOperator(req, sheet))
+    };
+  });
 });
 
 app.post('/api/ledger/jobs/:id/sds-revisions', (req, res) => {
@@ -4550,7 +5460,7 @@ app.get('/api/ledger/drawings', (req, res) => {
     success: true,
     drawings: operatingLedger.listDrawingRevisions(req.query || {})
       .filter(drawing => fieldWorkerCanAccessJob(req, drawing.jobId))
-      .filter(drawing => req.operator?.role !== 'field_worker' || drawing.current === true)
+      .filter(drawing => req.operator?.role !== 'field_worker' || fieldWorkerCanAccessDrawing(req, drawing))
       .map(drawing => recordForOperator(req, drawing))
   }));
 });
@@ -4559,7 +5469,7 @@ app.get('/api/ledger/jobs/:id/drawings', (req, res) => {
   return handleLedgerRequest(req, res, () => ({
     success: true,
     drawings: operatingLedger.listDrawingRevisions({ ...(req.query || {}), jobId: req.params.id })
-      .filter(drawing => req.operator?.role !== 'field_worker' || drawing.current === true)
+      .filter(drawing => req.operator?.role !== 'field_worker' || fieldWorkerCanAccessDrawing(req, drawing))
       .map(drawing => recordForOperator(req, drawing))
   }));
 });
@@ -4602,7 +5512,7 @@ app.get('/api/ledger/attendance', (req, res) => {
     }
     const board = operatingLedger.listAttendanceBoard(filters);
     if (req.operator?.role === 'field_worker') {
-      board.rows = board.rows.filter(row => fieldWorkerCanAccessJob(req, row.jobId)).map(projectFieldRecord);
+      board.rows = fieldProjectionRecords(req, board.rows, 'attendanceSessions').map(projectFieldRecord);
       board.summary = {
         sessions: board.rows.length,
         checkedIn: board.rows.filter(row => row.status === 'checked_in').length,
@@ -4620,7 +5530,19 @@ app.get('/api/ledger/jobs/:id/attendance', (req, res) => {
   return handleLedgerRequest(req, res, () => {
     const filters = { ...(req.query || {}), jobId: req.params.id };
     if (req.operator?.role === 'field_worker' && req.operator.scope?.workerId) filters.workerId = req.operator.scope.workerId;
-    return { success: true, attendance: recordForOperator(req, operatingLedger.listAttendanceBoard(filters)) };
+    const attendance = operatingLedger.listAttendanceBoard(filters);
+    if (req.operator?.role === 'field_worker') {
+      attendance.rows = fieldProjectionRecords(req, attendance.rows, 'attendanceSessions').map(projectFieldRecord);
+      attendance.summary = {
+        sessions: attendance.rows.length,
+        checkedIn: attendance.rows.filter(row => row.status === 'checked_in').length,
+        checkedOut: attendance.rows.filter(row => row.status === 'checked_out').length,
+        stale: attendance.rows.filter(row => row.stale).length,
+        adjusted: attendance.rows.filter(row => row.adjustment).length,
+        retainedHours: attendance.rows.reduce((sum, row) => sum + (row.status === 'checked_out' ? Number(row.durationHours || 0) : 0), 0)
+      };
+    }
+    return { success: true, attendance: recordForOperator(req, attendance) };
   });
 });
 
@@ -4749,6 +5671,31 @@ app.post('/api/ledger/jobs/:id/assignments/:assignmentId/release', (req, res) =>
   }));
 });
 
+app.post('/api/ledger/jobs/:id/assignments/:assignmentId/replacement', (req, res) => {
+  return handleLedgerRequest(req, res, () => {
+    const result = operatingLedger.requestAssignmentReplacement(req.params.id, req.params.assignmentId, req.body || {}, { actor: trustedRequestActor(req) });
+    return {
+      success: true,
+      ...result,
+      job: operatingLedger.getJobDetail(req.params.id),
+      availabilityRegister: operatingLedger.listWorkerAvailabilityRegister(),
+      dashboard: operatingLedger.dashboardSummary()
+    };
+  }, 201);
+});
+
+app.post('/api/ledger/workers/:id/availability/:periodId/replacement-plan', (req, res) => {
+  return handleLedgerRequest(req, res, () => {
+    const result = operatingLedger.requestWorkerAvailabilityReplacementPlan(req.params.id, req.params.periodId, req.body || {}, { actor: trustedRequestActor(req) });
+    return {
+      success: true,
+      ...result,
+      availabilityRegister: operatingLedger.listWorkerAvailabilityRegister(),
+      dashboard: operatingLedger.dashboardSummary()
+    };
+  }, 201);
+});
+
 app.get('/api/ledger/jobs/:id/qualification-requirements', (req, res) => {
   return handleLedgerRequest(req, res, () => ({
     success: true,
@@ -4806,15 +5753,22 @@ app.post('/api/ledger/jobs/:id/tools/:reservationId/release', (req, res) => {
 });
 
 app.get('/api/ledger/jobs/:id/equipment-custody-plan', (req, res) => {
-  return handleLedgerRequest(req, res, () => ({
-    success: true,
-    plans: operatingLedger.equipmentCustodyPlanForJob(req.params.id).map(plan => ({
-      reservation: recordForOperator(req, plan.reservation),
-      tool: recordForOperator(req, plan.tool),
-      activeCustody: recordForOperator(req, plan.activeCustody),
-      checkoutReady: plan.checkoutReady
-    }))
-  }));
+  return handleLedgerRequest(req, res, () => {
+    let plans = operatingLedger.equipmentCustodyPlanForJob(req.params.id);
+    if (req.operator?.role === 'field_worker') {
+      const visibleReservationIds = new Set(jobForOperator(req, req.params.id).tools.map(tool => String(tool.id)));
+      plans = plans.filter(plan => visibleReservationIds.has(String(plan.reservation?.id || '')));
+    }
+    return {
+      success: true,
+      plans: plans.map(plan => ({
+        reservation: recordForOperator(req, plan.reservation),
+        tool: recordForOperator(req, plan.tool),
+        activeCustody: recordForOperator(req, plan.activeCustody),
+        checkoutReady: plan.checkoutReady
+      }))
+    };
+  });
 });
 
 app.get('/api/ledger/jobs/:id/equipment-custody', (req, res) => {
@@ -4827,19 +5781,37 @@ app.get('/api/ledger/jobs/:id/equipment-custody', (req, res) => {
     });
     return {
       success: true,
-      custody: req.operator?.role === 'field_worker' ? projectFieldRecords(custody) : custody
+      custody: req.operator?.role === 'field_worker'
+        ? fieldProjectionRecords(req, custody, 'equipmentCustody').map(projectFieldRecord)
+        : custody
     };
   });
 });
 
 app.post('/api/ledger/jobs/:id/equipment-custody/check-out', (req, res) => {
   const payload = { ...(req.body || {}) };
+  const reservationId = String(payload.reservationId || payload.reservation_id || '').trim();
+  if (payload.reservationId && payload.reservation_id
+    && String(payload.reservationId) !== String(payload.reservation_id)) {
+    return sendError(req, res, 400, 'equipment_custody_reservation_conflict', 'Provide one consistent equipment reservation identifier.');
+  }
+  if (reservationId) payload.reservationId = reservationId;
   if (req.operator?.role === 'field_worker') {
     const identity = fieldWorkerIdentity(req);
     payload.workerId = identity.workerId;
     payload.checkedOutBy = identity.workerName;
   }
   return handleLedgerRequest(req, res, () => {
+    if (req.operator?.role === 'field_worker') {
+      const visible = jobForOperator(req, req.params.id).tools
+        .some(tool => String(tool.id) === reservationId);
+      if (!visible) {
+        const error = new Error('This equipment reservation is not part of your assigned work pack.');
+        error.statusCode = 403;
+        error.code = 'field_equipment_scope_forbidden';
+        throw error;
+      }
+    }
     const result = operatingLedger.checkoutEquipment(req.params.id, payload, {
       actor: trustedRequestActor(req)
     });
@@ -4858,6 +5830,16 @@ app.post('/api/ledger/jobs/:id/equipment-custody/:custodySessionId/return', (req
   const payload = { ...(req.body || {}) };
   if (req.operator?.role === 'field_worker') payload.returnedBy = fieldWorkerIdentity(req).workerName;
   return handleLedgerRequest(req, res, () => {
+    if (req.operator?.role === 'field_worker') {
+      const custody = jobForOperator(req, req.params.id).equipmentCustody
+        .find(row => String(row.id) === String(req.params.custodySessionId));
+      if (!custody?.heldByYou) {
+        const error = new Error('Only the worker holding this equipment can return it.');
+        error.statusCode = 403;
+        error.code = 'field_equipment_custody_scope_forbidden';
+        throw error;
+      }
+    }
     const result = operatingLedger.returnEquipment(req.params.id, req.params.custodySessionId, payload, {
       actor: trustedRequestActor(req)
     });
@@ -4897,6 +5879,173 @@ app.patch('/api/ledger/jobs/:id/materials/:materialId/status', (req, res) => {
   }));
 });
 
+app.patch('/api/ledger/jobs/:id/materials/:materialId/sds-requirement', (req, res) => {
+  return handleLedgerRequest(req, res, () => {
+    const materialRequirement = operatingLedger.setMaterialSdsRequirement(
+      req.params.id,
+      req.params.materialId,
+      req.body || {},
+      { actor: trustedRequestActor(req), role: req.operator?.role }
+    );
+    return {
+      success: true,
+      materialRequirement: recordForOperator(req, materialRequirement),
+      replayed: materialRequirement.replayed === true,
+      job: jobForOperator(req, req.params.id),
+      dashboard: dashboardForOperator(req)
+    };
+  });
+});
+
+app.patch('/api/ledger/jobs/:id/tasks/:taskId/jha-applicability', (req, res) => {
+  return handleLedgerRequest(req, res, () => {
+    const task = operatingLedger.setTaskJhaApplicability(
+      req.params.id,
+      req.params.taskId,
+      req.body || {},
+      { actor: trustedRequestActor(req), role: req.operator?.role }
+    );
+    return {
+      success: true,
+      task: recordForOperator(req, task),
+      replayed: task.replayed === true,
+      job: jobForOperator(req, req.params.id),
+      dashboard: dashboardForOperator(req)
+    };
+  });
+});
+
+app.get('/api/ledger/material-stock', (req, res) => {
+  return handleLedgerRequest(req, res, () => ({
+    success: true,
+    ...new (require('./shared-material-stock').SharedMaterialStock)(operatingLedger).list()
+  }));
+});
+
+app.get('/api/ledger/material-stock/catalog', (req, res) => {
+  return handleLedgerRequest(req, res, () => {
+    if (req.operator?.role === 'field_worker') {
+      throw Object.assign(new Error('Warehouse catalogue is available to office roles only.'), { statusCode: 403, code: 'material_catalog_office_required' });
+    }
+    return {
+      success: true,
+      materials: new (require('./shared-material-stock').SharedMaterialStock)(operatingLedger).availabilityCatalog(),
+      externalCommitments: 0
+    };
+  });
+});
+
+app.get('/api/ledger/supplier-performance', (req, res) => {
+  return handleLedgerRequest(req, res, () => {
+    if (req.operator?.role === 'field_worker') {
+      throw Object.assign(new Error('Supplier performance is available to office roles only.'), { statusCode: 403, code: 'supplier_performance_office_required' });
+    }
+    return { success: true, suppliers: require('./supplier-performance').listSupplierDeliveryPerformance(operatingLedger.db), externalCommitments: 0 };
+  });
+});
+
+app.post('/api/ledger/material-stock/counts', (req, res) => {
+  return handleLedgerRequest(req, res, () => {
+    const result = new (require('./shared-material-stock').SharedMaterialStock)(operatingLedger)
+      .count(req.body || {}, { actor: trustedRequestActor(req) });
+    return { success: true, ...result, ...new (require('./shared-material-stock').SharedMaterialStock)(operatingLedger).list() };
+  }, 201);
+});
+
+app.post('/api/ledger/jobs/:id/material-stock-reservations', (req, res) => {
+  return handleLedgerRequest(req, res, () => {
+    const result = new (require('./shared-material-stock').SharedMaterialStock)(operatingLedger)
+      .reserve(req.params.id, req.body || {}, { actor: trustedRequestActor(req) });
+    return { success: true, ...result, ...new (require('./shared-material-stock').SharedMaterialStock)(operatingLedger).list() };
+  }, 201);
+});
+
+app.post('/api/ledger/material-stock-reservations/:id/release', (req, res) => {
+  return handleLedgerRequest(req, res, () => {
+    const result = new (require('./shared-material-stock').SharedMaterialStock)(operatingLedger)
+      .transition(req.params.id, 'release', req.body || {}, { actor: trustedRequestActor(req) });
+    return { success: true, ...result, ...new (require('./shared-material-stock').SharedMaterialStock)(operatingLedger).list() };
+  });
+});
+
+app.post('/api/ledger/material-stock-reservations/:id/consume', (req, res) => {
+  return handleLedgerRequest(req, res, () => {
+    const result = new (require('./shared-material-stock').SharedMaterialStock)(operatingLedger)
+      .transition(req.params.id, 'consume', req.body || {}, { actor: trustedRequestActor(req) });
+    return { success: true, ...result, ...new (require('./shared-material-stock').SharedMaterialStock)(operatingLedger).list() };
+  });
+});
+
+app.post('/api/ledger/material-stock-reservations/:id/issue', (req, res) => {
+  return handleLedgerRequest(req, res, () => {
+    if (req.operator?.role === 'field_worker') {
+      throw Object.assign(new Error('Warehouse issues must be recorded by an office operator.'), { statusCode: 403, code: 'material_stock_issue_office_required' });
+    }
+    const result = new (require('./shared-material-stock').SharedMaterialStock)(operatingLedger)
+      .issue(req.params.id, req.body || {}, { actor: trustedRequestActor(req) });
+    return { success: true, ...result, ...new (require('./shared-material-stock').SharedMaterialStock)(operatingLedger).list() };
+  }, 201);
+});
+
+app.post('/api/ledger/jobs/:id/material-stock-site-issues/:issueId/receipts', (req, res) => {
+  return handleLedgerRequest(req, res, () => {
+    const identity = req.operator?.role === 'field_worker' ? fieldWorkerIdentity(req) : null;
+    const payload = { ...(req.body || {}), ...(identity ? { receivedBy: identity.workerName } : {}) };
+    const stock = new (require('./shared-material-stock').SharedMaterialStock)(operatingLedger);
+    if (identity) {
+      const visibleMaterialIds = new Set(jobForOperator(req, req.params.id).materials.map(material => String(material.id)));
+      const issue = stock.listSiteIssues(req.params.id).find(item => String(item.id) === String(req.params.issueId));
+      if (!issue || !visibleMaterialIds.has(String(issue.requirementId))) {
+        throw Object.assign(new Error('This delivery is outside your assigned work pack.'), { statusCode: 403, code: 'field_material_scope_forbidden' });
+      }
+    }
+    const actor = trustedRequestActor(req);
+    const result = stock.receiveAtJobSite(req.params.id, req.params.issueId, payload, { actor });
+    if (identity) {
+      const retainedActor = result.receipt?.id
+        ? operatingLedger.db.prepare('SELECT actor FROM shared_material_site_issue_receipts WHERE id = ?').get(result.receipt.id)?.actor
+        : null;
+      if (!result.receipt || retainedActor !== actor) {
+        throw Object.assign(new Error('The retained delivery receipt is not available to this worker.'), { statusCode: 403, code: 'field_material_receipt_scope_forbidden' });
+      }
+      const issue = result.issue || stock.listSiteIssues(req.params.id).find(item => String(item.id) === String(req.params.issueId));
+      const { receipt, issue: _privateIssue, ...rest } = result;
+      return {
+        success: true,
+        ...rest,
+        receipt: Object.fromEntries(['id', 'receivedQuantity', 'acceptedQuantity', 'damagedQuantity', 'pendingInspectionQuantity',
+          'receiptReference', 'receivedBy', 'location', 'evidenceReference', 'receivedAt']
+          .filter(key => receipt[key] !== undefined).map(key => [key, receipt[key]])),
+        issue: issue ? {
+          id: issue.id, jobId: issue.jobId, materialName: issue.materialName, unit: issue.unit,
+          quantity: issue.quantity, receivedQuantity: issue.receivedQuantity, acceptedQuantity: issue.acceptedQuantity,
+          pendingInspectionQuantity: issue.pendingInspectionQuantity, damagedQuantity: issue.damagedQuantity,
+          remainingQuantity: issue.remainingQuantity, dispatchReference: issue.dispatchReference,
+          expectedArrivalAt: issue.expectedArrivalAt, status: issue.status,
+          receipts: (issue.receipts || []).filter(item => item.id === receipt.id).map(item => ({
+            id: item.id, receivedQuantity: item.receivedQuantity, acceptedQuantity: item.acceptedQuantity,
+            damagedQuantity: item.damagedQuantity, pendingInspectionQuantity: item.pendingInspectionQuantity,
+            receiptReference: item.receiptReference, receivedBy: item.receivedBy, location: item.location,
+            evidenceReference: item.evidenceReference, receivedAt: item.receivedAt
+          }))
+        } : null
+      };
+    }
+    return { success: true, ...result };
+  }, 201);
+});
+
+app.post('/api/ledger/jobs/:id/material-stock-site-issues/:issueId/receipts/:receiptId/reviews', (req, res) => {
+  if (!['owner', 'office_operator'].includes(req.operator?.role || 'owner')) {
+    return sendError(req, res, 403, 'material_site_receipt_review_forbidden', 'Only an owner or office operator can classify inspected site material.');
+  }
+  return handleLedgerRequest(req, res, () => {
+    const result = new (require('./shared-material-stock').SharedMaterialStock)(operatingLedger)
+      .reviewAtJobSite(req.params.id, req.params.issueId, req.params.receiptId, req.body || {}, { actor: trustedRequestActor(req) });
+    return { success: true, ...result, ...new (require('./shared-material-stock').SharedMaterialStock)(operatingLedger).list() };
+  }, 201);
+});
+
 app.get('/api/ledger/material-receipts', (req, res) => {
   return handleLedgerRequest(req, res, () => ({
     success: true,
@@ -4913,35 +6062,53 @@ app.get('/api/ledger/jobs/:id/material-receipts', (req, res) => {
     });
     return {
       success: true,
-      receipts: req.operator?.role === 'field_worker' ? projectFieldRecords(receipts) : receipts
+      receipts: req.operator?.role === 'field_worker'
+        ? fieldProjectionRecords(req, receipts, 'materialReceipts').map(projectFieldRecord)
+        : receipts
     };
   });
 });
 
 app.get('/api/ledger/jobs/:id/material-receiving-plan', (req, res) => {
-  return handleLedgerRequest(req, res, () => ({
-    success: true,
-    plans: operatingLedger.listMaterialReceivingPlansForJob(req.params.id).map(plan => ({
-      purchaseOrder: {
-        id: plan.purchaseOrder.id,
-        jobId: plan.purchaseOrder.jobId,
-        status: plan.purchaseOrder.status,
-        issueReference: plan.purchaseOrder.issueReference || plan.purchaseOrder.orderNumber || null,
-        requiredBy: plan.purchaseOrder.requiredBy || null
-      },
-      lines: plan.lines.map(line => ({
-        lineKey: line.lineKey,
-        materialRequirementId: line.materialRequirementId,
-        itemName: line.itemName,
-        unit: line.unit,
-        orderedQuantity: line.orderedQuantity,
-        receivedQuantity: line.receivedQuantity,
-        remainingQuantity: line.remainingQuantity,
-        complete: line.complete
-      })),
-      summary: plan.summary
-    }))
-  }));
+  return handleLedgerRequest(req, res, () => {
+    const fieldScoped = req.operator?.role === 'field_worker';
+    const visibleMaterials = fieldScoped
+      ? new Set(jobForOperator(req, req.params.id).materials.map(material => String(material.id)))
+      : null;
+    const plans = operatingLedger.listMaterialReceivingPlansForJob(req.params.id).map(plan => {
+      const lines = plan.lines.filter(line => !fieldScoped
+        || (line.materialRequirementId && visibleMaterials.has(String(line.materialRequirementId))));
+      if (fieldScoped && !lines.length) return null;
+      return {
+        purchaseOrder: {
+          id: plan.purchaseOrder.id,
+          jobId: plan.purchaseOrder.jobId,
+          status: plan.purchaseOrder.status,
+          issueReference: plan.purchaseOrder.issueReference || plan.purchaseOrder.orderNumber || null,
+          requiredBy: plan.purchaseOrder.requiredBy || null
+        },
+        lines: lines.map(line => ({
+          lineKey: line.lineKey,
+          materialRequirementId: line.materialRequirementId,
+          itemName: line.itemName,
+          unit: line.unit,
+          orderedQuantity: line.orderedQuantity,
+          receivedQuantity: line.receivedQuantity,
+          remainingQuantity: line.remainingQuantity,
+          complete: line.complete
+        })),
+        summary: fieldScoped
+          ? {
+              lineCount: lines.length,
+              completeLines: lines.filter(line => line.complete).length,
+              remainingLines: lines.filter(line => !line.complete).length,
+              complete: lines.length > 0 && lines.every(line => line.complete)
+            }
+          : plan.summary
+      };
+    }).filter(Boolean);
+    return { success: true, plans };
+  });
 });
 
 app.post('/api/ledger/jobs/:id/material-receipts', (req, res) => {
@@ -4949,6 +6116,12 @@ app.post('/api/ledger/jobs/:id/material-receipts', (req, res) => {
   if (req.operator?.role === 'field_worker') {
     const identity = fieldWorkerIdentity(req);
     payload.receivedBy = identity.workerName;
+    payload.stockDestination = 'job_site';
+    const visibleMaterialIds = new Set(jobForOperator(req, req.params.id).materials.map(material => String(material.id)));
+    if (!Array.isArray(payload.lines) || payload.lines.length === 0
+      || payload.lines.some(line => !line.materialRequirementId || !visibleMaterialIds.has(String(line.materialRequirementId)))) {
+      return sendError(req, res, 403, 'field_material_scope_forbidden', 'Material receipts must only include materials in your assigned work pack.');
+    }
   }
   return handleLedgerRequest(req, res, () => {
     const result = operatingLedger.createMaterialReceipt(req.params.id, payload, {
@@ -5202,17 +6375,18 @@ app.post('/api/ledger/jobs/:id/progress', (req, res) => {
   }
   return handleLedgerRequest(req, res, () => ({
     success: true,
-    progress: recordForOperator(req, operatingLedger.addProgressUpdate(req.params.id, req.body || {}, { actor: trustedRequestActor(req) })),
+    progress: recordForOperator(req, operatingLedger.addProgressUpdate(req.params.id,
+      fieldTaskScopedPayload(req, req.params.id, req.body || {}), { actor: trustedRequestActor(req) })),
     job: jobForOperator(req, req.params.id),
     dashboard: dashboardForOperator(req)
   }), 201);
 });
 
 app.get('/api/ledger/jobs/:id/production', (req, res) => {
-  return handleLedgerRequest(req, res, () => ({
-    success: true,
-    production: recordForOperator(req, operatingLedger.calculateProductionPerformance(req.params.id))
-  }));
+  return handleLedgerRequest(req, res, () => {
+    const detail = operatingLedger.getJobDetail(req.params.id, { includeAudit: false });
+    return { success: true, production: projectFieldProduction(req, detail, detail.productionControl) };
+  });
 });
 
 app.post('/api/ledger/jobs/:id/production-baselines', (req, res) => {
@@ -5229,14 +6403,14 @@ app.post('/api/ledger/jobs/:id/production-baselines', (req, res) => {
 
 app.post('/api/ledger/jobs/:id/production-entries', (req, res) => {
   return handleLedgerRequest(req, res, () => {
-    const payload = timeLogPayloadForOperator(req, req.body || {});
+    const payload = timeLogPayloadForOperator(req, requireFieldProductionLine(req, req.params.id, req.body || {}));
     const result = operatingLedger.recordProductionEntry(req.params.id, payload, {
       actor: trustedRequestActor(req)
     });
     return {
       success: true,
       entry: recordForOperator(req, result.entry),
-      production: recordForOperator(req, result.production),
+      production: projectFieldProduction(req, operatingLedger.getJobDetail(req.params.id, { includeAudit: false }), result.production),
       replayed: result.replayed,
       job: jobForOperator(req, req.params.id, { includeAudit: true }),
       dashboard: dashboardForOperator(req)
@@ -5330,12 +6504,131 @@ app.post('/api/ledger/jobs/:id/client-feedback', (req, res) => {
   }), 201);
 });
 
-app.get('/api/client-portal', requireClientPortalToken, (req, res) => {
-  return handleLedgerRequest(req, res, () => ({
-    success: true,
-    ...operatingLedger.getClientPortalSnapshot(req.clientPortalToken)
-  }));
+require('./work-board-routes').registerWorkBoardRoutes(app, {
+  ledger: operatingLedger, sendError, actor: trustedRequestActor,
+  authLimit: rateLimitAuthLogin, originAllowed: authenticationOriginAllowed,
+  enabled: process.env.CONTRACTOR_AI_WORK_BOARD_ENABLED === undefined
+    ? !isProduction && runtimeMode === 'local'
+    : process.env.CONTRACTOR_AI_WORK_BOARD_ENABLED === 'true'
 });
+const conversationRuntime = registerConversationRoutes(app, {
+  ledger: operatingLedger, requireClientPortalToken, actor: trustedRequestActor,
+  readUploadPayload, storeUploadedFile, evidenceStorage, reserveEvidenceStorage,
+  releaseEvidenceStorageReservation, imageProcessor, sendError
+});
+const clientDeliveries = new (require('./client-delivery').ClientDelivery)(operatingLedger);
+const clientCompletionReview = new (require('./client-completion-review').ClientCompletionReview)(operatingLedger);
+const workBalance = new (require('./work-balance').WorkBalance)(operatingLedger);
+const operationalRecovery = new (require('./operational-recovery').OperationalRecovery)(operatingLedger);
+const clientDateCommitments = new (require('./client-date-commitments').ClientDateCommitments)(operatingLedger);
+app.get('/api/ledger/jobs/:jobId/work-balance', (req, res) => handleLedgerRequest(req, res, () => ({ success: true, ...workBalance.read(req.params.jobId) })));
+app.post('/api/ledger/jobs/:jobId/work-balance', (req, res) => handleLedgerRequest(req, res, () => ({ success: true, ...workBalance.command(req.params.jobId, req.body, trustedRequestActor(req)) }), 201));
+app.get('/api/ledger/operational-recovery', (req, res) => handleLedgerRequest(req, res, () => ({ success: true, ...operationalRecovery.portfolio({ limit: req.query.limit }) })));
+app.get('/api/ledger/jobs/:jobId/operational-recovery', (req, res) => handleLedgerRequest(req, res, () => ({ success: true, ...operationalRecovery.list(req.params.jobId) })));
+app.post('/api/ledger/jobs/:jobId/operational-recovery', (req, res) => handleLedgerRequest(req, res, () => ({ success: true, ...operationalRecovery.command(req.params.jobId, req.body, trustedRequestActor(req)) }), 201));
+app.get('/api/ledger/jobs/:jobId/client-date-commitments', (req, res) => handleLedgerRequest(req, res, () => ({ success: true, ...clientDateCommitments.view(req.params.jobId) })));
+app.post('/api/ledger/jobs/:jobId/client-date-commitments', (req, res) => handleLedgerRequest(req, res, () => ({ success: true, ...clientDateCommitments.command(req.params.jobId, req.body, trustedRequestActor(req)) }), 201));
+app.get('/api/ledger/jobs/:jobId/client-deliveries', (req, res) => handleLedgerRequest(req, res, () => ({ success: true, ...clientDeliveries.read(req.params.jobId) })));
+app.post('/api/ledger/jobs/:jobId/client-deliveries', (req, res) => handleLedgerRequest(req, res, () => ({ success: true, ...clientDeliveries.command(req.params.jobId, req.body, trustedRequestActor(req)) }), 201));
+app.get('/api/ledger/jobs/:jobId/client-completion-reviews', (req, res) => {
+  if (!['owner', 'office_operator', 'approver'].includes(req.operator?.role)) {
+    return sendError(req, res, 403, 'insufficient_role', 'Only office roles may inspect client completion responses.');
+  }
+  return handleLedgerRequest(req, res, () => ({ success: true, responses: clientCompletionReview.list(req.params.jobId) }));
+});
+app.post('/api/ledger/jobs/:jobId/client-completion-reviews/:reviewId/reviews', (req, res) => {
+  if (!['owner', 'office_operator', 'approver'].includes(req.operator?.role)) {
+    return sendError(req, res, 403, 'insufficient_role', 'Only office roles may review client completion responses.');
+  }
+  return handleLedgerRequest(req, res, () => ({ success: true,
+    ...clientCompletionReview.review(req.params.jobId, req.params.reviewId, req.body || {}, trustedRequestActor(req)) }), 201);
+});
+app.get('/api/client-portal/deliveries', requireClientPortalToken, (req, res) => handleLedgerRequest(req, res, () => ({
+  success: true, ...clientDeliveries.portal(conversationRuntime.chat.fromToken(req.clientPortalToken).id)
+})));
+app.post('/api/client-portal/deliveries/:offerId/responses', requireClientPortalToken, (req, res) => handleLedgerRequest(req, res, () => ({
+  success: true, ...clientDeliveries.submit(conversationRuntime.chat.fromToken(req.clientPortalToken).id, req.params.offerId, req.body)
+}), 201));
+const readConversationPhoto = async (accessId, messageId) => {
+  const retained = conversationRuntime.chat.attachment(accessId, messageId);
+  const bytes = await evidenceStorage.read(retained.document.storageRef);
+  if (crypto.createHash('sha256').update(bytes).digest('hex') !== retained.sha256) throw new UploadRequestError(409, 'photo_integrity_failed', 'Photo integrity check failed.');
+  return bytes;
+};
+registerAnalysisRoutes(app, conversationRuntime, trustedRequestActor, process.env, readConversationPhoto);
+function runDurableConversationAnalysis() {
+  return runDurableConversationAnalysisBatch({ chat: conversationRuntime.chat, readPhoto: readConversationPhoto, env: process.env })
+    .then(result => {
+      if (result.failed || result.success === false) log('warn', 'conversation_analysis_batch_incomplete', {
+        processed: result.processed || 0, failed: result.failed || 0, superseded: result.superseded || 0, code: result.error || null
+      });
+      return result;
+    })
+    .catch(error => {
+      log('warn', 'conversation_analysis_batch_unavailable', { code: error.code || 'conversation_analysis_unavailable' });
+      return { ran: false, reason: error.code || 'conversation_analysis_unavailable' };
+    });
+}
+try {
+  const config = analysisConfig(process.env);
+  if (config.enabled && config.autoAnalyze) {
+    registerAutonomousSchedulerTimer(setInterval(() => { void runDurableConversationAnalysis(); }, 30_000));
+    registerAutonomousSchedulerTimer(setTimeout(() => { void runDurableConversationAnalysis(); }, 750));
+  }
+} catch (error) {
+  log('warn', 'conversation_analysis_scheduler_disabled', { code: error.code || 'conversation_analysis_configuration_invalid' });
+}
+const whatsappChannel = registerWhatsAppWebhook(whatsappWebhookRouter, {
+  route: '/', ledger: operatingLedger, rawParser: express.raw({ type: 'application/json', limit: '1mb', inflate: false }),
+  sendError, authenticationRequired: dashboardAuthRequired,
+  isReady: () => !isProduction && runtimeMode !== 'hosted' || runtimeConfiguration().ready,
+  async storePhoto(file, retain) {
+    const reserved = reserveEvidenceStorage(file.buffer.length);
+    let stored;
+    let committed = false;
+    try {
+      stored = await storeUploadedFile(file);
+      const result = retain(stored);
+      committed = !result.replayed;
+      return result;
+    } finally {
+      if (stored && !committed) await evidenceStorage.remove(stored.storageRef);
+      releaseEvidenceStorageReservation(reserved);
+    }
+  },
+  async readPhoto(accessId, messageId) {
+    const retained = conversationRuntime.chat.attachment(accessId, messageId);
+    const bytes = await evidenceStorage.read(retained.document.storageRef);
+    if (crypto.createHash('sha256').update(bytes).digest('hex') !== retained.sha256) throw new UploadRequestError(409, 'photo_integrity_failed', 'Photo integrity check failed.');
+    return { bytes, mimeType: retained.document.mimeType, filename: retained.document.filename };
+  }
+});
+registerWhatsAppOfficeRoutes(app, conversationRuntime, whatsappChannel, trustedRequestActor);
+
+app.get('/api/client-portal', requireClientPortalToken, (req, res) => {
+  return handleLedgerRequest(req, res, () => {
+    const snapshot = operatingLedger.getClientPortalSnapshot(req.clientPortalToken);
+    return { success: true, ...snapshot,
+      portal: { ...snapshot.portal, completionReview: clientCompletionReview.portal(req.clientPortalToken) } };
+  });
+});
+
+app.get('/api/client-portal/handover-package', requireClientPortalToken, (req, res) => {
+  try {
+    const issuePackage = clientCompletionReview.download(req.clientPortalToken);
+    res.setHeader('Content-Type', issuePackage.mimeType || 'text/html; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(issuePackage.filename)}`);
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    return res.send(issuePackage.content);
+  } catch (error) {
+    return sendError(req, res, error.statusCode || 500, error.code || 'client_handover_unavailable', error.statusCode ? error.message : 'Het handover-dossier kan niet worden geopend.');
+  }
+});
+
+app.post('/api/client-portal/completion-review', requireClientPortalToken, (req, res) => handleLedgerRequest(req, res, () => ({
+  success: true, ...clientCompletionReview.submit(req.clientPortalToken, req.body || {})
+}), 201));
 
 app.patch('/api/client-portal/preferences', requireClientPortalToken, (req, res) => {
   return handleLedgerRequest(req, res, () => ({
@@ -5346,11 +6639,11 @@ app.patch('/api/client-portal/preferences', requireClientPortalToken, (req, res)
 
 app.post('/api/client-portal/messages', requireClientPortalToken, (req, res) => {
   return handleLedgerRequest(req, res, () => {
-    const result = operatingLedger.addClientPortalMessage(req.clientPortalToken, req.body || {});
+    const result = conversationRuntime.chat.createLegacyPortalMessage(req.clientPortalToken, req.body || {});
     return {
       success: true,
       deliveryMode: 'record_only',
-      notSent: false,
+      notSent: true,
       approvalRequired: false,
       ...result
     };
@@ -5580,7 +6873,7 @@ app.post('/api/ledger/jobs/:id/project-meetings/:meetingId/follow-up', (req, res
 
 app.post('/api/ledger/jobs/:id/time-logs', (req, res) => {
   return handleLedgerRequest(req, res, () => {
-    const payload = timeLogPayloadForOperator(req, req.body || {});
+    const payload = timeLogPayloadForOperator(req, fieldTaskScopedPayload(req, req.params.id, req.body || {}));
     return {
       success: true,
       timeLog: recordForOperator(req, operatingLedger.addTimeLog(req.params.id, payload, { actor: trustedRequestActor(req) })),
@@ -5600,7 +6893,9 @@ app.get('/api/ledger/jobs/:id/daily-cycles', (req, res) => {
     });
     return {
       success: true,
-      cycles: req.operator?.role === 'field_worker' ? cycles.map(projectFieldRecord) : cycles,
+      cycles: req.operator?.role === 'field_worker'
+        ? fieldProjectionRecords(req, cycles, 'dailyOperatingCycles').map(projectFieldRecord)
+        : cycles,
       safeguards: {
         internalDailyControlOnly: true,
         approvalRequiredForClose: true,
@@ -5612,7 +6907,7 @@ app.get('/api/ledger/jobs/:id/daily-cycles', (req, res) => {
 
 app.post('/api/ledger/jobs/:id/daily-cycles', (req, res) => {
   return handleLedgerRequest(req, res, () => {
-    let payload = req.body || {};
+    let payload = fieldTaskScopedPayload(req, req.params.id, req.body || {});
     if (req.operator?.role === 'field_worker') {
       const identity = fieldWorkerIdentity(req);
       if (!identity.workerId) {
@@ -5643,7 +6938,15 @@ app.post('/api/ledger/jobs/:id/daily-cycles', (req, res) => {
 
 app.post('/api/ledger/jobs/:id/daily-cycles/:cycleId/end-of-day', (req, res) => {
   return handleLedgerRequest(req, res, () => {
-    const payload = timeLogPayloadForOperator(req, req.body || {});
+    if (req.operator?.role === 'field_worker') {
+      const workerId = fieldWorkerIdentity(req).workerId;
+      const cycle = jobForOperator(req, req.params.id).dailyOperatingCycles
+        .find(item => String(item.id) === String(req.params.cycleId));
+      if (!cycle || String(cycle.leadWorkerId || '') !== String(workerId || '')) {
+        throw Object.assign(new Error('Only the assigned lead worker can submit this cycle end-of-day report.'), { statusCode: 403, code: 'field_daily_cycle_scope_forbidden' });
+      }
+    }
+    const payload = timeLogPayloadForOperator(req, fieldTaskScopedPayload(req, req.params.id, req.body || {}));
     const result = operatingLedger.closeDailyOperatingCycle(req.params.id, req.params.cycleId, payload, {
       actor: trustedRequestActor(req)
     });
@@ -5668,7 +6971,7 @@ app.post('/api/ledger/jobs/:id/daily-cycles/:cycleId/end-of-day', (req, res) => 
 
 app.post('/api/ledger/jobs/:id/daily-logs', (req, res) => {
   return handleLedgerRequest(req, res, () => {
-    const payload = timeLogPayloadForOperator(req, req.body || {});
+    const payload = timeLogPayloadForOperator(req, fieldTaskScopedPayload(req, req.params.id, req.body || {}));
     const dailyLog = operatingLedger.recordFieldDailyLog(req.params.id, payload, { actor: trustedRequestActor(req) });
     return {
       success: true,
@@ -5698,7 +7001,9 @@ app.get('/api/ledger/jobs/:id/expense-receipts', (req, res) => {
     const expenses = operatingLedger.listExpenseReceipts(filters);
     return {
       success: true,
-      expenses: req.operator?.role === 'field_worker' ? expenses.map(projectFieldExpenseReceipt) : expenses,
+      expenses: req.operator?.role === 'field_worker'
+        ? fieldProjectionRecords(req, expenses, 'expenseReceipts').map(projectFieldExpenseReceipt)
+        : expenses,
       policy: {
         approvalRequired: true,
         exactReplay: true,
@@ -5754,7 +7059,9 @@ app.get('/api/ledger/jobs/:id/environmental-activities', (req, res) => {
       periodEnd: req.query.periodEnd || req.query.period_end,
       limit: req.query.limit
     });
-    const projectedActivities = fieldScoped ? activities.map(projectFieldEnvironmentalActivity) : activities;
+    const projectedActivities = fieldScoped
+      ? fieldProjectionRecords(req, activities, 'environmentalActivities').map(projectFieldEnvironmentalActivity)
+      : activities;
     const register = fieldScoped
       ? {
           summary: {
@@ -5799,7 +7106,7 @@ app.get('/api/ledger/jobs/:id/environmental-activities', (req, res) => {
 
 app.post('/api/ledger/jobs/:id/environmental-activities', (req, res) => {
   return handleLedgerRequest(req, res, () => {
-    const payload = environmentalActivityPayloadForOperator(req, req.body || {});
+    const payload = environmentalActivityPayloadForOperator(req, fieldTaskScopedPayload(req, req.params.id, req.body || {}));
     const result = operatingLedger.createEnvironmentalActivity(req.params.id, payload, {
       actor: trustedRequestActor(req)
     });
@@ -5992,7 +7299,8 @@ app.post('/api/ledger/jobs/:id/quality-checks', (req, res) => {
 app.post('/api/ledger/jobs/:id/safety-checks', (req, res) => {
   return handleLedgerRequest(req, res, () => ({
     success: true,
-    safetyCheck: recordForOperator(req, operatingLedger.addSafetyCheck(req.params.id, req.body || {}, { actor: trustedRequestActor(req) })),
+    safetyCheck: recordForOperator(req, operatingLedger.addSafetyCheck(req.params.id,
+      fieldTaskScopedPayload(req, req.params.id, req.body || {}), { actor: trustedRequestActor(req) })),
     job: jobForOperator(req, req.params.id),
     dashboard: dashboardForOperator(req)
   }), 201);
@@ -6182,7 +7490,7 @@ app.post('/api/ledger/jobs/:id/finance-handoffs/prepare', (req, res) => {
 
 app.post('/api/ledger/jobs/:id/punch-items', (req, res) => {
   return handleLedgerRequest(req, res, () => {
-    const punchItem = operatingLedger.createPunchItem(req.params.id, req.body || {}, {
+    const punchItem = operatingLedger.createPunchItem(req.params.id, fieldTaskScopedPayload(req, req.params.id, req.body || {}), {
       actor: trustedRequestActor(req)
     });
     return {
@@ -6252,6 +7560,14 @@ app.post('/api/ledger/jobs/:id/closeout', (req, res) => {
   }), 201);
 });
 
+app.get('/api/ledger/jobs/:id/closeout-assessment', (req, res) => {
+  if (!['owner', 'office_operator', 'approver'].includes(req.operator?.role)) {
+    return sendError(req, res, 403, 'insufficient_role', 'Only office roles may inspect contractual closeout status.');
+  }
+  return handleLedgerRequest(req, res, () => ({ success: true,
+    assessment: new (require('./contractual-closeout').ContractualCloseout)(operatingLedger).assess(req.params.id) }));
+});
+
 app.get('/api/ledger/jobs/:id/handover-readiness', (req, res) => {
   return handleLedgerRequest(req, res, () => ({
     success: true,
@@ -6281,9 +7597,15 @@ app.post('/api/ledger/approvals/:id/resolve', (req, res) => {
   return handleLedgerRequest(req, res, () => {
     const actor = trustedRequestActor(req);
     const payload = { ...(req.body || {}), actor, resolvedBy: actor };
-    const approval = operatingLedger.resolveApproval(req.params.id, payload, {
-      actor,
-      enforceSeparation: req.operator?.authenticated === true
+    const approval = operatingLedger.transaction(() => {
+      const resolved = operatingLedger.resolveApproval(req.params.id, payload, {
+        actor,
+        enforceSeparation: req.operator?.authenticated === true
+      });
+      if (resolved.status === 'approved' && resolved.targetType === 'rfi_record') {
+        new (require('./work-board').WorkBoard)(operatingLedger).notifyWorkerRfiResponse(resolved.targetId, resolved.id);
+      }
+      return resolved;
     });
     let bidPackage = null;
     let bidDecision = null;
@@ -6402,6 +7724,13 @@ app.get('/api/ledger/qualifications', (req, res) => {
   return handleLedgerRequest(req, res, () => ({
     success: true,
     qualificationRegister: operatingLedger.listQualificationRegister(req.query || {})
+  }));
+});
+
+app.get('/api/ledger/qualifications/catalog', (req, res) => {
+  return handleLedgerRequest(req, res, () => ({
+    success: true,
+    catalog: operatingLedger.workforceQualificationCatalog().requirements
   }));
 });
 
@@ -6546,6 +7875,27 @@ app.post('/api/ledger/workers/:id/availability', (req, res) => {
     availabilityRegister: operatingLedger.listWorkerAvailabilityRegister(),
     dashboard: operatingLedger.dashboardSummary()
   }), 201);
+});
+
+app.post('/api/ledger/jobs/:id/assignments/:assignmentId/confirm-missing-checkin-unavailable', (req, res) => {
+  return handleLedgerRequest(req, res, () => {
+    if (!['owner', 'office_operator'].includes(req.operator?.role)) {
+      throw Object.assign(new Error('Only an owner or office operator can confirm shift unavailability.'), {
+        statusCode: 403, code: 'missing_checkin_confirmation_forbidden'
+      });
+    }
+    const result = operatingLedger.confirmMissingCheckinUnavailability(
+      req.params.id, req.params.assignmentId, req.body?.sourceHash, { actor: trustedRequestActor(req) }
+    );
+    const board = new (require('./work-board').WorkBoard)(operatingLedger);
+    for (const invalidated of result.invalidatedCallouts || []) board.notifyStandbyCalloutStatus(invalidated.calloutId, 'revoked');
+    return {
+      success: true,
+      ...result,
+      dashboard: dashboardForOperator(req),
+      externalCommitments: 0
+    };
+  });
 });
 
 app.post('/api/ledger/workers/:id/availability/:periodId/cancellation', (req, res) => {
@@ -7348,6 +8698,14 @@ app.post('/api/ledger/upload', async (req, res) => {
         if (req.operator?.role === 'field_worker' && !fieldWorkerCanAccessJob(req, requestedJobId)) {
           throw new UploadRequestError(403, 'field_job_scope_forbidden', 'This field worker is not assigned to the evidence job.');
         }
+        if (req.operator?.role === 'field_worker') {
+          const fieldJob = jobForOperator(req, requestedJobId);
+          fieldTaskScopedPayload(req, requestedJobId, payload);
+          const photoEvidenceSetId = payload.photoEvidenceSetId || payload.photo_evidence_set_id;
+          if (photoEvidenceSetId && !fieldJob.photoEvidenceSets.some(set => String(set.id) === String(photoEvidenceSetId))) {
+            throw new UploadRequestError(403, 'field_photo_evidence_scope_forbidden', 'This photo evidence workflow is outside your assigned work pack.');
+          }
+        }
         const governedPhotoEvidenceSetId = payload.photoEvidenceSetId || payload.photo_evidence_set_id;
         if (governedPhotoEvidenceSetId && req.operator?.authenticated === true && req.operator?.role !== 'field_worker') {
           throw new UploadRequestError(
@@ -7563,6 +8921,7 @@ function operationalExport() {
   const dashboard = operatingLedger.dashboardSummary();
   const payload = JSON.parse(JSON.stringify({
     exportedAt: new Date().toISOString(),
+    company: operatingLedger.company,
     format: OPERATIONAL_EXPORT_FORMAT,
     purpose: 'operator_reconciliation',
     restorable: false,
@@ -7585,6 +8944,13 @@ function operationalExport() {
     bidPackageParticipants: operatingLedger.listBidPackageParticipants({ limit: 5_000 }),
     takeoffSheets: operatingLedger.listAllTakeoffs({ limit: 5_000 }),
     takeoffItems: operatingLedger.listAllTakeoffItems({ limit: 10_000 }),
+      workContext: new (require('./work-context').WorkContext)(operatingLedger).exportRecords(),
+    workDeliveries: new (require('./work-delivery').WorkDelivery)(operatingLedger).exportRecords(),
+    installedAssets: new (require('./asset-history').AssetHistory)(operatingLedger).exportRecords(),
+    inspectionCoverage: new (require('./inspection-coverage').InspectionCoverage)(operatingLedger).exportRecords(),
+    clientDeliveries: new (require('./client-delivery').ClientDelivery)(operatingLedger).exportRecords(),
+      workBalance: new (require('./work-balance').WorkBalance)(operatingLedger).exportRecords(),
+      operationalRecovery: new (require('./operational-recovery').OperationalRecovery)(operatingLedger).exportRecords(),
     jobs: operatingLedger.listJobs({ includeArchived: true, limit: 500 }),
     formalVariations: operatingLedger.listChangeOrders({ formalOnly: true, limit: 10_000 }),
     tradePartners: operatingLedger.listTradePartners({ includeRetired: true, limit: 500 }),
@@ -7631,6 +8997,8 @@ function operationalExport() {
     photoEvidenceCaptures: operatingLedger.listPhotoEvidenceCaptures({ limit: 20_000 }),
     projectControls: operatingLedger.listProjectControls({ limit: 5000 }),
     handoverPackages: operatingLedger.listHandoverPackages({ limit: 500 }),
+    clientCompletionReviews: new (require('./client-completion-review').ClientCompletionReview)(operatingLedger).exportRecords(),
+    clientCompletionReviewActions: new (require('./client-completion-review').ClientCompletionReview)(operatingLedger).exportReviewActions(),
     approvals: operatingLedger.listApprovals({ status: 'all', limit: 500 }),
     audit: operatingLedger.listAudit({ limit: 1_000 })
   }));
@@ -7723,6 +9091,8 @@ function validateOperationalExport(snapshot) {
     'installationQcControls',
     'photoEvidenceSets',
     'photoEvidenceCaptures',
+    'clientCompletionReviews',
+    'clientCompletionReviewActions',
     'energyPerformanceRecords',
     'dayworkTickets',
     'nonconformances'
@@ -7805,6 +9175,8 @@ function validateOperationalExport(snapshot) {
       opportunitySiteSurveys: Array.isArray(snapshot.opportunitySiteSurveys) ? snapshot.opportunitySiteSurveys.length : 0,
       productionBaselines: snapshot.productionBaselines.length,
       productionEntries: snapshot.productionEntries.length,
+      clientCompletionReviews: Array.isArray(snapshot.clientCompletionReviews) ? snapshot.clientCompletionReviews.length : 0,
+      clientCompletionReviewActions: Array.isArray(snapshot.clientCompletionReviewActions) ? snapshot.clientCompletionReviewActions.length : 0,
       dayworkTickets: Array.isArray(snapshot.dayworkTickets) ? snapshot.dayworkTickets.length : 0,
       attendanceSessions: Array.isArray(snapshot.attendanceSessions) ? snapshot.attendanceSessions.length : 0,
       attendanceAdjustments: Array.isArray(snapshot.attendanceAdjustments) ? snapshot.attendanceAdjustments.length : 0,
@@ -7843,40 +9215,6 @@ function validateOperationalExport(snapshot) {
 
 function sha256File(file) {
   return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
-}
-
-function copyEvidenceBackup(sourceRoot, backupDir) {
-  const source = path.resolve(sourceRoot);
-  const targetRoot = path.resolve(backupDir, 'evidence');
-  if (targetRoot.startsWith(`${source}${path.sep}`) || source.startsWith(`${targetRoot}${path.sep}`) || source === targetRoot) {
-    throw new Error('Evidence and backup directories must not overlap.');
-  }
-  const copied = [];
-  const entries = [];
-  if (!fs.existsSync(source)) return { copied, entries };
-  fs.mkdirSync(targetRoot, { recursive: true });
-
-  const visit = (directory, relativeDirectory = '') => {
-    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
-      if (entry.isSymbolicLink()) throw new Error(`Evidence backup refuses symbolic link: ${entry.name}`);
-      const relative = path.join(relativeDirectory, entry.name);
-      const sourcePath = path.join(directory, entry.name);
-      if (entry.isDirectory()) {
-        visit(sourcePath, relative);
-        continue;
-      }
-      if (!entry.isFile() || entry.name.startsWith('.')) continue;
-      const target = path.resolve(targetRoot, relative);
-      if (!target.startsWith(`${targetRoot}${path.sep}`)) throw new Error('Evidence backup path could not be resolved safely.');
-      fs.mkdirSync(path.dirname(target), { recursive: true });
-      fs.copyFileSync(sourcePath, target);
-      const manifestPath = path.posix.join('evidence', relative.replace(/\\/g, '/'));
-      copied.push(path.relative(__dirname, target).replace(/\\/g, '/'));
-      entries.push({ file: manifestPath, bytes: fs.statSync(target).size, sha256: sha256File(target) });
-    }
-  };
-  visit(source);
-  return { copied, entries };
 }
 
 function assertLocalBackupMode() {
@@ -7946,6 +9284,7 @@ function backupOperationalState() {
     manifestFiles.push({ file: path.basename(exportFile), bytes: fs.statSync(exportFile).size, sha256: sha256File(exportFile) });
     const manifest = signBackupManifest({
       format: BACKUP_MANIFEST_V3,
+      company: operatingLedger.company,
       backupId,
       createdAt,
       databaseMode: operatingLedger.databaseMode,
@@ -8118,6 +9457,11 @@ function validateOperationalRestore(backupId) {
   if (failures.length === 0) {
     try {
       databaseVerification = verifySqliteBackupDatabase(path.join(backupDir, databaseFile));
+      if (databaseVerification.authority || operatingLedger.authority) {
+        failures.push({ file: databaseFile, reason: 'authority_restore_review_required' });
+      }
+      assertSameCompany(operatingLedger.company, databaseVerification.company);
+      if (manifest.company) assertSameCompany(manifest.company, databaseVerification.company);
     } catch (error) {
       failures.push({ file: databaseFile, reason: 'sqlite_restore_validation_failed', message: error.message });
     }
@@ -8439,7 +9783,9 @@ app.post('/api/operations/restore/validate', (req, res) => {
       verification,
       nextStep: verification.valid
         ? `Stop the application, then run npm run restore:local -- --backup-id ${backupId} --confirm RESTORE_${backupId}.`
-        : 'Do not restore this package. Create and verify a new local backup.'
+        : verification.failures.some(failure => failure.reason === 'authority_restore_review_required')
+          ? 'Preserve this package and the company handover records. Authority-aware recovery requires a reviewed procedure; generic restore is blocked.'
+          : 'Do not restore this package. Create and verify a new local backup.'
     });
   } catch (error) {
     return sendError(req, res, error.statusCode || 500, error.code || 'restore_validation_failed', error.statusCode ? error.message : 'Unable to validate the local restore package.', serializeError(error));
@@ -8513,8 +9859,9 @@ app.get('/api/operations/capabilities', asyncHandler(async (req, res) => {
         packageFormat: localSQLite ? 'tar.gz' : null
       },
       restore: {
-        available: localSQLite,
-        validation: localSQLite ? 'retained_backup_id' : 'provider_managed',
+        available: localSQLite && !operatingLedger.authority,
+        validation: operatingLedger.authority ? 'authority_review_required' : localSQLite ? 'retained_backup_id' : 'provider_managed',
+        authorityReviewRequired: Boolean(operatingLedger.authority),
         stoppedRuntimeRequired: localSQLite,
         providerRecoveryRequired: hostedPostgres
       },
@@ -8527,7 +9874,11 @@ app.get('/api/operations/capabilities', asyncHandler(async (req, res) => {
       },
       hostedMigration: {
         available: localSQLite,
-        source: localSQLite ? 'verified_backup_v2' : null,
+        source: localSQLite ? 'frozen_signed_backup_v3' : null,
+        targetedPermitRequired: true,
+        sourceRetirementRequired: true,
+        targetActivationRequired: true,
+        operatorProcedure: 'docs/COMPANY_HANDOVER.md',
         target: 'postgresql+s3',
         evidenceReadBackVerification: true,
         emptyTargetRequired: true,
@@ -9508,6 +10859,29 @@ app.use('/api', (req, res) => {
 });
 
 if (fs.existsSync(distDir)) {
+  app.use((req, res, next) => {
+    if (!['GET', 'HEAD'].includes(req.method)
+      || new Negotiator(req).encoding(['br', 'gzip', 'deflate', 'identity'], { preferred: ['br', 'gzip'] }) !== 'br') return next();
+    const relative = req.path.replace(/^\/+/, '');
+    if (!/^assets\/.+\.(?:js|css)$/.test(relative)) return next();
+    const assetsDirectory = path.resolve(distDir, 'assets');
+    const sourcePath = path.resolve(distDir, relative);
+    if (!sourcePath.startsWith(`${assetsDirectory}${path.sep}`)) return next();
+    const compressedPath = `${sourcePath}.br`;
+    if (!fs.existsSync(compressedPath)) return next();
+    const contentType = relative.endsWith('.js') ? 'text/javascript; charset=utf-8' : 'text/css; charset=utf-8';
+    res.vary('Accept-Encoding');
+    res.setHeader('Content-Encoding', 'br');
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    res.setHeader('Accept-Ranges', 'none');
+    const size = fs.statSync(compressedPath).size;
+    res.setHeader('Content-Length', size);
+    if (req.method === 'HEAD') return res.status(200).end();
+    const stream = fs.createReadStream(compressedPath);
+    stream.on('error', next);
+    return stream.pipe(res);
+  });
   app.use(express.static(distDir, {
     index: false,
     fallthrough: true,

@@ -4,6 +4,7 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 const { ContractorOperatingLedger, BID_DECISION_CRITERIA, BID_DECISION_GATES } = require('../operating-ledger');
+const { SharedMaterialStock } = require('../shared-material-stock');
 
 function temporaryLedger(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'contractor-ai-bid-decision-'));
@@ -66,7 +67,7 @@ function approvedMarketFit(ledger) {
   });
 }
 
-function qualifiedOpportunity(ledger, suffix = 'primary') {
+function qualifiedOpportunity(ledger, suffix = 'primary', capacityForecast = null) {
   const opportunity = ledger.createOpportunity({
     clientName: `Pursuit Client ${suffix}`,
     title: `Arnhem renovation ${suffix}`,
@@ -76,13 +77,322 @@ function qualifiedOpportunity(ledger, suffix = 'primary') {
     postalCode: '6811AA',
     city: 'Arnhem',
     country: 'NL',
-    estimatedValue: 45_000
+    estimatedValue: 45_000,
+    ...(capacityForecast ? { capacityForecast } : {})
   });
   ledger.retainOpportunityFitAssessment(opportunity.id, {
     entryKey: `bid-decision-fit-${suffix}-0001`
   }, { actor: 'office' });
   return opportunity;
 }
+
+test('bid recommendation derives trade-hour feasibility from current profiles and retained commitments', t => {
+  const ledger = temporaryLedger(t);
+  approvedMarketFit(ledger);
+  const window = { windowStart: '2030-01-07', windowEnd: '2030-01-11' };
+  const weekdayDemand = hours => [
+    { date: '2030-01-07', hours }, { date: '2030-01-08', hours }, { date: '2030-01-09', hours },
+    { date: '2030-01-10', hours }, { date: '2030-01-11', hours }
+  ];
+  const feasibleOpportunity = qualifiedOpportunity(ledger, 'crew-feasible', {
+    ...window, trades: [{ role: 'Installer', hours: 32, dailyDemand: weekdayDemand(6.4).slice(0, 5) }]
+  });
+  const shortOpportunity = qualifiedOpportunity(ledger, 'crew-short', {
+    ...window, trades: [{ role: 'Installer', hours: 41, dailyDemand: weekdayDemand(8.2) }]
+  });
+  const mixedOpportunity = qualifiedOpportunity(ledger, 'crew-mixed', {
+    ...window, trades: [{ role: 'Installer', hours: 41, dailyDemand: weekdayDemand(8.2) }, { role: 'Carpenter', hours: 8, dailyDemand: [{ date: '2030-01-07', hours: 8 }] }]
+  });
+  const undatedOpportunity = qualifiedOpportunity(ledger, 'crew-undated', {
+    ...window, trades: [{ role: 'Electrician', hours: 16, dailyDemand: [{ date: '2030-01-07', hours: 8 }, { date: '2030-01-08', hours: 8 }] }]
+  });
+  approvedDecisionPolicy(ledger);
+  const worker = ledger.upsertWorker({ name: 'Forecast installer', role: 'Installer', status: 'available' });
+  ledger.setCrewCapacityProfile(worker.id, {
+    effectiveFrom: window.windowStart,
+    timezone: 'Europe/Amsterdam',
+    dailyHours: { sunday: 0, monday: 8, tuesday: 8, wednesday: 8, thursday: 8, friday: 8, saturday: 0 }
+  });
+  const electrician = ledger.upsertWorker({ name: 'Undated electrician', role: 'Electrician', status: 'available' });
+  ledger.setCrewCapacityProfile(electrician.id, {
+    effectiveFrom: window.windowStart,
+    timezone: 'Europe/Amsterdam',
+    dailyHours: { sunday: 0, monday: 8, tuesday: 8, wednesday: 8, thursday: 8, friday: 8, saturday: 0 }
+  });
+  const undatedJob = ledger.convertOpportunityToJob(undatedOpportunity.id, {}, { actor: 'office' }).job;
+  ledger.addAssignment(undatedJob.id, {
+    workerId: electrician.id,
+    role: 'Electrician',
+    status: 'confirmed'
+  }, { actor: 'office' });
+
+  const feasible = ledger.evaluateOpportunityBidDecision(feasibleOpportunity.id, scorecard());
+  assert.equal(feasible.capacityAssessment.status, 'within_known_capacity');
+  assert.equal(feasible.capacityAssessment.trades[0].knownRemainingHours, 40);
+  assert.equal(feasible.recommendation, 'bid');
+  assert.equal(feasible.capacityAssessment.safeguards.assignmentsChanged, 0);
+
+  const undated = ledger.evaluateOpportunityBidDecision(undatedOpportunity.id, scorecard());
+  assert.equal(undated.capacityAssessment.status, 'unknown');
+  assert.ok(undated.capacityAssessment.gaps.some(gap => gap.code === 'assignment_window_unknown'));
+  assert.equal(undated.recommendation, 'review');
+
+  const shortfall = ledger.evaluateOpportunityBidDecision(shortOpportunity.id, scorecard());
+  assert.equal(shortfall.capacityAssessment.status, 'shortfall');
+  assert.equal(shortfall.gates.find(gate => gate.key === 'capacity_available').status, 'yes');
+  assert.equal(shortfall.gates.find(gate => gate.key === 'capacity_available').outcome, 'block');
+  assert.equal(shortfall.recommendation, 'no_bid');
+  assert.ok(shortfall.blockers.includes('capacity_available'));
+
+  const mixed = ledger.evaluateOpportunityBidDecision(mixedOpportunity.id, scorecard());
+  assert.equal(mixed.capacityAssessment.status, 'shortfall');
+  assert.ok(mixed.capacityAssessment.gaps.some(gap => gap.code === 'trade_role_not_in_workforce'));
+  assert.equal(mixed.gates.find(gate => gate.key === 'capacity_available').outcome, 'block');
+  assert.equal(mixed.recommendation, 'no_bid');
+
+  ledger.setCrewCapacityProfile(worker.id, {
+    effectiveFrom: window.windowStart,
+    timezone: 'Europe/Amsterdam',
+    dailyHours: { sunday: 0, monday: 10, tuesday: 10, wednesday: 10, thursday: 10, friday: 10, saturday: 0 },
+    entryKey: 'bid-capacity-profile-expanded-01'
+  });
+  const refreshed = ledger.evaluateOpportunityBidDecision(shortOpportunity.id, scorecard());
+  assert.equal(refreshed.capacityAssessment.status, 'within_known_capacity');
+  assert.notEqual(refreshed.sourceHash, shortfall.sourceHash);
+});
+
+test('bid capacity does not let one assignment allocation cover another overlapping assignment', t => {
+  const ledger = temporaryLedger(t);
+  approvedMarketFit(ledger);
+  const day = '2030-01-07';
+  const opportunity = qualifiedOpportunity(ledger, 'crew-overlapping-assignments', {
+    windowStart: day,
+    windowEnd: day,
+    trades: [{ role: 'Installer', hours: 4, dailyDemand: [{ date: day, hours: 4 }] }]
+  });
+  approvedDecisionPolicy(ledger);
+  const worker = ledger.upsertWorker({ name: 'Overlapping installer', role: 'Installer', status: 'available' });
+  ledger.setCrewCapacityProfile(worker.id, {
+    effectiveFrom: day,
+    timezone: 'Europe/Amsterdam',
+    dailyHours: { sunday: 0, monday: 8, tuesday: 0, wednesday: 0, thursday: 0, friday: 0, saturday: 0 }
+  });
+
+  const retainedJob = ledger.createIntake({
+    client: { name: 'First retained client', country: 'NL' },
+    title: 'First overlapping shift',
+    scheduledStart: `${day}T08:00:00.000Z`,
+    scheduledEnd: `${day}T16:00:00.000Z`,
+    assignAutomatically: false
+  }, { actor: 'capacity-test' });
+  const retainedAssignment = ledger.addAssignment(retainedJob.id, {
+    workerId: worker.id,
+    role: 'Installer',
+    status: 'confirmed',
+    scheduledStart: `${day}T08:00:00.000Z`,
+    scheduledEnd: `${day}T12:00:00.000Z`
+  }, { actor: 'capacity-test' });
+  ledger.createCrewCapacityAllocation({
+    assignmentId: retainedAssignment.id,
+    workDate: day,
+    plannedHours: 4
+  }, { actor: 'capacity-test' });
+
+  const secondJob = ledger.createIntake({
+    client: { name: 'Second retained client', country: 'NL' },
+    title: 'Second overlapping shift',
+    scheduledStart: `${day}T12:00:00.000Z`,
+    scheduledEnd: `${day}T16:00:00.000Z`,
+    assignAutomatically: false
+  }, { actor: 'capacity-test' });
+  ledger.addAssignment(secondJob.id, {
+    workerId: worker.id,
+    role: 'Installer',
+    status: 'confirmed',
+    scheduledStart: `${day}T12:00:00.000Z`,
+    scheduledEnd: `${day}T16:00:00.000Z`
+  }, { actor: 'capacity-test' });
+
+  const decision = ledger.evaluateOpportunityBidDecision(opportunity.id, scorecard());
+  assert.equal(decision.capacityAssessment.status, 'shortfall');
+  assert.equal(decision.capacityAssessment.trades[0].dailyDemandAssessment[0].knownAvailableHours, 0);
+  assert.ok(decision.capacityAssessment.gaps.some(gap => gap.code === 'assignment_without_day_allocation' && gap.date === day));
+  assert.equal(decision.gates.find(gate => gate.key === 'capacity_available').outcome, 'block');
+  assert.equal(decision.recommendation, 'no_bid');
+});
+
+test('opportunity capacity requires a dated demand distribution before it can pass the capacity gate', t => {
+  const ledger = temporaryLedger(t);
+  approvedMarketFit(ledger);
+  const opportunity = qualifiedOpportunity(ledger, 'crew-distribution-missing', {
+    windowStart: '2030-01-07', windowEnd: '2030-01-11',
+    trades: [{ role: 'Installer', hours: 16 }]
+  });
+  approvedDecisionPolicy(ledger);
+  const worker = ledger.upsertWorker({ name: 'Unscheduled installer', role: 'Installer', status: 'available' });
+  ledger.setCrewCapacityProfile(worker.id, {
+    effectiveFrom: '2030-01-07', timezone: 'Europe/Amsterdam',
+    dailyHours: { sunday: 0, monday: 8, tuesday: 8, wednesday: 8, thursday: 8, friday: 8, saturday: 0 }
+  });
+  const decision = ledger.evaluateOpportunityBidDecision(opportunity.id, scorecard());
+  assert.equal(decision.capacityAssessment.status, 'unknown');
+  assert.ok(decision.capacityAssessment.gaps.some(gap => gap.code === 'daily_demand_distribution_missing'));
+  assert.equal(decision.gates.find(gate => gate.key === 'capacity_available').outcome, 'missing_evidence');
+  assert.equal(decision.recommendation, 'review');
+});
+
+test('dated opportunity demand detects a daily peak despite sufficient total window hours', t => {
+  const ledger = temporaryLedger(t);
+  approvedMarketFit(ledger);
+  const opportunity = qualifiedOpportunity(ledger, 'crew-daily-peak', {
+    windowStart: '2030-01-07', windowEnd: '2030-01-11',
+    trades: [{ role: 'Installer', hours: 32, dailyDemand: [
+      { date: '2030-01-07', hours: 20 }, { date: '2030-01-08', hours: 3 },
+      { date: '2030-01-09', hours: 3 }, { date: '2030-01-10', hours: 3 }, { date: '2030-01-11', hours: 3 }
+    ] }]
+  });
+  approvedDecisionPolicy(ledger);
+  const worker = ledger.upsertWorker({ name: 'Peak-limited installer', role: 'Installer', status: 'available' });
+  ledger.setCrewCapacityProfile(worker.id, {
+    effectiveFrom: '2030-01-07', timezone: 'Europe/Amsterdam',
+    dailyHours: { sunday: 0, monday: 8, tuesday: 8, wednesday: 8, thursday: 8, friday: 8, saturday: 0 }
+  });
+  const decision = ledger.evaluateOpportunityBidDecision(opportunity.id, scorecard());
+  assert.equal(decision.capacityAssessment.trades[0].knownRemainingHours, 40);
+  assert.equal(decision.capacityAssessment.status, 'shortfall');
+  assert.equal(decision.capacityAssessment.trades[0].dailyDemandAssessment[0].observedShortfall, true);
+  assert.equal(decision.recommendation, 'no_bid');
+});
+
+test('required qualification evidence gates opportunity crew capacity and stales a pending decision approval', t => {
+  const ledger = temporaryLedger(t);
+  approvedMarketFit(ledger);
+  const opportunity = qualifiedOpportunity(ledger, 'crew-qualified', {
+    windowStart: '2030-01-07', windowEnd: '2030-01-07',
+    trades: [{ role: 'Installer', hours: 8, requiredQualifications: ['vca'], dailyDemand: [{ date: '2030-01-07', hours: 8 }] }]
+  });
+  approvedDecisionPolicy(ledger);
+  const worker = ledger.upsertWorker({ name: 'Installer with pending VCA', role: 'Installer', status: 'available' });
+  ledger.setCrewCapacityProfile(worker.id, {
+    effectiveFrom: '2030-01-07', timezone: 'Europe/Amsterdam',
+    dailyHours: { sunday: 0, monday: 8, tuesday: 8, wednesday: 8, thursday: 8, friday: 8, saturday: 0 }
+  });
+
+  const withoutProof = ledger.evaluateOpportunityBidDecision(opportunity.id, scorecard());
+  assert.equal(withoutProof.capacityAssessment.status, 'shortfall');
+  assert.equal(withoutProof.capacityAssessment.trades[0].knownRemainingHours, 0);
+  assert.equal(withoutProof.capacityAssessment.trades[0].qualificationReadiness.qualifiedWorkers, 0);
+  assert.ok(withoutProof.capacityAssessment.gaps.some(gap => gap.code === 'worker_qualification_not_ready'));
+
+  const requested = ledger.requestOpportunityBidDecision(opportunity.id, {
+    entryKey: 'opportunity-qualified-capacity-0001',
+    ...scorecard(),
+    proposedDecision: 'no_bid',
+    rationale: 'Do not pursue until required qualified workforce capacity is evidenced.'
+  }, { actor: 'office' });
+  const credential = ledger.requestWorkerCredential(worker.id, {
+    credentialType: 'vca_basic',
+    issuer: 'Verified VCA examination centre',
+    credentialNumber: 'VCA-QUALIFIED-CAPACITY-001',
+    issuedOn: new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10),
+    expiresOn: new Date(Date.now() + 3650 * 86_400_000).toISOString().slice(0, 10),
+    evidenceReference: 'Reviewed current certificate evidence for VCA-QUALIFIED-CAPACITY-001'
+  }, { actor: 'office' });
+  ledger.resolveApproval(credential.approval.id, {
+    status: 'approved', resolvedBy: 'qualification-approver', reason: 'Issuer, identity, dates and certificate evidence checked.'
+  });
+
+  const withProof = ledger.evaluateOpportunityBidDecision(opportunity.id, scorecard());
+  assert.equal(withProof.capacityAssessment.status, 'within_known_capacity');
+  assert.equal(withProof.capacityAssessment.trades[0].knownRemainingHours, 8);
+  assert.equal(withProof.capacityAssessment.trades[0].qualificationReadiness.qualifiedWorkers, 1);
+  assert.notEqual(withProof.sourceHash, withoutProof.sourceHash);
+  assert.throws(() => ledger.resolveApproval(requested.approval.id, {
+    status: 'approved', resolvedBy: 'commercial-approver', reason: 'Try to approve the stale workforce decision.'
+  }), error => error.code === 'bid_decision_stale' && error.statusCode === 409);
+});
+
+test('opportunity crew review separates exact worker-declared skill signals from verified capacity', t => {
+  const ledger = temporaryLedger(t);
+  approvedMarketFit(ledger);
+  const opportunity = qualifiedOpportunity(ledger, 'declared-skills', {
+    windowStart: '2030-01-07', windowEnd: '2030-01-07',
+    trades: [{ role: 'Installer', hours: 8, requiredSkills: ['timber framing'], dailyDemand: [{ date: '2030-01-07', hours: 8 }] }]
+  });
+  approvedDecisionPolicy(ledger);
+  const worker = ledger.upsertWorker({ name: 'Skill-listed installer', role: 'Installer', status: 'available', skills: ['Timber Framing'] });
+  ledger.setCrewCapacityProfile(worker.id, {
+    effectiveFrom: '2030-01-07', timezone: 'Europe/Amsterdam',
+    dailyHours: { sunday: 0, monday: 8, tuesday: 8, wednesday: 8, thursday: 8, friday: 8, saturday: 0 }
+  });
+  const other = ledger.upsertWorker({ name: 'Installer without listed skill', role: 'Installer', status: 'available', skills: ['drywall'] });
+  ledger.setCrewCapacityProfile(other.id, {
+    effectiveFrom: '2030-01-07', timezone: 'Europe/Amsterdam',
+    dailyHours: { sunday: 0, monday: 8, tuesday: 8, wednesday: 8, thursday: 8, friday: 8, saturday: 0 }
+  });
+
+  const decision = ledger.evaluateOpportunityBidDecision(opportunity.id, scorecard());
+  const trade = decision.capacityAssessment.trades[0];
+  assert.equal(trade.knownRemainingHours, 16);
+  assert.equal(trade.declaredSkillReadiness.evidence, 'self_declared_unverified');
+  assert.equal(trade.declaredSkillReadiness.matchedWorkers, 1);
+  assert.equal(trade.declaredSkillReadiness.knownRemainingHours, 8);
+  assert.equal(trade.declaredSkillReadiness.dailyDemandAssessment[0].observedShortfall, false);
+  assert.ok(decision.capacityAssessment.gaps.some(gap => gap.code === 'worker_declared_skill_not_listed' && gap.workerId === other.id));
+  assert.ok(decision.capacityAssessment.scopeLimits.includes('declared_skills_are_unverified'));
+
+  ledger.upsertWorker({
+    id: worker.id, name: worker.name, role: worker.role, status: worker.status,
+    skills: [...worker.skills, 'Wall sheathing']
+  });
+  const changedWorkerAssessment = ledger.evaluateOpportunityBidDecision(opportunity.id, scorecard());
+  assert.notEqual(changedWorkerAssessment.sourceHash, decision.sourceHash);
+});
+
+test('opportunity capacity separately models peak supervision headcount and checks the supervisor role', t => {
+  const ledger = temporaryLedger(t);
+  approvedMarketFit(ledger);
+  const opportunity = qualifiedOpportunity(ledger, 'supervision-capacity', {
+    windowStart: '2030-01-07', windowEnd: '2030-01-07',
+    trades: [{ role: 'Installer', hours: 32, dailyDemand: [{ date: '2030-01-07', hours: 32 }], supervision: {
+      role: 'Site Supervisor', workersPerSupervisor: 4,
+      dailyDemand: [{ date: '2030-01-07', crewSize: 8, supervisorShiftHours: 8 }]
+    } }]
+  });
+  approvedDecisionPolicy(ledger);
+  for (let index = 0; index < 4; index += 1) {
+    const worker = ledger.upsertWorker({ name: `Supervised installer ${index}`, role: 'Installer', status: 'available' });
+    ledger.setCrewCapacityProfile(worker.id, {
+      effectiveFrom: '2030-01-07', timezone: 'Europe/Amsterdam',
+      dailyHours: { sunday: 0, monday: 8, tuesday: 0, wednesday: 0, thursday: 0, friday: 0, saturday: 0 }
+    });
+  }
+  const supervisor = ledger.upsertWorker({ name: 'Available site supervisor', role: 'Site Supervisor', status: 'available' });
+  ledger.setCrewCapacityProfile(supervisor.id, {
+    effectiveFrom: '2030-01-07', timezone: 'Europe/Amsterdam',
+    dailyHours: { sunday: 0, monday: 8, tuesday: 0, wednesday: 0, thursday: 0, friday: 0, saturday: 0 }
+  });
+
+  const oneSupervisor = ledger.evaluateOpportunityBidDecision(opportunity.id, scorecard());
+  const supervision = oneSupervisor.capacityAssessment.trades.find(item => item.demandKind === 'supervision');
+  assert.equal(supervision.role, 'Site Supervisor');
+  assert.equal(supervision.requiredHours, 16);
+  assert.equal(supervision.knownRemainingHours, 8);
+  assert.equal(supervision.supervisionFor[0].supervisorsRequired, 2);
+  assert.equal(supervision.supervisionFor[0].requiredHours, 16);
+  assert.equal(oneSupervisor.capacityAssessment.status, 'shortfall');
+  assert.ok(oneSupervisor.capacityAssessment.scopeLimits.includes('supervision_is_an_estimated_distinct_role'));
+
+  const secondSupervisor = ledger.upsertWorker({ name: 'Second site supervisor', role: 'Site Supervisor', status: 'available' });
+  ledger.setCrewCapacityProfile(secondSupervisor.id, {
+    effectiveFrom: '2030-01-07', timezone: 'Europe/Amsterdam',
+    dailyHours: { sunday: 0, monday: 8, tuesday: 0, wednesday: 0, thursday: 0, friday: 0, saturday: 0 }
+  });
+  const twoSupervisors = ledger.evaluateOpportunityBidDecision(opportunity.id, scorecard());
+  assert.equal(twoSupervisors.capacityAssessment.status, 'within_known_capacity');
+  assert.equal(twoSupervisors.capacityAssessment.trades.find(item => item.demandKind === 'supervision').knownRemainingHours, 16);
+  assert.notEqual(twoSupervisors.sourceHash, oneSupervisor.sourceHash);
+});
 
 function approvedDecisionPolicy(ledger) {
   const requested = ledger.requestBidDecisionPolicy(decisionPolicy(), { actor: 'owner' });
@@ -91,6 +401,74 @@ function approvedDecisionPolicy(ledger) {
   });
   return requested;
 }
+
+test('opportunity material readiness uses exact warehouse stock and marks competing pipeline demand without reserving', t => {
+  const ledger = temporaryLedger(t);
+  const stock = new SharedMaterialStock(ledger);
+  const material = stock.count({ name: 'Exterior insulation board', sku: 'INS-001', unit: 'm2', countedQuantity: 10,
+    reference: 'STOCK-INS-001', note: 'Verified warehouse count.', entryKey: 'stock-ins-001' }).material;
+  const create = (suffix, quantity, unit = 'm2') => ledger.createOpportunity({
+    clientName: `Material Client ${suffix}`,
+    title: `Material forecast ${suffix}`,
+    materialForecast: [{ materialId: material.id, quantity, unit }]
+  }, { actor: 'office' });
+  const current = create('current', 4);
+  create('competing', 7);
+  const committedJob = ledger.createIntake({ title: 'Existing reserved material job', clientName: 'Committed stock client', assignAutomatically: false });
+  const requirement = ledger.addMaterialRequirement(committedJob.id, {
+    name: material.name, materialId: material.id, quantity: 2, unit: material.unit
+  });
+  stock.reserve(committedJob.id, {
+    materialRequirementId: requirement.id, quantity: 2, sourceReference: 'STOCK-INS-001', entryKey: 'reserve-ins-001'
+  }, { actor: 'office' });
+  approvedMarketFit(ledger);
+  ledger.retainOpportunityFitAssessment(current.id, { entryKey: 'material-current-fit-0001' }, { actor: 'office' });
+  approvedDecisionPolicy(ledger);
+
+  const contested = ledger.evaluateOpportunityBidDecision(current.id).materialReadiness;
+  assert.equal(contested.status, 'pipeline_contention');
+  assert.equal(contested.materials[0].availableQuantity, 8);
+  assert.equal(contested.materials[0].competingPipelineQuantity, 7);
+  assert.equal(contested.materials[0].pipelineShortfallQuantity, 3);
+  assert.equal(contested.safeguards.reservationsChanged, 0);
+  assert.equal(contested.safeguards.ordersPlaced, 0);
+  assert.equal(stock.list().materials.find(row => row.id === material.id).availableQuantity, 8);
+  const decision = ledger.requestOpportunityBidDecision(current.id, {
+    entryKey: 'material-readiness-decision-0001', ...scorecard(), proposedDecision: 'bid',
+    rationale: 'Current material stock and competing pipeline demand were reviewed.',
+    overrideReason: 'Retain this pursuit for review while reconciling the exact material needs.'
+  }, { actor: 'office' });
+  ledger.resolveApproval(decision.approval.id, {
+    status: 'approved', resolvedBy: 'approver', reason: 'The internal pursuit decision was reviewed.'
+  });
+  assert.equal(ledger.bidDecisionRegister().opportunities.find(item => item.opportunity.id === current.id).stale, false);
+
+  ledger.updateOpportunity(ledger.listOpportunities({ limit: 10 }).find(item => item.title.endsWith('competing')).id, {
+    stage: 'lost', lostReason: 'Client selected another contractor.'
+  }, { actor: 'office' });
+  const uncontested = ledger.evaluateOpportunityBidDecision(current.id).materialReadiness;
+  assert.equal(uncontested.status, 'within_known_stock');
+  assert.equal(uncontested.materials[0].competingOpportunityCount, 0);
+  assert.notEqual(uncontested.sourceHash, contested.sourceHash);
+
+  stock.count({ materialId: material.id, countedQuantity: 3, reference: 'STOCK-INS-002', note: 'Recount after issue.', entryKey: 'stock-ins-002' });
+  const shortfall = ledger.evaluateOpportunityBidDecision(current.id).materialReadiness;
+  assert.equal(shortfall.status, 'shortfall');
+  assert.equal(shortfall.materials[0].shortfallQuantity, 3);
+  assert.notEqual(shortfall.sourceHash, uncontested.sourceHash);
+  assert.equal(ledger.bidDecisionRegister().opportunities.find(item => item.opportunity.id === current.id).stale, true);
+});
+
+test('opportunity material forecasts require exact IDs, unique rows, and valid quantities and units', t => {
+  const ledger = temporaryLedger(t);
+  const base = { clientName: 'Material Validation Client', title: 'Material forecast validation' };
+  assert.throws(() => ledger.createOpportunity({ ...base, materialForecast: [{ materialId: 'mat-a', quantity: 1, unit: 'm2' }, { materialId: 'mat-a', quantity: 2, unit: 'm2' }] }),
+    error => error.code === 'opportunity_material_id_invalid');
+  assert.throws(() => ledger.createOpportunity({ ...base, materialForecast: [{ materialId: 'mat-a', quantity: 0, unit: 'm2' }] }),
+    error => error.code === 'opportunity_material_quantity_invalid');
+  assert.throws(() => ledger.createOpportunity({ ...base, materialForecast: [{ materialId: 'mat-a', quantity: 1, unit: '' }] }),
+    error => error.code === 'opportunity_material_unit_invalid');
+});
 
 test('bid/no-bid policy and pursuit decisions are replay-safe, approval-gated, source-bound, and stage-neutral', t => {
   const ledger = temporaryLedger(t);
@@ -175,7 +553,7 @@ test('bid/no-bid policy and pursuit decisions are replay-safe, approval-gated, s
   assert.equal(ledger.getOpportunity(opportunity.id).stage, 'new');
   assert.equal(register.summary.noBid, 1);
   assert.equal(ledger.diagnose().valid, true);
-  assert.equal(ledger.migrationStatus().currentVersion, '072_operator_locale_preferences');
+  assert.equal(ledger.migrationStatus().currentVersion, '096_loading_read_indexes');
 });
 
 test('recommendation overrides require rationale and approval rejects stale pursuit evidence atomically', t => {

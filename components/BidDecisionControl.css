@@ -286,6 +286,55 @@
   font-size: 12px;
 }
 
+.bid-capacity-check {
+  display: grid;
+  gap: 9px;
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid #c8d8d0;
+  border-left: 3px solid #0c775f;
+  border-radius: 6px;
+  background: #f5faf7;
+}
+
+.bid-capacity-check.capacity-shortfall {
+  border-color: #f0c6b3;
+  border-left-color: #b54708;
+  background: #fff8f4;
+}
+
+.bid-capacity-check.capacity-unknown {
+  border-color: #ead79f;
+  border-left-color: #b7791f;
+  background: #fffcf2;
+}
+
+.bid-capacity-heading,
+.bid-capacity-check li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.bid-capacity-check p,
+.bid-capacity-check ul { margin: 0; }
+
+.bid-capacity-check ul {
+  display: grid;
+  gap: 5px;
+  padding-left: 18px;
+}
+
+.bid-capacity-check li span,
+.bid-capacity-check small {
+  color: #586861;
+  font-size: 12px;
+}
+
+.bid-capacity-check li span { text-align: right; }
+.bid-capacity-check small { line-height: 1.45; }
+
 @media (max-width: 900px) {
   .bid-decision-row {
     align-items: start;
@@ -356,4 +405,12 @@
     align-items: flex-start;
     flex-direction: column;
   }
+
+  .bid-capacity-check li {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .bid-capacity-check li span { text-align: left; }
 }

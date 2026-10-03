@@ -62,11 +62,14 @@ function variationPayload(entryKey, patch = {}) {
 }
 
 function issueVariation(ledger, jobId, changeOrder) {
-  ledger.resolveApproval(changeOrder.approvalId, {
-    status: 'approved',
-    resolvedBy: 'commercial-approver',
-    reason: 'Contract source, cause, price, schedule, risk, assumptions, and exclusions verified.'
-  });
+  const formalApproval = ledger.db.prepare('SELECT status FROM approvals WHERE id = ?').get(changeOrder.approvalId);
+  if (formalApproval?.status === 'pending') {
+    ledger.resolveApproval(changeOrder.approvalId, {
+      status: 'approved',
+      resolvedBy: 'commercial-approver',
+      reason: 'Contract source, cause, price, schedule, risk, assumptions, and exclusions verified.'
+    });
+  }
   const issue = ledger.prepareChangeOrderIssuePackage(jobId, changeOrder.id, {}, { actor: 'commercial-operator' });
   ledger.resolveApproval(issue.approval.id, {
     status: 'approved',
@@ -94,7 +97,20 @@ test('formal variations preserve exact replay, client revision control, and veri
     assignAutomatically: false
   }, { actor: 'intake' });
 
-  const first = ledger.createChangeOrder(job.id, variationPayload('formal-variation-entry-0001'), { actor: 'commercial-operator' });
+  const conversationOrigin = {
+    evidenceKind: 'message_finding',
+    accessId: 'private-portal-access-0042',
+    messageId: 'private-message-0042',
+    messageSourceHash: 'a'.repeat(64),
+    quote: 'Please quote the revised <occupied> access route & keep it clear.',
+    category: 'request',
+    suggestion: 'Internal suggestion that must not appear in the customer package.',
+    uncertainty: 'Internal uncertainty that must not appear in the customer package.',
+    analysisIdentity: 'b'.repeat(64)
+  };
+  const first = ledger.createChangeOrder(job.id, variationPayload('formal-variation-entry-0001'), {
+    actor: 'commercial-operator', conversationOrigin
+  });
   assert.match(first.variationNumber, /^VAR-\d{4}-000001$/);
   assert.equal(first.revisionNumber, 1);
   assert.equal(first.integrityValid, true);
@@ -103,7 +119,9 @@ test('formal variations preserve exact replay, client revision control, and veri
   assert.equal(first.formalControl.workAuthorization, 'not_authorized_until_verified_client_acceptance');
   assert.equal(first.data.externalCommitments, 0);
 
-  const replay = ledger.createChangeOrder(job.id, variationPayload('formal-variation-entry-0001'), { actor: 'retrying-operator' });
+  const replay = ledger.createChangeOrder(job.id, variationPayload('formal-variation-entry-0001'), {
+    actor: 'retrying-operator', conversationOrigin
+  });
   assert.equal(replay.id, first.id);
   assert.equal(replay.replayed, true);
   assert.equal(ledger.db.prepare('SELECT last_value FROM variation_number_sequences').get().last_value, 1);
@@ -114,6 +132,10 @@ test('formal variations preserve exact replay, client revision control, and veri
 
   const firstIssue = issueVariation(ledger, job.id, first);
   assert.match(firstIssue.issueReference, /^CO-\d{4}-000001$/);
+  assert.deepEqual(firstIssue.document.data.snapshot.changeOrder.conversationOrigin, conversationOrigin);
+  const firstIssuePackage = ledger.getChangeOrderIssuePackage(firstIssue.document.id);
+  assert.match(firstIssuePackage.html, /Customer request reference[\s\S]*Please quote the revised &lt;occupied&gt; access route &amp; keep it clear\./);
+  assert.doesNotMatch(firstIssuePackage.html, /private-portal-access-0042|private-message-0042|Internal suggestion|Internal uncertainty|analysisIdentity/);
   const portalExpiry = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
   const access = ledger.createClientPortalAccess(job.id, { expiresAt: portalExpiry }, { actor: 'office' });
   ledger.resolveApproval(access.approval.id, { status: 'approved', resolvedBy: 'portal-approver' });
@@ -121,9 +143,14 @@ test('formal variations preserve exact replay, client revision control, and veri
   assert.equal(portal.job.variations.length, 1);
   assert.equal(portal.job.variations[0].variationNumber, first.variationNumber);
   assert.equal(portal.job.variations[0].responseAllowed, true);
+  assert.equal(portal.job.variations[0].conversationOrigin, undefined);
+  assert.equal(portal.job.variations[0].data, undefined);
+  assert.doesNotMatch(JSON.stringify(portal), /private-portal-access-0042|private-message-0042|Internal suggestion|Internal uncertainty|analysisIdentity/);
   const downloaded = ledger.getClientPortalChangeOrderIssuePackage(access.portalToken, first.id);
   assert.equal(downloaded.packageHash, firstIssue.packageHash);
   assert.equal(downloaded.filename, `${first.variationNumber}-R1-${firstIssue.issueReference}.html`);
+  assert.match(downloaded.html, /&lt;occupied&gt; access route &amp; keep it clear/);
+  assert.doesNotMatch(downloaded.html, /private-portal-access-0042|private-message-0042|Internal suggestion|Internal uncertainty|analysisIdentity/);
 
   const requestedRevision = ledger.submitClientPortalChangeOrderResponse(access.portalToken, first.id, {
     responseId: 'variation-response-0001',
@@ -144,6 +171,10 @@ test('formal variations preserve exact replay, client revision control, and veri
   });
   assert.equal(ledger.getJobDetail(job.id).changeOrders.find(item => item.id === first.id).status, 'changes_requested');
   assert.equal(ledger.getJobDetail(job.id).contractValue, 1000);
+  const requestedFollowUp = ledger.buildTodayCommandPlan({ jobId: job.id }).actions.find(item => item.actionType === 'prepare_client_variation_revision');
+  assert.equal(requestedFollowUp.data.changeOrderId, first.id);
+  assert.equal(requestedFollowUp.data.clientResponseApprovalId, requestedRevision.approval.id);
+  assert.equal(requestedFollowUp.safeDraftable, false);
 
   const revision = ledger.createChangeOrder(job.id, variationPayload('formal-variation-entry-0002', {
     supersedesChangeOrderId: first.id,
@@ -154,7 +185,30 @@ test('formal variations preserve exact replay, client revision control, and veri
   }), { actor: 'commercial-operator' });
   assert.equal(revision.variationNumber, first.variationNumber);
   assert.equal(revision.revisionNumber, 2);
+  assert.deepEqual(revision.snapshot.conversationOrigin, conversationOrigin);
+  assert.deepEqual(revision.snapshot.revisionOrigin, {
+    evidenceKind: 'client_variation_response',
+    changeOrderId: first.id,
+    variationNumber: first.variationNumber,
+    revisionNumber: first.revisionNumber,
+    approvalId: requestedRevision.approval.id,
+    responseId: 'variation-response-0001',
+    decision: 'changes_requested',
+    note: 'Please remove the wall protection and retain floor protection only.',
+    submittedAt: requestedRevision.response.submittedAt,
+    portalAccessId: access.id,
+    issueReference: firstIssue.issueReference,
+    packageHash: firstIssue.packageHash,
+    sourceBasisHash: firstIssue.document.data.snapshot.changeOrder.sourceBasisHash,
+    formalSourceHash: first.sourceHash,
+    formalSnapshotHash: first.snapshotHash
+  });
+  const revisionApproval = ledger.listApprovals({ status: 'pending' }).find(item => item.targetId === revision.id);
+  assert.equal(revisionApproval.decision.preview.revisionOrigin.note, requestedRevision.response.note);
   const revisionIssue = issueVariation(ledger, job.id, revision);
+  const revisionPackage = ledger.getChangeOrderIssuePackage(revisionIssue.document.id);
+  assert.match(revisionPackage.html, /Customer revision request - response to VAR-[0-9]{4}-[0-9]{6} \/ R1[\s\S]*Please remove the wall protection and retain floor protection only\./);
+  assert.doesNotMatch(revisionPackage.html, /private-portal-access-0042|private-message-0042|Internal suggestion|Internal uncertainty|analysisIdentity/);
   assert.equal(ledger.getJobDetail(job.id).changeOrders.find(item => item.id === first.id).status, 'superseded');
 
   assert.throws(
@@ -187,6 +241,66 @@ test('formal variations preserve exact replay, client revision control, and veri
   assert.equal(detail.contractValue, 1100);
   assert.ok(detail.audit.some(event => event.action === 'request_change_order_revision'));
   assert.ok(detail.audit.some(event => event.action === 'accept_change_order_contract'));
+
+  const rejectedVariation = ledger.createChangeOrder(job.id, variationPayload('formal-variation-entry-0003', {
+    title: 'Revised access marshal coverage',
+    scopeDelta: 'Add an access marshal during occupied-building deliveries.',
+    justification: 'The changed delivery route requires managed access during material arrival.',
+    lineItems: [{ description: 'Access marshal', quantity: 1, unitPrice: 80, costCode: 'CO-ACCESS' }]
+  }), { actor: 'commercial-operator' });
+  const rejectedIssue = issueVariation(ledger, job.id, rejectedVariation);
+  const rejectedResponse = ledger.submitClientPortalChangeOrderResponse(access.portalToken, rejectedVariation.id, {
+    responseId: 'variation-response-0003',
+    decision: 'rejected',
+    note: 'Do not add a marshal; deliveries must remain within the existing site arrangement.'
+  });
+  ledger.resolveApproval(rejectedResponse.approval.id, {
+    status: 'approved',
+    resolvedBy: 'contract-approver',
+    reason: 'Client response, authority, delivery and exact issued package verified.'
+  });
+  const rejectedFollowUp = ledger.buildTodayCommandPlan({ jobId: job.id }).actions.find(item => item.actionType === 'prepare_client_variation_revision');
+  assert.equal(rejectedFollowUp.data.changeOrderId, rejectedVariation.id);
+  assert.equal(rejectedFollowUp.data.clientResponseApprovalId, rejectedResponse.approval.id);
+  const rejectionRevision = ledger.createChangeOrder(job.id, variationPayload('formal-variation-entry-0004', {
+    supersedesChangeOrderId: rejectedVariation.id,
+    title: 'Access arrangement without marshal',
+    scopeDelta: 'Retain the existing site access arrangement without additional marshal coverage.',
+    justification: 'This revision responds to the client rejection and removes the proposed marshal.',
+    lineItems: [{ description: 'Access arrangement review', quantity: 1, unitPrice: 25, costCode: 'CO-ACCESS' }]
+  }), { actor: 'commercial-operator' });
+  ledger.resolveApproval(rejectionRevision.approvalId, {
+    status: 'rejected',
+    resolvedBy: 'commercial-approver',
+    reason: 'The revised scope and price basis need additional internal evidence.'
+  });
+  const internalRejectionFollowUp = ledger.buildTodayCommandPlan({ jobId: job.id }).actions.find(item => item.actionType === 'prepare_client_variation_revision');
+  assert.equal(internalRejectionFollowUp.data.changeOrderId, rejectionRevision.id);
+  assert.match(internalRejectionFollowUp.message, /internal approval rejected/);
+  const revisedAfterInternalRejection = ledger.createChangeOrder(job.id, variationPayload('formal-variation-entry-0005', {
+    supersedesChangeOrderId: rejectionRevision.id,
+    title: 'Access arrangement review revision',
+    scopeDelta: 'Retain current site access and clarify the delivery coordination responsibilities.',
+    justification: 'This revision addresses the internal review while preserving the client rejection as its source.',
+    lineItems: [{ description: 'Access coordination review', quantity: 1, unitPrice: 30, costCode: 'CO-ACCESS' }]
+  }), { actor: 'commercial-operator' });
+  assert.equal(revisedAfterInternalRejection.revisionNumber, 3);
+  assert.deepEqual(revisedAfterInternalRejection.snapshot.revisionOrigin, rejectionRevision.snapshot.revisionOrigin);
+  ledger.resolveApproval(revisedAfterInternalRejection.approvalId, {
+    status: 'approved',
+    resolvedBy: 'commercial-approver',
+    reason: 'Current contract source, revision response, scope and price verified.'
+  });
+  assert.equal(ledger.getJobDetail(job.id).changeOrders.find(item => item.id === rejectedVariation.id).status, 'superseded');
+  assert.equal(ledger.getJobDetail(job.id).changeOrders.find(item => item.id === rejectionRevision.id).status, 'superseded');
+  assert.equal(ledger.buildTodayCommandPlan({ jobId: job.id }).actions.some(item => item.actionType === 'prepare_client_variation_revision'), false);
+  assert.equal(rejectionRevision.snapshot.revisionOrigin.decision, 'rejected');
+  assert.equal(rejectionRevision.snapshot.revisionOrigin.issueReference, rejectedIssue.issueReference);
+  assert.equal(rejectionRevision.snapshot.revisionOrigin.note, 'Do not add a marshal; deliveries must remain within the existing site arrangement.');
+  const rejectionRevisionIssue = issueVariation(ledger, job.id, revisedAfterInternalRejection);
+  const rejectionRevisionPackage = ledger.getChangeOrderIssuePackage(rejectionRevisionIssue.document.id);
+  assert.match(rejectionRevisionPackage.html, /Customer rejection reason - response to VAR-[0-9]{4}-[0-9]{6} \/ R1[\s\S]*Do not add a marshal; deliveries must remain within the existing site arrangement\./);
+
   const diagnostics = ledger.diagnose();
   assert.equal(diagnostics.valid, true, JSON.stringify(diagnostics.issues));
   assert.equal(ledger.verifyAuditIntegrity().valid, true);

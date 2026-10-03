@@ -23,7 +23,8 @@ test('operator retains safe job setup drafts while evidence and commitments rema
   const coverageBefore = intake.job.capabilitySummary.averageCoverage;
 
   await page.goto('/');
-  await expect(page.getByRole('heading', { name: 'Today' })).toBeVisible();
+  await page.getByLabel(/^(Language|Taal)$/).selectOption('en-GB');
+  await expect(page.getByRole('heading', { level: 1, exact: true, name: 'Today' })).toBeVisible();
   await page.getByRole('button', { name: `Open ${title}` }).first().click();
 
   const workspace = page.getByTestId('job-workspace');

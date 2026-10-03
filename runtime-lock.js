@@ -4,8 +4,9 @@ const path = require('node:path');
 
 const RUNTIME_LOCK_FORMAT = 'contractor-ai-runtime-lock/v1';
 
-function runtimeLockPath(dataDir) {
-  return path.join(path.resolve(dataDir), 'runtime.lock');
+function runtimeLockPath(dataDir, name = 'runtime.lock') {
+  if (!/^[a-z0-9._-]+\.lock$/i.test(name)) throw new Error('Invalid runtime lock name.');
+  return path.join(path.resolve(dataDir), name);
 }
 
 function processIsActive(pid, expectedStartedAt = null) {
@@ -42,7 +43,7 @@ function activeRuntimeError(lock) {
 
 function acquireRuntimeLock(dataDir, options = {}) {
   const directory = path.resolve(dataDir);
-  const file = runtimeLockPath(directory);
+  const file = runtimeLockPath(directory, options.lockName);
   const leaseId = crypto.randomUUID();
   const record = {
     format: RUNTIME_LOCK_FORMAT,
@@ -88,9 +89,19 @@ function acquireRuntimeLock(dataDir, options = {}) {
   throw activeRuntimeError(readRuntimeLock(file));
 }
 
+function acquireLedgerRuntimeLock(dbFile, options = {}) {
+  if (!dbFile || dbFile === ':memory:') throw new Error('A persistent ledger path is required for the process lock.');
+  const absolute = fs.existsSync(dbFile) ? fs.realpathSync(dbFile) : path.resolve(dbFile);
+  const directory = fs.realpathSync(path.dirname(absolute));
+  const basename = process.platform === 'win32' ? path.basename(absolute).toLowerCase() : path.basename(absolute);
+  const lockName = `.ledger-${crypto.createHash('sha256').update(basename).digest('hex').slice(0, 24)}.lock`;
+  return acquireRuntimeLock(directory, { ...options, lockName });
+}
+
 module.exports = {
   RUNTIME_LOCK_FORMAT,
   acquireRuntimeLock,
+  acquireLedgerRuntimeLock,
   processIsActive,
   readRuntimeLock,
   runtimeLockPath

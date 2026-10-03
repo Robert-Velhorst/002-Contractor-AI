@@ -32,7 +32,7 @@ function organizationPayload() {
   };
 }
 
-function issuedPurchaseOrder(ledger, suffix = '1', { quantity = 8 } = {}) {
+function issuedPurchaseOrder(ledger, suffix = '1', { quantity = 8, sharedCatalog = false } = {}) {
   ledger.updateOrganizationProfile(organizationPayload(), { actor: 'receiving_test' });
   const supplier = ledger.upsertTradePartner({
     name: `Receiving Supplier ${suffix} B.V.`,
@@ -50,6 +50,12 @@ function issuedPurchaseOrder(ledger, suffix = '1', { quantity = 8 } = {}) {
     status: 'scheduled',
     assignAutomatically: false
   }, { actor: 'receiving_test' });
+  if (sharedCatalog) {
+    new (require('../shared-material-stock').SharedMaterialStock)(ledger).count({
+      name: 'Tile adhesive', unit: 'bags', countedQuantity: 0,
+      reference: `CATALOG-${suffix}`, note: 'Create the shared material catalogue item.', entryKey: `catalog-${suffix}`
+    }, { actor: 'receiving_test' });
+  }
   const requirement = ledger.addMaterialRequirement(job.id, {
     name: 'Tile adhesive', quantity, unit: 'bags', status: 'needed', supplier: supplier.name
   }, { actor: 'receiving_test' });
@@ -162,6 +168,9 @@ test('material receipts are exact-replay safe, synchronize requirements, and pro
 test('partial and damaged receipts retain discrepancies and reverse through one approval without deleting evidence', t => {
   const ledger = temporaryLedger(t);
   const fixture = issuedPurchaseOrder(ledger, '2', { quantity: 10 });
+  const installTask = ledger.addTask(fixture.job.id, {
+    title: 'Install tile adhesive', durationHours: 3, materialRequirementIds: [fixture.requirement.id]
+  }, { actor: 'receiving_test' });
   const receipt = ledger.createMaterialReceipt(fixture.job.id, {
     purchaseOrderId: fixture.purchaseOrder.id,
     receiptReference: 'GR-RECEIVING-002',
@@ -185,6 +194,14 @@ test('partial and damaged receipts retain discrepancies and reverse through one 
   assert.equal(inventoryException.flags.receivingException, true);
   assert.equal(inventoryException.counts.materialReceiptExceptions, 1);
   assert.equal(inventoryException.nextActions[0].materialReceiptId, receipt.id);
+  const impactAction = ledger.detectMaterialReceivingActions().find(action => action.materialReceiptId === receipt.id);
+  assert.equal(impactAction.operationalImpact.affectedTaskCount, 1);
+  assert.equal(impactAction.operationalImpact.materialLines[0].acceptedToDate, 6);
+  assert.equal(impactAction.operationalImpact.materialLines[0].shortfallQuantity, 4);
+  assert.equal(impactAction.operationalImpact.materialLines[0].undeliveredOrderQuantity, 2);
+  assert.equal(impactAction.operationalImpact.materialLines[0].affectedTasks[0].taskId, installTask.id);
+  assert.equal(impactAction.operationalImpact.schedule.status, 'blocked');
+  assert.equal(impactAction.operationalImpact.schedule.blockers[0].shortfallQuantity, 4);
 
   const requested = ledger.requestMaterialReceiptReversal(fixture.job.id, receipt.id, {
     reason: 'The delivery note belongs to another project and must be reversed.'
@@ -236,9 +253,102 @@ test('autonomy creates one internal material receiving review and never changes 
   assert.equal(task.data.internalOnly, true);
   assert.equal(task.data.externalCommitments, 0);
   assert.equal(ledger.getMaterialReceipt(receipt.id).status, 'discrepancy');
+  const retainedImpact = ledger.listMaterialReceivingRegister().receipts.find(item => item.id === receipt.id).operationalImpact;
+  assert.equal(retainedImpact.materialLines[0].shortfallQuantity, 1);
   assert.equal(ledger.count('supplier_invoices'), 0);
   assert.equal(ledger.count('communication_records'), communicationCount);
   const second = ledger.runAutonomousCycle({ actionTypes: ['review_material_receipt'], jobIds: [fixture.job.id] });
   assert.equal(second.applied.length, 0);
+  assert.equal(ledger.diagnose().valid, true);
+});
+
+test('explicit warehouse receipts add accepted stock once and reversal is blocked until allocations are released', t => {
+  const ledger = temporaryLedger(t);
+  const fixture = issuedPurchaseOrder(ledger, '4', { quantity: 8, sharedCatalog: true });
+  const stock = new (require('../shared-material-stock').SharedMaterialStock)(ledger);
+  const payload = {
+    purchaseOrderId: fixture.purchaseOrder.id,
+    receiptReference: 'GR-WAREHOUSE-004',
+    evidenceReference: 'signed-ticket:GR-WAREHOUSE-004',
+    deliveredAt: new Date(Date.now() - 60_000).toISOString(),
+    receivedBy: 'Warehouse receiver',
+    location: 'Utrecht central store',
+    stockDestination: 'company_warehouse',
+    finalDelivery: true,
+    entryKey: 'material-warehouse-receipt-004',
+    lines: [{ lineKey: 'adhesive', materialRequirementId: fixture.requirement.id, itemName: 'Tile adhesive', unit: 'bags',
+      receivedQuantity: 10, acceptedQuantity: 8, damagedQuantity: 1 }]
+  };
+  const created = ledger.createMaterialReceipt(fixture.job.id, payload, { actor: 'office_operator' });
+  assert.equal(created.receipt.stockDestination, 'company_warehouse');
+  assert.equal(stock.list().materials[0].stockQuantity, 8);
+  const requirementAfterWarehouseReceipt = ledger.getJobDetail(fixture.job.id).materials.find(item => item.id === fixture.requirement.id);
+  assert.equal(requirementAfterWarehouseReceipt.status, 'needed');
+  assert.equal(requirementAfterWarehouseReceipt.data.availableQuantity, 0);
+  assert.equal(stock.list().movements.filter(item => item.type === 'receipt').length, 1);
+  assert.equal(stock.list().movements.find(item => item.type === 'receipt').quantityDelta, 8);
+  assert.equal(ledger.createMaterialReceipt(fixture.job.id, payload, { actor: 'offline_retry' }).replayed, true);
+  assert.equal(stock.list().materials[0].stockQuantity, 8);
+
+  const allocation = stock.reserve(fixture.job.id, {
+    materialRequirementId: fixture.requirement.id, quantity: 3,
+    sourceReference: 'GR-WAREHOUSE-004', entryKey: 'warehouse-reservation-004'
+  }, { actor: 'planner' });
+  const reversal = ledger.requestMaterialReceiptReversal(fixture.job.id, created.receipt.id, {
+    reason: 'Supplier ticket was assigned to the wrong receiving record.'
+  }, { actor: 'office_operator' });
+  assert.throws(() => ledger.resolveApproval(reversal.approval.id, {
+    status: 'approved', resolvedBy: 'receipt_approver', reason: 'Corrected delivery reference verified.'
+  }), error => error.code === 'material_receipt_stock_reversal_blocked' && error.statusCode === 409);
+  assert.equal(ledger.getMaterialReceipt(created.receipt.id).status, 'pending_reversal');
+
+  stock.transition(allocation.allocation.id, 'release', { note: 'Release before correcting the receipt.', entryKey: 'warehouse-release-004' }, { actor: 'planner' });
+  ledger.resolveApproval(reversal.approval.id, {
+    status: 'approved', resolvedBy: 'receipt_approver', reason: 'Corrected delivery reference verified.'
+  });
+  assert.equal(ledger.getMaterialReceipt(created.receipt.id).status, 'reversed');
+  assert.equal(stock.list().materials[0].stockQuantity, 0);
+  assert.deepEqual(stock.list().movements.filter(item => item.type === 'receipt' || item.type === 'receipt_reversal')
+    .map(item => item.type).sort(), ['receipt', 'receipt_reversal']);
+  assert.equal(ledger.verifyAuditIntegrity().valid, true);
+  assert.equal(ledger.diagnose().valid, true);
+});
+
+test('warehouse receipt without one shared catalogue match fails without retaining either side of the transaction', t => {
+  const ledger = temporaryLedger(t);
+  const fixture = issuedPurchaseOrder(ledger, '5', { quantity: 4 });
+  const payload = {
+    receiptReference: 'GR-WAREHOUSE-005', evidenceReference: 'signed-ticket:GR-WAREHOUSE-005',
+    deliveredAt: new Date(Date.now() - 60_000).toISOString(), receivedBy: 'Warehouse receiver',
+    location: 'Central warehouse', stockDestination: 'company_warehouse', entryKey: 'material-warehouse-receipt-005',
+    lines: [{ materialRequirementId: fixture.requirement.id, itemName: 'Tile adhesive', unit: 'bags',
+      receivedQuantity: 4, acceptedQuantity: 4, damagedQuantity: 0 }]
+  };
+  assert.throws(() => ledger.createMaterialReceipt(fixture.job.id, payload, { actor: 'office_operator' }),
+    error => error.code === 'material_receipt_stock_catalog_link_required' && error.statusCode === 409);
+  assert.equal(ledger.count('material_receipts'), 0);
+  assert.equal(ledger.count('shared_material_receipt_movements'), 0);
+  assert.equal(ledger.diagnose().valid, true);
+});
+
+test('warehouse/site migration repairs a historical receipt projection with a chained audit record', t => {
+  const ledger = temporaryLedger(t);
+  const fixture = issuedPurchaseOrder(ledger, '7', { quantity: 4, sharedCatalog: true });
+  const receipt = ledger.createMaterialReceipt(fixture.job.id, {
+    receiptReference: 'GR-LEGACY-WAREHOUSE-007', evidenceReference: 'signed:legacy-warehouse-007',
+    deliveredAt: new Date(Date.now() - 60_000).toISOString(), receivedBy: 'Warehouse receiver',
+    location: 'Central warehouse', stockDestination: 'company_warehouse', entryKey: 'legacy-warehouse-receipt-007',
+    lines: [{ materialRequirementId: fixture.requirement.id, itemName: fixture.requirement.name, unit: fixture.requirement.unit,
+      receivedQuantity: 4, acceptedQuantity: 4, damagedQuantity: 0 }]
+  }).receipt;
+  assert.equal(receipt.stockDestination, 'company_warehouse');
+  ledger.db.prepare('UPDATE material_requirements SET status=?,data_json=? WHERE id=?')
+    .run('available', JSON.stringify({ availableQuantity: 4, receiptControl: { previousStatus: 'needed', acceptedQuantity: 4 } }), fixture.requirement.id);
+  ledger.transaction(() => require('../shared-material-stock').migrateSharedMaterialSiteIssues(ledger.db, { audit: event => ledger.audit(event) }));
+  const corrected = ledger.getJobDetail(fixture.job.id).materials.find(item => item.id === fixture.requirement.id);
+  assert.equal(corrected.status, 'needed');
+  assert.equal(corrected.data.availableQuantity, 0);
+  assert.ok(ledger.verifyAuditIntegrity().eventCount > 0);
+  assert.equal(ledger.verifyAuditIntegrity().valid, true);
   assert.equal(ledger.diagnose().valid, true);
 });

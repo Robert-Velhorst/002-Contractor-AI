@@ -1,4 +1,5 @@
 const test = require('node:test');
+const { jpegFixture } = require('./image-fixtures');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -146,7 +147,7 @@ test('job command capture routes return refreshed dashboard summaries for eviden
   assert.ok(recurring.body.dashboard.metrics.activeRecurringPlans >= 1);
 
   const uploadForm = new FormData();
-  uploadForm.append('evidenceFile', new Blob([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from('direct ledger upload proof')], { type: 'image/jpeg' }), 'direct-ledger-photo.jpg');
+  uploadForm.append('evidenceFile', new Blob([jpegFixture('direct ledger upload proof')], { type: 'image/jpeg' }), 'direct-ledger-photo.jpg');
   uploadForm.append('title', 'Direct ledger proof photo');
   uploadForm.append('category', 'field_photo');
   uploadForm.append('jobId', jobId);
@@ -173,7 +174,7 @@ test('job command capture routes return refreshed dashboard summaries for eviden
   assert.ok(fs.existsSync(path.resolve(__dirname, '..', uploadBody.uploadedFile.storageRef)));
 
   const riskyUploadForm = new FormData();
-  riskyUploadForm.append('evidenceFile', new Blob([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from('quality issue proof')], { type: 'image/jpeg' }), 'cracked-corner-quality-photo.jpg');
+  riskyUploadForm.append('evidenceFile', new Blob([jpegFixture('quality issue proof')], { type: 'image/jpeg' }), 'cracked-corner-quality-photo.jpg');
   riskyUploadForm.append('category', 'field_photo');
   riskyUploadForm.append('jobId', jobId);
   riskyUploadForm.append('riskLevel', 'high');

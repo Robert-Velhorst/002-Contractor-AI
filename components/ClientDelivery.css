@@ -1,0 +1,26 @@
+.client-deliveries { min-width: 0; overflow-wrap: anywhere; }
+.client-deliveries > header, .client-delivery-record > header { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+.client-delivery-record { min-width: 0; border-top: 1px solid #d5dfe0; margin-top: 16px; padding-block: 16px; }
+.client-delivery-record p { white-space: pre-wrap; }
+.client-delivery-record h3, .client-delivery-record h4 { font-size: 16px; margin: 0; }
+.client-delivery-photos { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 1fr)); gap: 12px; }
+.client-delivery-photos > a { min-width: 0; }
+.client-delivery-photos .conversation-photo-slot { width: 100%; height: 220px; aspect-ratio: auto; }
+.client-delivery-photos img { width: 100%; height: 220px; object-fit: contain; background: #f2f4f5; }
+.client-delivery-response { border-left: 3px solid #126550; padding: 12px; background: #edf6f2; margin-block: 12px; }
+.client-delivery-candidates > div { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; padding-block: 12px; border-top: 1px solid #d5dfe0; }
+.client-delivery-portal { padding: 18px; background: #fff; }
+.client-delivery-portal h2 { font-size: 20px; margin: 0; }
+.client-delivery-portal button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 44px; padding: 9px 12px; background: #fff; color: #18312d; border: 1px solid #8aada0; border-radius: 5px; font: inherit; cursor: pointer; }
+.client-delivery-portal button[type=submit] { background: #125b4c; color: #fff; }
+.client-delivery-portal button:disabled, .client-delivery-portal fieldset:disabled { opacity: .65; }
+.client-delivery-portal fieldset { min-width: 0; border: 1px solid #c9d6d2; padding: 14px; }
+.client-delivery-portal legend { font-weight: 600; padding-inline: 4px; }
+.client-delivery-portal label { display: grid; gap: 7px; margin-block: 14px; min-width: 0; }
+.client-delivery-portal label > span { display: flex; align-items: center; gap: 8px; }
+.client-delivery-portal input, .client-delivery-portal select, .client-delivery-portal textarea { font: inherit; width: 100%; max-width: 100%; min-width: 0; padding: 10px; border: 1px solid #8aada0; border-radius: 4px; box-sizing: border-box; }
+.client-delivery-portal textarea { min-height: 100px; resize: vertical; }
+.client-delivery-portal .client-delivery-check { display: flex; align-items: start; gap: 10px; }
+.client-delivery-check input { flex: 0 0 20px; height: 20px; padding: 0; margin: 2px 0; }
+.client-delivery-portal :focus-visible { outline: 3px solid #087762; outline-offset: 2px; }
+@media (max-width: 600px) { .client-delivery-portal { padding: 12px; } .client-delivery-portal fieldset { padding: 10px; } }

@@ -14,6 +14,11 @@ test('office operator retains and approves a governed drawing revision in the fi
   });
   expect(intakeResponse.ok()).toBeTruthy();
   const intake = await intakeResponse.json();
+  const taskResponse = await request.post(`/api/ledger/jobs/${intake.job.id}/tasks`, {
+    data: { title: 'Install ground-floor partition', status: 'open' }
+  });
+  expect(taskResponse.ok()).toBeTruthy();
+  const linkedTask = (await taskResponse.json()).task;
 
   const uploadResponse = await request.post('/api/ledger/upload', {
     headers: { 'Idempotency-Key': `browser-drawing-upload-${marker}` },
@@ -55,6 +60,9 @@ test('office operator retains and approves a governed drawing revision in the fi
   await field('Drawing purpose').selectOption('for_construction');
   await field('Scale').fill('1:50');
   await field('Zone or area').fill('Ground floor');
+  const linkedTaskCheckbox = register.getByRole('checkbox', { name: linkedTask.title });
+  await expect(linkedTaskCheckbox).toBeVisible();
+  await linkedTaskCheckbox.check();
   await field('Retained drawing PDF').selectOption(upload.ledgerDocument.id);
   await field('Revision reason').fill('Initial coordinated construction issue retained for controlled field use.');
   await field('Internal review notes').fill('Title block, revision, scale, and issue purpose checked.');
@@ -70,6 +78,7 @@ test('office operator retains and approves a governed drawing revision in the fi
   const detail = await detailResponse.json();
   const pending = detail.job.drawings.find(drawing => drawing.status === 'pending_approval');
   expect(pending).toBeTruthy();
+  expect(pending.data.linkedTaskIds).toEqual([linkedTask.id]);
   const approvalResponse = await request.post(`/api/ledger/approvals/${pending.approvalId}/resolve`, {
     data: {
       status: 'approved',
@@ -83,11 +92,15 @@ test('office operator retains and approves a governed drawing revision in the fi
   await expect(register.getByText('1 current')).toBeVisible();
   await expect(register.getByText('Current', { exact: true })).toBeVisible();
   await expect(register.getByText(/Verified [a-f0-9]{8}/)).toBeVisible();
-  await expect(register.getByRole('link', { name: 'Open retained PDF' })).toHaveAttribute(
-    'href',
-    `/api/ledger/documents/${pending.id}/content`
-  );
+  const retainedUrl = new URL(await register.getByRole('link', { name: 'Open retained PDF' }).getAttribute('href'), page.url());
+  const session = await (await request.get('/api/session')).json();
+  expect(retainedUrl.pathname).toBe(`/api/ledger/documents/${pending.id}/content`);
+  expect(retainedUrl.searchParams.get('__company')).toBe(session.company.id);
+  expect(retainedUrl.searchParams.get('__ledger')).toBe(session.company.ledgerId);
+  expect((await request.get(retainedUrl.toString())).ok()).toBeTruthy();
   await expect(register.getByRole('button', { name: 'New revision' })).toBeVisible();
+  await register.getByRole('button', { name: 'New revision' }).click();
+  await expect(linkedTaskCheckbox).toBeChecked();
 
   await page.setViewportSize({ width: 390, height: 844 });
   const mobileGeometry = await register.evaluate(element => {

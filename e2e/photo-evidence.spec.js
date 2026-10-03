@@ -1,9 +1,10 @@
 const { test, expect } = require('@playwright/test');
+const { jpegFixture } = require('../tests/image-fixtures');
 
 async function openJob(page, title) {
   await page.goto('/');
   await page.getByLabel(/^(Language|Taal)$/).selectOption('en-GB');
-  await expect(page.getByRole('heading', { name: 'Today' })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, exact: true, name: 'Today' })).toBeVisible();
   await page.getByRole('button', { name: `Open ${title}` }).first().click();
   const workspace = page.getByTestId('job-workspace');
   await expect(workspace.getByRole('heading', { name: title })).toBeVisible();
@@ -82,7 +83,7 @@ test('operator governs before, during, and after photographs through task comple
         evidenceFile: {
           name: `${phase}-roof-outlet.jpg`,
           mimeType: 'image/jpeg',
-          buffer: Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from(`${phase} browser roof outlet evidence`)])
+          buffer: jpegFixture(`${phase} browser roof outlet evidence`)
         },
         jobId: job.id,
         photoEvidenceSetId: evidenceSet.id,

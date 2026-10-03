@@ -1,0 +1,44 @@
+.conversation, .office-conversations { max-width: 900px; margin: 0 auto 24px; padding: 16px; color: #18312d; background: #fff; }
+.conversation header, .conversation-meta, .conversation footer, .conversation-reference { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.conversation h2 { display: flex; align-items: center; gap: 8px; font-size: 20px; margin: 0; }
+.conversation button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 44px; padding: 8px 12px; border: 1px solid #9ab3aa; border-radius: 5px; background: #fff; color: #18312d; cursor: pointer; }
+.conversation button:disabled { opacity: .55; cursor: default; }
+.conversation-timeline { list-style: none; padding: 0; display: flex; flex-direction: column; gap: 16px; }
+.conversation-analysis-list { display: grid; gap: 16px; margin: 14px 0; padding-left: 20px; }
+.conversation-analysis-list > li { min-width: 0; padding: 0 0 14px; border-bottom: 1px solid #e4ebe7; overflow-wrap: anywhere; }
+.conversation-analysis-actions { display: flex; min-width: 0; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; }
+.conversation-analysis-actions a { padding: 6px 0; }
+.conversation-analysis-actions button { max-width: 100%; }
+.conversation-local-outbox { margin: 16px 0; padding: 12px; border: 1px solid #bd7d24; border-left-width: 4px; border-radius: 4px; background: #fff8e8; }
+.conversation-local-outbox h3 { margin: 0 0 10px; font-size: 16px; }
+.conversation-local-outbox ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.conversation-local-outbox li { min-width: 0; padding: 10px 0; border-top: 1px solid #ead7b6; overflow-wrap: anywhere; }
+.conversation-local-outbox li p { white-space: pre-wrap; }
+.conversation-local-outbox li time { display: block; margin: 6px 0; font-size: 12px; color: #405a52; }
+.conversation-local-outbox li button { margin: 4px 6px 0 0; }
+.conversation-legacy { display: grid; gap: 10px; margin: 14px 0; padding: 12px; border: 1px solid #d4c49d; border-radius: 4px; background: #fffdf5; }
+.conversation-legacy > p { margin: 0; color: #4d5548; }
+.conversation-legacy-list { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
+.conversation-legacy-list > li { min-width: 0; padding: 10px 0; border-top: 1px solid #e9e2d2; overflow-wrap: anywhere; }
+.conversation-legacy-list p { white-space: pre-wrap; }
+.conversation-legacy-list time { color: #56635c; font-size: 12px; }
+.conversation-legacy-list button { max-width: 100%; }
+.conversation-message { width: 88%; box-sizing: border-box; padding: 14px; border: 1px solid #c2d5cd; border-radius: 6px; overflow-wrap: anywhere; }
+.conversation-message.from-office { align-self: flex-end; background: #e8f3ee; }
+.conversation-message.from-client { background: #f4f5f8; }
+.conversation-meta, .conversation footer { font-size: 12px; color: #405a52; }
+.conversation-body { white-space: pre-wrap; margin: 12px 0; }
+.conversation-reference { font-size: 13px; border-left: 3px solid #687f78; padding-left: 8px; }
+.conversation form, .office-conversations > label { display: grid; gap: 12px; }
+.conversation label { display: grid; gap: 6px; }
+.conversation label:has(> input[type="checkbox"]) { display: flex; align-items: flex-start; gap: 10px; margin: 12px 0; }
+.conversation input[type="checkbox"] { width: 20px; height: 20px; flex: 0 0 20px; margin: 2px 0; padding: 0; }
+.offline-field > label, .offline-field details { margin: 16px 0; }
+.offline-field, .offline-field form, .offline-field label { min-width: 0; box-sizing: border-box; overflow-wrap: anywhere; }
+.offline-field select { font: inherit; width: 100%; min-width: 0; box-sizing: border-box; padding: 10px; border: 1px solid #99afa7; border-radius: 4px; }
+.offline-field nav { display: flex; gap: 4px; flex-wrap: wrap; }
+.offline-field nav button[aria-pressed="true"] { background: #d9eee4; border-color: #00745e; }
+.conversation textarea { min-height: 88px; resize: vertical; width: 100%; box-sizing: border-box; }
+.conversation input, .conversation textarea, .office-conversations select { font: inherit; max-width: 100%; padding: 10px; border: 1px solid #99afa7; border-radius: 4px; background: #fff; color: #18312d; }
+.conversation :focus-visible, .office-conversations :focus-visible { outline: 3px solid #00745e; outline-offset: 2px; }
+@media (max-width: 600px) { .conversation, .office-conversations { padding: 10px; } .conversation-message { width: 96%; } .conversation-meta { align-items: flex-start; } }

@@ -52,7 +52,7 @@ module.exports = defineConfig({
   ],
   webServer: [
     {
-      command: 'node server.js',
+      command: `"${process.execPath}" server.js`,
       url: `http://127.0.0.1:${localPort}/api/readiness`,
       reuseExistingServer: false,
       env: {
@@ -71,7 +71,7 @@ module.exports = defineConfig({
       }
     },
     {
-      command: 'node server.js',
+      command: `"${process.execPath}" server.js`,
       url: `http://127.0.0.1:${authPort}/api/health/ready`,
       reuseExistingServer: false,
       env: {
@@ -85,6 +85,7 @@ module.exports = defineConfig({
         CONTRACTOR_AI_AUTH_TOKEN: '',
         CONTRACTOR_AI_BACKUP_SIGNING_KEY: browserBackupSigningKey,
         CONTRACTOR_AI_ROLE_TOKENS: browserRoleTokens,
+        CONTRACTOR_AI_VERIFIED_INTEGRATIONS: 'playwright_test_provider',
         CONTRACTOR_AI_HAI_FEED_PATH: path.join(authRuntimeDirectory, 'connected-sources', 'contractor-ai.json'),
         CONTRACTOR_AI_RATE_LIMIT: process.env.CONTRACTOR_AI_RATE_LIMIT || '10000'
       }

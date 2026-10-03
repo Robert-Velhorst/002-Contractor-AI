@@ -5,6 +5,7 @@ const { spawn } = require('node:child_process');
 const test = require('node:test');
 const { ContractorOperatingLedger, BID_DECISION_CRITERIA, BID_DECISION_GATES, PRICING_BASIS_FACTORS } = require('../operating-ledger');
 const { approveLowRiskRegister } = require('./risk-register-fixture');
+const { ResourcePlanner } = require('../resource-planner');
 const {
   PostgresSyncDatabase,
   normalizeAdvisoryLockKey,
@@ -12,7 +13,8 @@ const {
   translateSql
 } = require('../postgres-sync-database');
 
-const connectionString = process.env.CONTRACTOR_AI_POSTGRES_TEST_URL;
+const { postgresTestDatabaseUrl, connectVerifiedPostgresClient } = require('./postgres-test-database');
+const connectionString = postgresTestDatabaseUrl();
 
 function managedCredential(accessKey) {
   return {
@@ -442,6 +444,50 @@ test('PostgreSQL connection options honor explicit TLS modes', () => {
   assert.throws(() => normalizeAdvisoryLockKey(Number.MAX_VALUE), /safe integer/);
 });
 
+test('PostgreSQL active counts preserve DISTINCT results without deduplicating one-to-one scopes', { skip: !connectionString }, () => {
+  const ledger = new ContractorOperatingLedger({ databaseUrl: connectionString });
+  try {
+    const marker = crypto.randomUUID();
+    const jobs = Array.from({ length: 3 }, (_, index) => ledger.createIntake({
+      title: `Hosted count parity ${marker}-${index}`,
+      client: { name: `Count parity client ${marker}` },
+      assignAutomatically: false
+    }, { actor: 'postgres_count_contract_test' }));
+    const requestId = ledger.getJobRow(jobs[0].id).request_id;
+    ledger.transaction(() => {
+      for (const job of jobs.slice(1)) {
+        ledger.db.prepare('UPDATE jobs SET request_id = ? WHERE id = ?').run(requestId, job.id);
+      }
+      ledger.db.prepare('UPDATE jobs SET status = ? WHERE id = ?').run('archived', jobs[2].id);
+    });
+    const legacy = Object.create(ContractorOperatingLedger.prototype);
+    const statements = [];
+    legacy.db = { prepare(sql) {
+      statements.push(sql);
+      return ledger.db.prepare(sql.replaceAll('COUNT(records.id)', 'COUNT(DISTINCT records.id)'));
+    } };
+    assert.equal(ledger.countActiveRecords('job_requests', 'records.id = ?', [requestId]), 1);
+    assert.equal(ledger.countActiveRecords('jobs', 'records.request_id = ?', [requestId]), 2);
+    for (const table of ['jobs', 'job_requests', 'job_tasks', 'documents', 'approvals', 'audit_events', 'worker_availability_periods']) {
+      assert.equal(ledger.countActiveRecords(table), legacy.countActiveRecords(table), table);
+      assert.equal(statements.at(-1).includes('DISTINCT'), table === 'job_requests', table);
+      for (const requirement of [{ table }, { table, coverageStatuses: ['draft', 'open', 'intake'] }]) {
+        if (table === 'audit_events' && requirement.coverageStatuses) continue;
+        assert.equal(ledger.countCapabilityRequirement(requirement), legacy.countCapabilityRequirement(requirement), table);
+      }
+      assert.equal(ledger.countOpenCapabilityRequirement({ table }), legacy.countOpenCapabilityRequirement({ table }), table);
+    }
+    for (const requirement of [
+      { table: 'documents', recordType: 'photo' },
+      { table: 'job_qualification_requirements', credentialType: 'safety', readyStatuses: ['reviewed', 'reviewed'] },
+      { table: 'documents', recordType: 'drawing', credentialType: 'safety' }
+    ]) {
+      assert.equal(ledger.countCapabilityRequirement(requirement), legacy.countCapabilityRequirement(requirement));
+      assert.equal(ledger.countOpenCapabilityRequirement(requirement), legacy.countOpenCapabilityRequirement(requirement));
+    }
+  } finally { ledger.close(); }
+});
+
 test('PostgreSQL framework workspace preserves governed revision parity', { skip: !connectionString }, () => {
   const ledger = new ContractorOperatingLedger({ databaseUrl: connectionString });
   try {
@@ -492,7 +538,7 @@ test('PostgreSQL framework workspace preserves governed revision parity', { skip
         )
     `).get();
     assert.equal(Number(indexes.count), 3);
-    assert.equal(ledger.migrationStatus().currentVersion, '072_operator_locale_preferences');
+    assert.equal(ledger.migrationStatus().currentVersion, '096_loading_read_indexes');
     assert.equal(ledger.diagnose().valid, true, JSON.stringify(ledger.diagnose().issues));
   } finally {
     try {
@@ -552,7 +598,7 @@ test('PostgreSQL managed operator access preserves hashed credentials and revoca
       ledger.listAudit({ entityType: 'managed_operator_account', entityId: account.id, limit: 10 }).map(event => event.action),
       ['deactivate_managed_operator_access', 'rotate_managed_operator_access', 'create_managed_operator_access']
     );
-    assert.equal(ledger.migrationStatus().currentVersion, '072_operator_locale_preferences');
+    assert.equal(ledger.migrationStatus().currentVersion, '096_loading_read_indexes');
     assert.equal(ledger.diagnose().valid, true, JSON.stringify(ledger.diagnose().issues));
   } finally {
     try {
@@ -610,7 +656,7 @@ test('PostgreSQL data-subject requests preserve source-current approval and expo
         )
     `).get();
     assert.equal(Number(indexes.count), 3);
-    assert.equal(ledger.migrationStatus().currentVersion, '072_operator_locale_preferences');
+    assert.equal(ledger.migrationStatus().currentVersion, '096_loading_read_indexes');
     assert.equal(ledger.verifyAuditIntegrity().valid, true);
     assert.equal(ledger.diagnose().valid, true, JSON.stringify(ledger.diagnose().issues));
   } finally {
@@ -870,6 +916,20 @@ test('PostgreSQL adapter applies the ledger contract and durable scheduler migra
       status: 'approved', resolvedBy: 'postgres_contract_approver', reason: 'Hosted availability change verified.'
     });
     assert.equal(ledger.getWorkerAvailabilityPeriod(hostedAvailability.period.id).status, 'cancelled');
+    const unknownReturnStart = new Date(Date.now() + 120 * 86_400_000);
+    const unknownReturnReview = new Date(unknownReturnStart.getTime() + 5 * 86_400_000).toISOString().slice(0, 10);
+    const unknownReturn = ledger.createWorkerAvailabilityPeriod(attendanceWorker.id, {
+      periodType: 'unavailable', title: 'Hosted return date to be confirmed',
+      startsAt: unknownReturnStart.toISOString(), returnUnknown: true, reviewAt: unknownReturnReview,
+      notes: 'Hosted operational follow-up fixture.'
+    }, { actor: 'postgres_contract_test' });
+    assert.equal(unknownReturn.period.endsAt, null);
+    assert.equal(unknownReturn.period.returnUnknown, true);
+    assert.equal(ledger.findWorkerAvailabilityConflicts({ workerId: attendanceWorker.id,
+      scheduledStart: new Date(unknownReturnStart.getTime() + 90 * 86_400_000).toISOString(),
+      scheduledEnd: new Date(unknownReturnStart.getTime() + 90 * 86_400_000 + 3_600_000).toISOString() }).some(period => period.id === unknownReturn.period.id), true);
+    const dueAvailability = ledger.listWorkerAvailabilityRegister({ referenceAt: `${unknownReturnReview}T00:00:00.000Z` });
+    assert.equal(dueAvailability.summary.followUpDue, 1);
     const attendanceOrientation = ledger.createWorkerOrientation(job.id, {
       assignmentId: attendanceAssignment.id,
       workerId: attendanceWorker.id,
@@ -1730,7 +1790,7 @@ test('PostgreSQL adapter applies the ledger contract and durable scheduler migra
     assert.ok(Array.isArray(ledger.nextActions()));
 
     const migrations = ledger.migrationStatus();
-    assert.equal(migrations.currentVersion, '072_operator_locale_preferences');
+    assert.equal(migrations.currentVersion, '096_loading_read_indexes');
     assert.equal(migrations.pending.length, 0);
     assert.equal(ledger.getAutomationControl().status, 'active');
     const suspendedControl = ledger.setAutomationControl({
@@ -1828,13 +1888,33 @@ test('PostgreSQL startup lock serializes fresh concurrent replicas and releases 
   });
 
   const versions = await Promise.all(Array.from({ length: 4 }, () => startReplica()));
-  assert.deepEqual(versions, Array(4).fill('072_operator_locale_preferences'));
+  assert.deepEqual(versions, Array(4).fill('096_loading_read_indexes'));
 
   const verification = new PostgresSyncDatabase({ connectionString });
   try {
     const migrationCount = verification.query('SELECT COUNT(*) AS count FROM ledger_schema_migrations').rows[0];
     const expectedMigrationCount = Number(versions[0].split('_', 1)[0]);
     assert.equal(Number(migrationCount.count), expectedMigrationCount);
+    const latestTableCount = verification.query(`
+      SELECT COUNT(*) AS count FROM information_schema.tables
+      WHERE table_schema = 'public'
+        AND table_name IN ('client_completion_review_actions', 'work_board_notifications')
+    `).rows[0];
+    assert.equal(Number(latestTableCount.count), 2);
+    const latestIndexCount = verification.query(`
+      SELECT COUNT(*) AS count FROM pg_indexes
+      WHERE schemaname = 'public' AND indexname IN (
+        'idx_client_completion_review_actions_response',
+        'idx_work_board_notifications_worker_created', 'idx_work_board_notifications_worker_unread'
+      )
+    `).rows[0];
+    assert.equal(Number(latestIndexCount.count), 3);
+    const fieldReplyConstraint = verification.query(`
+      SELECT pg_get_constraintdef(oid) AS definition FROM pg_constraint
+      WHERE conrelid = 'public.work_board_notifications'::regclass
+        AND conname = 'work_board_notifications_notification_type_check'
+    `).rows[0];
+    assert.match(fieldReplyConstraint.definition, /field_reply/);
     const availabilityTableCount = verification.query(`
       SELECT COUNT(*) AS count
       FROM information_schema.tables
@@ -2479,7 +2559,7 @@ test('PostgreSQL bid packages preserve comparison and approval parity', { skip: 
     assert.equal(issued.commitment.externalCommitments, 1);
     assert.equal(issued.commitment.issuePackage.transportStatus, 'delivered_by_verified_integration');
     assert.equal(ledger.getJobDetail(converted.job.id).purchaseOrders[0].id, commitment.purchaseOrder.id);
-    assert.equal(ledger.migrationStatus().currentVersion, '072_operator_locale_preferences');
+    assert.equal(ledger.migrationStatus().currentVersion, '096_loading_read_indexes');
     assert.equal(ledger.verifyAuditIntegrity().valid, true);
   } finally {
     ledger.close();
@@ -2882,7 +2962,7 @@ test('PostgreSQL work permit parity preserves source-current approval, worker ac
     }, { actor: 'postgres_site_supervisor' });
     assert.equal(closed.permit.status, 'closed');
     assert.equal(closed.permit.definitionIntegrityValid, true);
-    assert.equal(ledger.migrationStatus().currentVersion, '072_operator_locale_preferences');
+    assert.equal(ledger.migrationStatus().currentVersion, '096_loading_read_indexes');
     assert.equal(ledger.diagnose().valid, true);
   } finally {
     ledger.close();
@@ -2990,7 +3070,7 @@ test('PostgreSQL pre-task plan parity preserves source approval, exact crew ackn
     assert.equal(active.status, 'active');
     assert.equal(active.readyForWork, true);
     assert.equal(active.attendanceSummary.acknowledged, 2);
-    assert.equal(ledger.migrationStatus().currentVersion, '072_operator_locale_preferences');
+    assert.equal(ledger.migrationStatus().currentVersion, '096_loading_read_indexes');
     assert.equal(ledger.diagnose().valid, true);
   } finally {
     ledger.close();
@@ -3125,7 +3205,7 @@ test('PostgreSQL LMRA parity preserves worker evidence, source-current readiness
     assert.equal(stop.assessment.outcome, 'stop_work');
     assert.equal(stop.stopWorkImmediate, true);
     assert.equal(ledger.getLmraAssessment(assessmentId).readyForHazardousWork, false);
-    assert.equal(ledger.migrationStatus().currentVersion, '072_operator_locale_preferences');
+    assert.equal(ledger.migrationStatus().currentVersion, '096_loading_read_indexes');
     assert.equal(ledger.diagnose().valid, true);
   } finally {
     ledger.close();
@@ -3265,7 +3345,7 @@ test('PostgreSQL photo evidence preserves task-bound checksummed phases and inde
       notes: 'Hosted task completed after governed photographic release.'
     });
     assert.equal(completed.record.status, 'completed');
-    assert.equal(ledger.migrationStatus().currentVersion, '072_operator_locale_preferences');
+    assert.equal(ledger.migrationStatus().currentVersion, '096_loading_read_indexes');
   } finally {
     ledger.close();
   }
@@ -3353,7 +3433,7 @@ test('PostgreSQL governed daywork preserves replay, source approval, acknowledge
     assert.equal(converted.changeOrder.data.source.sourceHash, created.ticket.sourceHash);
     assert.equal(ledger.getJobDetail(job.id).dayworkTickets.length, 1);
     assert.equal(ledger.dashboardSummary().metrics.dayworkTickets >= 1, true);
-    assert.equal(ledger.migrationStatus().currentVersion, '072_operator_locale_preferences');
+    assert.equal(ledger.migrationStatus().currentVersion, '096_loading_read_indexes');
     assert.equal(ledger.diagnose().valid, true);
   } finally {
     ledger.close();
@@ -3440,7 +3520,7 @@ test('PostgreSQL governed nonconformance preserves replay, dual approval, integr
     assert.equal(retained.integrityValid, true);
     assert.equal(retained.correctionIntegrityValid, true);
     assert.equal(retained.closureIntegrityValid, true);
-    assert.equal(ledger.migrationStatus().currentVersion, '072_operator_locale_preferences');
+    assert.equal(ledger.migrationStatus().currentVersion, '096_loading_read_indexes');
   } finally {
     ledger?.close();
   }
@@ -3545,7 +3625,7 @@ test('PostgreSQL governed SDS revisions preserve exact replay, atomic supersessi
       )
     `).get();
     assert.equal(Number(sdsIndexes.count), 6);
-    assert.equal(ledger.migrationStatus().currentVersion, '072_operator_locale_preferences');
+    assert.equal(ledger.migrationStatus().currentVersion, '096_loading_read_indexes');
     assert.equal(ledger.diagnose().valid, true, JSON.stringify(ledger.diagnose().issues));
   } finally {
     ledger.close();
@@ -3611,7 +3691,7 @@ test('PostgreSQL cash-flow parity preserves recurrence, immutable approval, and 
       reason: 'Hosted opening balance, recurrence, timing, and retained source evidence verified.'
     });
     assert.equal(ledger.calculateCashFlowForecast({ asOfDate, openingBalance: 1000 }).snapshotCurrent, true);
-    assert.equal(ledger.migrationStatus().currentVersion, '072_operator_locale_preferences');
+    assert.equal(ledger.migrationStatus().currentVersion, '096_loading_read_indexes');
   } finally {
     ledger.close();
   }
@@ -3666,7 +3746,7 @@ test('PostgreSQL performance scorecard preserves target governance, immutable ap
       reason: 'Hosted retained evidence, target register, and scorecard period verified.'
     });
     assert.equal(ledger.calculatePerformanceScorecard({ periodEnd, weeks: 13 }).snapshotCurrent, true);
-    assert.equal(ledger.migrationStatus().currentVersion, '072_operator_locale_preferences');
+    assert.equal(ledger.migrationStatus().currentVersion, '096_loading_read_indexes');
   } finally {
     ledger.close();
   }
@@ -3758,7 +3838,7 @@ test('PostgreSQL crew capacity preserves source-current two-week approval and re
       reason: 'Hosted source-current two-week capacity plan verified.'
     });
     assert.equal(ledger.listCrewCapacityBoard({ referenceDate: windowStart }).plans.current, true);
-    assert.equal(ledger.migrationStatus().currentVersion, '072_operator_locale_preferences');
+    assert.equal(ledger.migrationStatus().currentVersion, '096_loading_read_indexes');
   } finally {
     ledger.close();
   }
@@ -3845,7 +3925,7 @@ test('PostgreSQL daily operating cycle preserves approval-linked huddle and EOD 
       reason: 'Hosted plan-versus-actual evidence verified.'
     });
     assert.equal(ledger.getDailyOperatingCycle(cycleId).status, 'closed');
-    assert.equal(ledger.migrationStatus().currentVersion, '072_operator_locale_preferences');
+    assert.equal(ledger.migrationStatus().currentVersion, '096_loading_read_indexes');
   } finally {
     ledger.close();
   }
@@ -3983,7 +4063,7 @@ test('PostgreSQL Last Planner lite preserves make-ready, weekly approval, daily 
     outcomeId = outcome.outcome.id;
     assert.equal(outcome.outcome.integrityValid, true);
     assert.equal(ledger.getLastPlannerBoard({ jobId, weekStart }).summary.ppcPercent, 100);
-    assert.equal(ledger.migrationStatus().currentVersion, '072_operator_locale_preferences');
+    assert.equal(ledger.migrationStatus().currentVersion, '096_loading_read_indexes');
   } finally {
     ledger.close();
   }
@@ -4084,7 +4164,7 @@ test('PostgreSQL 5S control preserves approved standards, audits, and corrective
     }, { actor: 'postgres_five_s_field' });
     assert.equal(compliant.audit.integrityValid, true);
     assert.equal(ledger.getFiveSBoard({ jobId, includeGlobal: false }).ready, true);
-    assert.equal(ledger.migrationStatus().currentVersion, '072_operator_locale_preferences');
+    assert.equal(ledger.migrationStatus().currentVersion, '096_loading_read_indexes');
   } finally {
     ledger.close();
   }
@@ -4246,7 +4326,7 @@ test('PostgreSQL installation QC preserves task holds, retained evidence, and in
       notes: 'Hosted installation released with retained evidence.'
     });
     assert.equal(completed.record.status, 'completed');
-    assert.equal(ledger.migrationStatus().currentVersion, '072_operator_locale_preferences');
+    assert.equal(ledger.migrationStatus().currentVersion, '096_loading_read_indexes');
   } finally {
     ledger.close();
   }
@@ -4335,7 +4415,7 @@ test('PostgreSQL client feedback preserves portal uniqueness, scorecard evidence
     assert.equal(autonomous.applied.length, 1);
     aftercareId = autonomous.applied[0].aftercareId;
     assert.equal(autonomous.summary.externalCommitments, 0);
-    assert.equal(ledger.migrationStatus().currentVersion, '072_operator_locale_preferences');
+    assert.equal(ledger.migrationStatus().currentVersion, '096_loading_read_indexes');
     assert.equal(ledger.diagnose().valid, true, JSON.stringify(ledger.diagnose().issues));
   } finally {
     ledger.close();
@@ -4360,6 +4440,95 @@ test('PostgreSQL client feedback preserves portal uniqueness, scorecard evidence
   } finally {
     ledger.close();
   }
+});
+
+test('PostgreSQL resource planning preserves mixed-trade replacement, dated forecasts, stale approval and restart integrity', { skip: !connectionString }, async t => {
+  const { Client } = require('pg');
+  const admin = new Client({ connectionString });
+  await connectVerifiedPostgresClient(admin);
+  const name = `contractor_resources_test_${crypto.randomBytes(8).toString('hex')}`;
+  const url = new URL(connectionString);
+  url.pathname = `/${name}`;
+  let ledger;
+  let created = false;
+  t.after(async () => {
+    ledger?.close();
+    try { if (created) await admin.query(`DROP DATABASE "${name}" WITH (FORCE)`); }
+    finally { await admin.end(); }
+  });
+  await admin.query(`CREATE DATABASE "${name}"`);
+  created = true;
+  ledger = new ContractorOperatingLedger({ databaseUrl: url.href });
+  const plannedStart = '2026-10-05T06:00:00.000Z';
+  const plannedEnd = '2026-10-06T14:00:00.000Z';
+  const job = ledger.createIntake({ title: 'Hosted coordinated installation', scheduledStart: plannedStart,
+    scheduledEnd: plannedEnd, assignAutomatically: false, tasks: [{ title: 'Fit service panels', durationHours: 2,
+      requiredCrewRequirements: [{ role: 'Installer', count: 1 }, { role: 'Electrician', count: 1 }],
+      data: { replacementScheduleReviewRequired: { approvalId: 'replacement-fixture', requiredBeforeAllocation: true } } }] });
+  const workers = ['Installer', 'Electrician'].map(role => ledger.upsertWorker({ name: `Hosted ${role}`, role, status: 'available' }));
+  for (const worker of workers) {
+    const assignment = ledger.addAssignment(job.id, { workerId: worker.id, role: worker.role,
+      status: 'planned', scheduledStart: plannedStart, scheduledEnd: plannedEnd });
+    const data = JSON.parse(ledger.db.prepare('SELECT data_json FROM assignments WHERE id = ?').get(assignment.id).data_json);
+    ledger.db.prepare('UPDATE assignments SET data_json = ? WHERE id = ?').run(JSON.stringify({ ...data, requiresApproval: false }), assignment.id);
+  }
+  const forecast = { format: 'contractor_ai_preconstruction_capacity_forecast_v1', snapshotHash: 'a'.repeat(64),
+    forecast: { windowStart: '2026-10-05', windowEnd: '2026-10-05', trades: workers.map(worker => ({
+      role: worker.role, hours: 2, dailyDemand: [{ date: '2026-10-05', hours: 2 }] })) } };
+  function saveForecast(value) {
+    const data = JSON.parse(ledger.db.prepare('SELECT data_json FROM jobs WHERE id = ?').get(job.id).data_json);
+    ledger.db.prepare('UPDATE jobs SET data_json = ? WHERE id = ?').run(JSON.stringify({ ...data, preconstructionCapacityForecast: value }), job.id);
+  }
+  saveForecast(forecast);
+  const planner = new ResourcePlanner(ledger);
+  const before = ledger.getJobDetail(job.id);
+  const proposal = await planner.preview(job.id, { plannedStart, horizonDays: 2 });
+  assert.equal(proposal.status, 'feasible_under_recorded_constraints', JSON.stringify(proposal.issues));
+  assert.deepEqual(ledger.getJobDetail(job.id), before, 'preview must remain read-only');
+  assert.equal(proposal.tasks.length, 1);
+  assert.deepEqual(proposal.tasks[0].crewMembers.map(member => member.role).sort(), ['Electrician', 'Installer']);
+  assert.ok(proposal.preconstructionReconciliation.datedComparison.roles.every(role => role.days.every(day => day.varianceHours === 0)));
+  const pending = planner.requestApproval(job.id, { plan: proposal, reason: 'Review hosted mixed-trade crew.' }, 'hosted-planner');
+  assert.equal(planner.requestApproval(job.id, { plan: proposal, reason: 'Review hosted mixed-trade crew.' }, 'hosted-planner').approval.id, pending.approval.id);
+  const changed = structuredClone(forecast);
+  changed.snapshotHash = 'b'.repeat(64);
+  changed.forecast.trades[0].hours = 3;
+  changed.forecast.trades[0].dailyDemand[0].hours = 3;
+  saveForecast(changed);
+  assert.throws(() => ledger.resolveApproval(pending.approval.id, { status: 'approved', resolvedBy: 'hosted-approver' }, {
+    actor: 'hosted-approver', enforceSeparation: true
+  }), { statusCode: 409 });
+  assert.equal(ledger.db.prepare('SELECT status FROM approvals WHERE id = ?').get(pending.approval.id).status, 'pending');
+  assert.deepEqual(ledger.getJobDetail(job.id).tasks, before.tasks, 'stale approval must not partially allocate the crew');
+  const fresh = await planner.preview(job.id, { plannedStart, horizonDays: 2 });
+  assert.notEqual(fresh.sourceHash, proposal.sourceHash);
+  assert.equal(fresh.preconstructionReconciliation.trades[0].varianceHours, -1);
+  assert.throws(() => planner.requestApproval(job.id, { plan: fresh }, 'hosted-planner'), { statusCode: 409 });
+  ledger.resolveApproval(pending.approval.id, { status: 'rejected', resolvedBy: 'hosted-approver',
+    reason: 'Superseded forecast requires a new independently reviewed proposal.' }, { actor: 'hosted-approver' });
+  const review = planner.requestApproval(job.id, { plan: fresh, reason: 'Review current forecast variance and crew.' }, 'hosted-planner');
+  assert.notEqual(review.approval.id, pending.approval.id);
+  assert.throws(() => ledger.resolveApproval(review.approval.id, { status: 'approved', resolvedBy: 'hosted-planner' }, {
+    actor: 'hosted-planner', enforceSeparation: true
+  }), { code: 'resource_plan_independent_approval_required' });
+  ledger.resolveApproval(review.approval.id, { status: 'approved', resolvedBy: 'hosted-approver' }, {
+    actor: 'hosted-approver', enforceSeparation: true
+  });
+  const applied = ledger.getJobDetail(job.id).tasks[0];
+  assert.deepEqual(applied.data.crewWorkerAssignments.map(member => member.role).sort(), ['Electrician', 'Installer']);
+  assert.equal(applied.data.replacementScheduleReviewRequired, undefined);
+  assert.equal(applied.data.replacementScheduleReview.resolutionApprovalId, review.approval.id);
+  assert.equal(applied.data.requiredCrewSize, 2);
+  ledger.close();
+  ledger = new ContractorOperatingLedger({ databaseUrl: url.href });
+  assert.deepEqual(ledger.getJobDetail(job.id).tasks[0], applied);
+  const unavailable = workers.find(worker => worker.id !== applied.assigneeId);
+  ledger.upsertWorker({ id: unavailable.id, name: unavailable.name, role: unavailable.role, status: 'unavailable' });
+  const blocked = await new ResourcePlanner(ledger).preview(job.id, { plannedStart, horizonDays: 2 });
+  assert.equal(blocked.status, 'incomplete_input');
+  assert.ok(blocked.issues.some(issue => issue.code === 'locked_crew_member_unavailable'));
+  assert.deepEqual(ledger.getJobDetail(job.id).tasks[0], applied, 'unavailability must not silently replace an approved crew');
+  assert.equal(ledger.verifyAuditIntegrity().valid, true);
 });
 
 test('PostgreSQL energy performance preserves precision, approval, source integrity, and restart parity', { skip: !connectionString }, () => {
@@ -4450,7 +4619,7 @@ test('PostgreSQL energy performance preserves precision, approval, source integr
         AND indexname IN ('idx_energy_performance_pending_scope', 'idx_energy_performance_current_scope')
     `).get();
     assert.equal(Number(energyIndexes.count), 2);
-    assert.equal(ledger.migrationStatus().currentVersion, '072_operator_locale_preferences');
+    assert.equal(ledger.migrationStatus().currentVersion, '096_loading_read_indexes');
     assert.equal(ledger.diagnose().valid, true, JSON.stringify(ledger.diagnose().issues));
   } finally {
     ledger.close();

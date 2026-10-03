@@ -67,6 +67,7 @@ test('operator measures scope and seals it into one approval-gated estimate', as
   const intake = await intakeResponse.json();
 
   await page.goto('/');
+  await page.getByLabel(/^(Language|Taal)$/).selectOption('en-GB');
   await page.getByRole('button', { name: `Open ${title}` }).first().click();
   const workspace = page.getByTestId('job-workspace');
   const takeoffControl = workspace.getByTestId('takeoff-control');
@@ -190,7 +191,8 @@ test('operator measures scope and seals it into one approval-gated estimate', as
   expect(riskApproval.ok()).toBeTruthy();
   await retainFixedPriceBasis(request, intake.job.id, `browser-takeoff-basis-${key}`, commercialScope.id, risk.revision.id);
   await page.goto('/');
-  await expect(page.getByRole('heading', { name: 'Today' })).toBeVisible();
+  await page.getByLabel(/^(Language|Taal)$/).selectOption('en-GB');
+  await expect(page.getByRole('heading', { level: 1, exact: true, name: 'Today' })).toBeVisible();
   await page.getByRole('button', { name: `Open ${title}` }).first().click();
   await expect(workspace.getByRole('heading', { name: title })).toBeVisible();
   await expect(takeoffControl.getByTestId('takeoff-pricing-basis')).toContainText('Fixed price');

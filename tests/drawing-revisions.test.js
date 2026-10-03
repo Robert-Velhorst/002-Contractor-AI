@@ -71,10 +71,18 @@ function approve(ledger, approvalId) {
   });
 }
 
+function hashCanonical(value) {
+  const canonicalize = item => Array.isArray(item) ? item.map(canonicalize)
+    : item && typeof item === 'object' ? Object.fromEntries(Object.keys(item).sort().map(key => [key, canonicalize(item[key])]))
+      : item;
+  return crypto.createHash('sha256').update(JSON.stringify(canonicalize(value))).digest('hex');
+}
+
 test('governed drawings retain immutable PDF evidence, supersede atomically, distribute, and survive restart', t => {
   const { ledger, job, dbFile } = fixture(t);
+  const linkedTask = ledger.addTask(job.id, { title: 'Install ground-floor partition' });
   const firstDocument = addPdf(ledger, job.id, 'p01');
-  const firstPayload = drawingPayload(firstDocument.id, 'drawing-a101-p01-001');
+  const firstPayload = drawingPayload(firstDocument.id, 'drawing-a101-p01-001', { linkedTaskIds: [linkedTask.id] });
   const first = ledger.createDrawingRevision(job.id, firstPayload, { actor: 'office_operator' });
 
   assert.equal(first.replayed, false);
@@ -87,6 +95,7 @@ test('governed drawings retain immutable PDF evidence, supersede atomically, dis
   assert.equal(first.approval.decision.riskLevel, 'high');
   assert.match(first.approval.decision.safeguards.join(' '), /does not certify design adequacy/i);
   assert.equal(first.data.externalCommitments, 0);
+  assert.deepEqual(first.data.linkedTaskIds, [linkedTask.id]);
   assert.throws(
     () => ledger.transitionLifecycleRecord(job.id, 'document', first.id, {
       status: 'approved',
@@ -105,6 +114,7 @@ test('governed drawings retain immutable PDF evidence, supersede atomically, dis
   approve(ledger, first.approval.id);
   assert.equal(ledger.getDrawingRevision(first.id).status, 'current');
   assert.equal(ledger.getDrawingRevision(first.id).current, true);
+  assert.equal(ledger.getDrawingRevision(first.id).data.linkedTaskIds[0], linkedTask.id);
   assert.ok(ledger.getDrawingRevision(first.id).reviewedAt);
 
   const unlinkedDocument = addPdf(ledger, job.id, 'unlinked');
@@ -121,6 +131,7 @@ test('governed drawings retain immutable PDF evidence, supersede atomically, dis
   });
   const second = ledger.createDrawingRevision(job.id, secondPayload, { actor: 'office_operator' });
   assert.equal(second.supersedesDocumentId, first.id);
+  assert.deepEqual(second.data.linkedTaskIds, [linkedTask.id], 'replacement inherits task links unless explicitly changed');
   assert.equal(ledger.createDrawingRevision(job.id, secondPayload, { actor: 'offline_retry' }).replayed, true);
   assert.throws(
     () => ledger.createDrawingRevision(job.id, {
@@ -170,8 +181,7 @@ test('governed drawings retain immutable PDF evidence, supersede atomically, dis
 
   assert.equal(ledger.nextActions().some(action => action.type === 'review_drawing_distribution' && action.drawingRevisionId === second.id), false);
   assert.equal(ledger.diagnose().valid, true, JSON.stringify(ledger.diagnose().issues));
-  assert.equal(ledger.migrationStatus().currentVersion, '072_operator_locale_preferences');
-
+  assert.equal(ledger.migrationStatus().currentVersion, '096_loading_read_indexes');
   ledger.close();
   const restarted = new ContractorOperatingLedger({ dbFile });
   assert.equal(restarted.listDrawingRevisions({ jobId: job.id }).length, 2);
@@ -179,6 +189,49 @@ test('governed drawings retain immutable PDF evidence, supersede atomically, dis
   assert.equal(restarted.getDrawingRevision(second.id).integrityValid, true);
   assert.equal(restarted.diagnose().valid, true, JSON.stringify(restarted.diagnose().issues));
   restarted.close();
+});
+
+test('drawing task links reject cross-job tasks and deliberate empty replacement clears the scope', t => {
+  const { ledger, job } = fixture(t);
+  const task = ledger.addTask(job.id, { title: 'Install roof membrane' });
+  const otherJob = ledger.createIntake({ title: 'Separate project', assignAutomatically: false });
+  const otherTask = ledger.addTask(otherJob.id, { title: 'Private unrelated work' });
+  const source = addPdf(ledger, job.id, 'linked');
+  const payload = drawingPayload(source.id, 'drawing-link-scope-001', { linkedTaskIds: [task.id] });
+  const initial = ledger.createDrawingRevision(job.id, payload);
+  assert.equal(initial.integrityValid, true);
+  assert.deepEqual(initial.snapshot.linkedTaskIds, [task.id]);
+
+  assert.throws(() => ledger.createDrawingRevision(job.id, drawingPayload(source.id, 'drawing-cross-job-001', {
+    sheetNumber: 'A-102', linkedTaskIds: [otherTask.id]
+  })), error => error.code === 'drawing_linked_task_not_in_job');
+
+  ledger.resolveApproval(initial.approval.id, { status: 'approved', resolvedBy: 'approver' });
+  const replacementSource = addPdf(ledger, job.id, 'replacement');
+  const replacement = ledger.createDrawingRevision(job.id, drawingPayload(replacementSource.id, 'drawing-link-scope-002', {
+    revision: 'P02', supersedesDrawingId: initial.id, linkedTaskIds: []
+  }));
+  assert.deepEqual(replacement.data.linkedTaskIds, [], 'an explicit empty list removes inherited task scope');
+  assert.equal(replacement.integrityValid, true);
+});
+
+test('pre-task-scope v1 drawing snapshots remain integrity-valid', t => {
+  const { ledger, job } = fixture(t);
+  const source = addPdf(ledger, job.id, 'legacy');
+  const drawing = ledger.createDrawingRevision(job.id, drawingPayload(source.id, 'drawing-legacy-v1-001'));
+  const legacyBasis = Object.fromEntries(Object.entries(drawing.snapshot)
+    .filter(([key]) => !['sourceHash', 'requestedStatus', 'retainedAt', 'linkedTaskIds'].includes(key)));
+  legacyBasis.format = 'contractor-ai-drawing-revision/v1';
+  const sourceHash = hashCanonical(legacyBasis);
+  const snapshot = { ...legacyBasis, sourceHash, requestedStatus: 'current', retainedAt: drawing.snapshot.retainedAt };
+  const snapshotHash = hashCanonical(snapshot);
+  ledger.db.prepare('UPDATE documents SET source_hash = ?, snapshot_hash = ?, snapshot_json = ? WHERE id = ?')
+    .run(sourceHash, snapshotHash, JSON.stringify(snapshot), drawing.id);
+
+  const legacyDrawing = ledger.getDrawingRevision(drawing.id);
+  assert.equal(legacyDrawing.sourceHashValid, true);
+  assert.equal(legacyDrawing.snapshotHashValid, true);
+  assert.equal(legacyDrawing.integrityValid, true);
 });
 
 test('autonomous drawing review creates one internal task and never infers publication or delivery', t => {

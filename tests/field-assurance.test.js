@@ -63,6 +63,14 @@ test('field assurance coordinates safety, design, quality, evidence and approval
     scheduledStart: startIso,
     scheduledEnd: endIso
   });
+  const taskIds = [];
+  for (const title of ['Remove existing tile', 'Install replacement tile']) {
+    const task = await request(baseUrl, `/api/ledger/jobs/${encodeURIComponent(fieldJobId)}/tasks`, {
+      method: 'POST', body: JSON.stringify({ title, durationHours: 3 })
+    });
+    assert.equal(task.response.status, 201);
+    taskIds.push(task.body.task.id);
+  }
   const fieldProgress = await request(baseUrl, `/api/ledger/jobs/${encodeURIComponent(fieldJobId)}/progress`, {
     method: 'POST',
     body: JSON.stringify({
@@ -86,6 +94,13 @@ test('field assurance coordinates safety, design, quality, evidence and approval
   });
   assert.equal(firstPack.response.status, 201);
   assert.equal(firstPack.body.pack.externalCommitments, 0);
+  const currentActiveTaskIds = firstPack.body.pack.job.tasks
+    .filter(task => !['cancelled', 'canceled', 'deleted', 'completed'].includes(task.status))
+    .map(task => task.id)
+    .sort();
+  assert.deepEqual(firstPack.body.pack.jha.data.linkedTaskIds, currentActiveTaskIds);
+  assert.ok(taskIds.every(taskId => currentActiveTaskIds.includes(taskId)));
+  assert.ok(firstPack.body.pack.jha.data.safetyDefinitionHash);
   assert.deepEqual(firstPack.body.pack.reused, {
     safetyMeeting: false,
     jha: false,
@@ -247,29 +262,10 @@ test('field assurance coordinates safety, design, quality, evidence and approval
 
   const evidenceJobId = await createJob(baseUrl, {
     title: 'Field assurance evidence missing job',
-    priority: 'medium'
+    priority: 'medium',
+    status: 'completed',
+    progressPercent: 100
   });
-  const completionProposal = await request(baseUrl, `/api/ledger/jobs/${encodeURIComponent(evidenceJobId)}`, {
-    method: 'PUT',
-    body: JSON.stringify({
-      status: 'completed',
-      reason: 'Regression fixture marks the job complete without field evidence.'
-    })
-  });
-  assert.equal(completionProposal.response.status, 200);
-  assert.equal(completionProposal.body.status, 'pending_approval');
-  const completionApprovalId = completionProposal.body.approval.id;
-
-  const completionApproval = await request(baseUrl, `/api/ledger/approvals/${encodeURIComponent(completionApprovalId)}/resolve`, {
-    method: 'POST',
-    body: JSON.stringify({
-      status: 'approved',
-      resolvedBy: 'Field QA Test',
-      reason: 'Evidence-missing regression setup.'
-    })
-  });
-  assert.equal(completionApproval.response.status, 200);
-
   const completedDetail = await request(baseUrl, `/api/ledger/jobs/${encodeURIComponent(evidenceJobId)}`);
   assert.equal(completedDetail.response.status, 200);
   assert.equal(completedDetail.body.job.status, 'completed');

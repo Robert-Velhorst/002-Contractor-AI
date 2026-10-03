@@ -153,6 +153,7 @@ test('drawing revision API enforces approval and exposes only current field-safe
   assert.equal(fieldCurrent.body.drawings[0].entryKey, undefined);
   assert.equal(fieldCurrent.body.drawings[0].entryFingerprint, undefined);
   assert.equal(fieldCurrent.body.drawings[0].data, undefined);
+  assert.equal(fieldCurrent.body.drawings[0].linkedTaskIds, undefined);
 
   const content = await request(baseUrl, `/api/ledger/documents/${encodeURIComponent(created.body.drawing.id)}/content`, { token: tokens.field.token });
   assert.equal(content.response.status, 200);
@@ -178,5 +179,5 @@ test('drawing revision API enforces approval and exposes only current field-safe
   const diagnostics = await request(baseUrl, '/api/ledger/debug', { token: tokens.owner });
   assert.equal(diagnostics.response.status, 200);
   assert.equal(diagnostics.body.diagnostics.valid, true, JSON.stringify(diagnostics.body.diagnostics.issues));
-  assert.equal(diagnostics.body.diagnostics.migrations.currentVersion, '072_operator_locale_preferences');
+  assert.equal(diagnostics.body.diagnostics.migrations.currentVersion, '096_loading_read_indexes');
 });
