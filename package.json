@@ -36,7 +36,7 @@
   "dependencies": {
     "@dagrejs/graphlib": "^4.0.1",
     "@ngrok/ngrok": "1.7.0",
-    "compression": "1.8.1",
+    "compression": "1.8.2",
     "cors": "^2.8.5",
     "express": "^5.1.0",
     "lucide-react": "^0.510.0",
