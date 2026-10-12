@@ -6515,6 +6515,7 @@ class ContractorOperatingLedger {
     this.transactionAffectsDashboard = false;
     this.mutationRevision = 0;
     this.dashboardSummaryCache = null;
+    this.transactionFailure = null;
     this.authorityKey = options.authorityKey || null;
     this.authorityMaintenance = options.authorityMaintenance === true;
     if (databaseUrl) {
@@ -9336,6 +9337,7 @@ class ContractorOperatingLedger {
   }
 
   transaction(callback, { dashboardReadOnly = false } = {}) {
+    if (this.transactionFailure) throw this.transactionFailure;
     // Hosted connections keep conservative invalidation until a shared business revision exists.
     const affectsDashboard = this.databaseMode !== 'sqlite' || dashboardReadOnly !== true;
     if (this.transactionDepth > 0) {
@@ -9359,7 +9361,25 @@ class ContractorOperatingLedger {
       else if (this.dashboardSummaryCache) this.dashboardSummaryCache.revision = this.mutationRevision;
       return result;
     } catch (error) {
-      this.db.exec('ROLLBACK');
+      try {
+        if (this.databaseMode !== 'sqlite' || this.db.isTransaction) this.db.exec('ROLLBACK');
+      } catch (rollbackError) {
+        this.transactionFailure = new AggregateError(
+          [error, rollbackError],
+          'The ledger transaction failed and its rollback also failed.',
+          { cause: error }
+        );
+        try {
+          this.db.close();
+        } catch (closeError) {
+          this.transactionFailure = new AggregateError(
+            [error, rollbackError, closeError],
+            'The ledger transaction, rollback, and connection shutdown all failed.',
+            { cause: error }
+          );
+        }
+        throw this.transactionFailure;
+      }
       throw error;
     } finally {
       this.transactionDepth = 0;
