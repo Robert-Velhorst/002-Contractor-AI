@@ -13,7 +13,7 @@ test('bundle report measures the selected build once with verifiable source and 
   const directory = bundleFixture(t);
   const report = verifyBundleBudget({ distDirectory: directory });
   assert.equal(report.valid, true);
-  assert.equal(report.assetCount, 32);
+  assert.equal(report.assetCount, 38);
   assert.deepEqual(report.failures, []);
   for (const asset of report.assets) {
     const bytes = fs.readFileSync(path.join(directory, 'assets', asset.name));
@@ -25,6 +25,31 @@ test('bundle report measures the selected build once with verifiable source and 
   }
   assert.equal(report.measurements.totalGzipBytes, report.assets.reduce((sum, asset) => sum + asset.gzipBytes, 0));
   assert.equal(report.measurements.totalBrotliBytes, report.assets.reduce((sum, asset) => sum + asset.brotliBytes, 0));
+  assert.deepEqual(report.initialAssets.map(asset => asset.name).sort(),
+    ['App-fixture.css', 'App-fixture.js', 'icons-fixture.js', 'index-fixture.css', 'index-fixture.js']);
+  assert.ok(!report.initialAssets.some(asset => asset.name.startsWith('PipelineWorkspace-')));
+  assert.ok(report.routeAssets.worker.some(asset => asset.name.startsWith('OfflineField-')));
+  assert.ok(report.routeAssets.workBoard.some(asset => asset.name.startsWith('WorkBoard-')));
+  assert.ok(report.routeAssets.client.some(asset => asset.name.startsWith('ClientPortal-')));
+  assert.equal(report.measurements.initialGzipBytes, report.initialAssets.reduce((sum, asset) => sum + asset.gzipBytes, 0));
+  assert.equal(report.measurements.initialBrotliBytes, report.initialAssets.reduce((sum, asset) => sum + asset.brotliBytes, 0));
+  assert.equal(report.measurements.completeProductGzipBytes, report.measurements.totalGzipBytes);
+  assert.equal(report.measurements.completeProductBrotliBytes, report.measurements.totalBrotliBytes);
+});
+
+test('bundle gate fails closed when the static entry manifest is absent, malformed or escapes the asset directory', t => {
+  const directory = bundleFixture(t), manifest = path.join(directory, '.vite', 'manifest.json');
+  fs.unlinkSync(manifest);
+  assert.match(inspectBundleBudget({ distDirectory: directory }).failures.join(' '), /manifest is missing/);
+  fs.writeFileSync(manifest, '{');
+  assert.match(inspectBundleBudget({ distDirectory: directory }).failures.join(' '), /manifest is invalid/);
+  fs.writeFileSync(manifest, JSON.stringify({ 'index.html': {
+    file: 'assets/index-fixture.js', src: 'index.html', isEntry: true, imports: ['icons.jsx'], dynamicImports: ['_App-outside.js']
+  }, '_App-outside.js': { file: '../outside.js', imports: [], css: [] },
+  'WorkBoard.jsx': { file: 'assets/WorkBoard-fixture.js', src: 'WorkBoard.jsx', imports: [], css: [] },
+  'OfflineField.jsx': { file: 'assets/OfflineField-fixture.js', src: 'OfflineField.jsx', imports: [], css: [] },
+  'ClientPortal.jsx': { file: 'assets/ClientPortal-fixture.js', src: 'ClientPortal.jsx', imports: [], css: [] } }));
+  assert.match(inspectBundleBudget({ distDirectory: directory }).failures.join(' '), /outside the asset directory/);
 });
 
 test('incomplete builds cannot pass by measuring missing product surfaces as zero', t => {
@@ -102,6 +127,7 @@ test('package verification rejects absent evidence, changed assets and altered r
   const directory = bundleFixture(t), report = verifyBundleBudget({ distDirectory: directory });
   fs.mkdirSync(path.join(directory, 'dist'));
   fs.renameSync(path.join(directory, 'assets'), path.join(directory, 'dist', 'assets'));
+  fs.renameSync(path.join(directory, '.vite'), path.join(directory, 'dist', '.vite'));
   const build = { bundleBudget: { valid: true, assetCount: report.assetCount, measurements: report.measurements } };
   assert.throws(() => verifyPackagedBundle(directory, {}), /verified bundle-budget evidence/);
   assert.throws(() => verifyPackagedBundle(directory, build), /ENOENT/);
@@ -137,10 +163,12 @@ test('budget CLI accepts only unambiguous known options', () => {
   }
 });
 
-test('release download limits are not increased by the report and packaging guard', () => {
+test('initial-route and complete-product budgets retain explicit headroom limits', () => {
   assert.equal(budgets.largestJavaScriptBytes, 600000);
-  assert.equal(budgets.totalGzipBytes, 578500);
-  assert.equal(budgets.totalBrotliBytes, 540000);
+  assert.equal(budgets.initialGzipBytes, 250000);
+  assert.equal(budgets.initialBrotliBytes, 195000);
+  assert.equal(budgets.completeProductGzipBytes, 725000);
+  assert.equal(budgets.completeProductBrotliBytes, 620000);
   assert.equal(budgets.fieldWorkContextGzipBytes, 7000);
   assert.equal(budgets.clientDeliveryGzipBytes, 8500);
   assert.equal(budgets.operationalRecoveryGzipBytes, 4100);

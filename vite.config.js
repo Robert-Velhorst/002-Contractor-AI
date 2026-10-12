@@ -51,6 +51,7 @@ export default defineConfig(({ command, mode }) => {
   build: {
     target: 'es2022',
     chunkSizeWarningLimit: 600,
+    manifest: true,
     minify: 'terser',
     terserOptions: { ecma: 2022, compress: { passes: 10 } },
     cssMinify: 'lightningcss',
