@@ -59,7 +59,7 @@ test('every database integration file enters through the shared disposable-targe
   const path = require('node:path');
   const { postgresTestFiles } = require('../scripts/run-node-tests');
   const files = postgresTestFiles().filter(file => file !== 'tests/postgres-test-database.test.js');
-  assert.equal(files.length, 16);
+  assert.equal(files.length, 17);
   assert.ok(files.includes('tests/company-startup-postgres.test.js'));
   for (const file of files) {
     const source = fs.readFileSync(path.resolve(__dirname, '..', file), 'utf8');

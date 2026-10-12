@@ -115,6 +115,7 @@ test('Node test runner discovers every test exactly once and npm has no duplicat
     'tests/conversation-analysis-postgres.test.js',
     'tests/identity-postgres.test.js',
     'tests/inspection-coverage-postgres.test.js',
+    'tests/loading-read-postgres.test.js',
     'tests/local-to-hosted-migration.test.js',
     'tests/node-test-runner.test.js',
     'tests/operations-safety.test.js',
