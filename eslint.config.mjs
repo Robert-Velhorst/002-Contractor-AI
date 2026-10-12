@@ -26,10 +26,11 @@ export default [
   {
     files: ['**/*.{js,jsx,mjs}'],
     languageOptions: {
-      ecmaVersion: 2020,
+      ecmaVersion: 2022,
       globals: {
         ...globals.browser,
         ...globals.node,
+        AggregateError: 'readonly',
       },
       parserOptions: {
         ecmaVersion: 'latest',
