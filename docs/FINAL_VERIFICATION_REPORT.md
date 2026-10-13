@@ -1,6 +1,27 @@
 # Final Verification Report
 
-## Current working tree - Phase 244, 2026-10-03
+## Latest Published-Branch Verification - 2026-10-13
+
+Commit `6fb463a30861f978d0f6ed1115dc264a850eb8d8` is published on the open
+draft PR [#97](https://github.com/Robert-Velhorst/002-Contractor-AI/pull/97).
+The following checks were run against that source before this documentation
+refresh:
+
+| Gate | Result |
+| --- | --- |
+| Node test suite | `npm test`: 1,194 tests, 1,123 passed, 71 skipped, zero failed. Skipped provider/PostgreSQL cases are not counted as passing hosted evidence |
+| Hosted handover integration | The updated reconciliation path passed against isolated PostgreSQL 16 with verified TLS, including evidence-tamper rejection and idempotent receipt recovery |
+| Lint and production build | `npm run lint` and `npm run build` passed |
+| Release contract | `npm run verify:release` passed: 107 canonical paths, 12 retired paths, 17 hosted environment keys, 852 source files |
+| Bundle budget | `npm run verify:bundle` passed across 118 assets: 700,795 gzip / 599,564 Brotli bytes; largest JavaScript asset 370,088 bytes |
+| GitHub CI | Run [38334647975](https://github.com/Robert-Velhorst/002-Contractor-AI/actions/runs/38334647975) was queued when this report was refreshed; it includes PostgreSQL-backed verification, browser tests, container verification, and the Windows standalone package gate |
+
+These local checks do not prove a live EU deployment, provider-backed recovery,
+legal/DPA acceptance, public ingress, or independent device/operator acceptance.
+The older Phase 244 report below is retained as historical evidence and is not a
+description of the current branch.
+
+## Historical Verification - Phase 244, 2026-10-03
 
 **Release status: blocked.** Loading recommendations now avoid tool/material/plan
 join fanout. Forward migration `096_loading_read_indexes` adds two covering

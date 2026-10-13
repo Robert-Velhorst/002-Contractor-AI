@@ -50,8 +50,9 @@ assessments remain visible as history, and the stop-work badge is translated in
 Dutch. The safety rows also have stronger text contrast. This changes display,
 not authorization: only the live ledger can validate current safety sources.
 Production bundling reuses the installed React automatic JSX runtime without
-replacing its behavior. The aggregate release-size gate still fails; current
-evidence and remaining acceptance work are in
+replacing its behavior. The latest local build passes the aggregate release-size
+gate; hosted production acceptance remains separate. Current evidence and open
+acceptance work are in
 [the verification report](docs/FINAL_VERIFICATION_REPORT.md).
 
 **Safer disruption recovery:** six recovery forms now share a synchronous write
@@ -61,8 +62,8 @@ Actual-cost allocations and corrections survive a lost response and reload
 without creating a second allocation; stock retries recheck edit rights. The
 cash-flow control waits for the first forecast before exposing editable defaults
 or totals. These are local behavior fixes, not autonomous spending, new external
-integrations or production acceptance. The current size gate still fails; see
-[the verification report](docs/FINAL_VERIFICATION_REPORT.md).
+integrations or production acceptance. The latest local bundle-budget check
+passes; see [the verification report](docs/FINAL_VERIFICATION_REPORT.md).
 
 **Safer release checks:** the browser runner binds its results to the exact built
 files, packaged runtime closure, application sources and browser tests. A change
