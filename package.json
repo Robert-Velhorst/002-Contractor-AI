@@ -34,7 +34,7 @@
     "verify:bundle": "node scripts/verify-bundle-budget.js"
   },
   "dependencies": {
-    "@dagrejs/graphlib": "^4.0.1",
+    "@dagrejs/graphlib": "^4.0.5",
     "@ngrok/ngrok": "1.7.0",
     "compression": "1.8.2",
     "cors": "^2.8.5",
