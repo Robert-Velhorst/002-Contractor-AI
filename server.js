@@ -147,7 +147,8 @@ const evidenceStorageOptions = {
   accessKeyId: process.env.CONTRACTOR_AI_S3_ACCESS_KEY_ID,
   secretAccessKey: process.env.CONTRACTOR_AI_S3_SECRET_ACCESS_KEY,
   prefix: process.env.CONTRACTOR_AI_S3_PREFIX || (configuredCompanyId ? `companies/${configuredCompanyId}/evidence` : 'contractor-ai/evidence'),
-  timeoutMs: process.env.CONTRACTOR_AI_STORAGE_TIMEOUT_MS
+  timeoutMs: process.env.CONTRACTOR_AI_STORAGE_TIMEOUT_MS,
+  maxReadBytes: Number(process.env.MAX_UPLOAD_BYTES || 10 * 1024 * 1024)
 };
 let evidenceStorage;
 let evidenceStorageInitError = null;
@@ -820,7 +821,7 @@ function parseMultipartBody(buffer, contentType = '') {
   }
 }
 
-async function storeUploadedFile(file) {
+async function storeUploadedFile(file, options = {}) {
   const validation = await validateEvidenceUpload(file);
   if (!validation.valid) {
     throw new UploadRequestError(validation.statusCode || 415, validation.code, validation.message);
@@ -829,7 +830,7 @@ async function storeUploadedFile(file) {
     throw new UploadRequestError(503, evidenceStorageInitError?.code || 'storage_unavailable', evidenceStorageInitError?.message || 'Evidence storage is unavailable.');
   }
   try {
-    const stored = await evidenceStorage.store(file);
+    const stored = await evidenceStorage.store(file, options);
     return { originalName: file.originalName, ...stored };
   } catch (error) {
     if (error instanceof EvidenceStorageError) {
@@ -8745,7 +8746,9 @@ app.post('/api/ledger/upload', async (req, res) => {
     }
 
     reservedEvidenceBytes = uploadPayload.file ? reserveEvidenceStorage(uploadPayload.file.buffer?.length || 0) : 0;
-    const storedFile = uploadPayload.file ? await storeUploadedFile(uploadPayload.file) : null;
+    const storedFile = uploadPayload.file ? await storeUploadedFile(uploadPayload.file, {
+      operationId: idempotency?.claimed ? `${idempotency.keyHash}:${idempotency.requestHash}` : null
+    }) : null;
     retainedUpload = storedFile;
     const payload = withStoredUpload(uploadPayload.payload || {}, storedFile);
     const analysis = {

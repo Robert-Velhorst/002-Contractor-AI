@@ -12,8 +12,12 @@ class EvidenceStorageError extends Error {
   }
 }
 
-function safeStorageName(originalName) {
+function safeStorageName(originalName, operationId = null) {
   const extension = path.extname(String(originalName || '')).slice(0, 20);
+  if (operationId) {
+    const stableId = crypto.createHash('sha256').update(String(operationId)).digest('hex');
+    return `upload-${stableId}${extension}`;
+  }
   const stem = path.basename(String(originalName || 'evidence'), extension)
     .replace(/[^\w.-]+/g, '-')
     .replace(/^-+|-+$/g, '')
@@ -136,7 +140,8 @@ class LocalEvidenceStorage {
 }
 
 class S3EvidenceStorage {
-  constructor({ endpoint, bucket, region, accessKeyId, secretAccessKey, prefix = 'contractor-ai/evidence', timeoutMs = 5000, fetchFn = global.fetch }) {
+  constructor({ endpoint, bucket, region, accessKeyId, secretAccessKey, prefix = 'contractor-ai/evidence', timeoutMs = 5000,
+    maxReadBytes = 10 * 1024 * 1024, fetchFn = global.fetch }) {
     if (!endpoint || !bucket || !region || !accessKeyId || !secretAccessKey) {
       throw new EvidenceStorageError('s3_configuration_required', 'S3 evidence storage requires endpoint, bucket, region, access key, and secret key.');
     }
@@ -153,6 +158,10 @@ class S3EvidenceStorage {
     this.secretAccessKey = secretAccessKey;
     this.prefix = normalizeS3Prefix(prefix);
     this.timeoutMs = Math.max(500, Number(timeoutMs) || 5000);
+    this.maxReadBytes = Number(maxReadBytes);
+    if (!Number.isSafeInteger(this.maxReadBytes) || this.maxReadBytes < 1) {
+      throw new EvidenceStorageError('invalid_s3_read_limit', 'S3 evidence storage requires a positive bounded read limit.');
+    }
     this.fetch = fetchFn;
   }
 
@@ -161,7 +170,7 @@ class S3EvidenceStorage {
     return `${this.prefix}/${month}/${storageName}`;
   }
 
-  async request(method, key, body = null, contentType = null) {
+  async request(method, key, body = null, contentType = null, { maxResponseBytes = this.maxReadBytes, allowMissing = false } = {}) {
     const objectKey = normalizeS3ObjectKey(key);
     const timestamp = new Date().toISOString().replace(/[:-]|\.\d{3}/g, '');
     const dateStamp = timestamp.slice(0, 8);
@@ -197,12 +206,16 @@ class S3EvidenceStorage {
         body: body ? payload : undefined,
         signal: controller.signal
       });
+      if (allowMissing && method === 'GET' && response.status === 404) {
+        return { response, body: null, missing: true };
+      }
       if (!response.ok) {
         throw new EvidenceStorageError('object_storage_request_failed', `Object storage returned ${response.status}.`);
       }
       return {
         response,
-        body: method === 'GET' ? Buffer.from(await response.arrayBuffer()) : null
+        body: method === 'GET' ? await readResponseBounded(response, maxResponseBytes) : null,
+        missing: false
       };
     } catch (error) {
       if (error instanceof EvidenceStorageError) throw error;
@@ -215,22 +228,48 @@ class S3EvidenceStorage {
     }
   }
 
-  async store(file) {
-    const storageName = safeStorageName(file.originalName);
-    const key = this.objectKey(storageName);
-    const sha256 = crypto.createHash('sha256').update(file.buffer).digest('hex');
-    await this.request('PUT', key, file.buffer, file.mimeType || 'application/octet-stream');
+  async store(file, { operationId = null } = {}) {
+    const payload = Buffer.from(file.buffer || []);
+    if (!payload.length || payload.length > this.maxReadBytes) {
+      throw new EvidenceStorageError('evidence_size_invalid', 'Evidence upload is empty or exceeds the configured storage read limit.', 413);
+    }
+    const storageName = safeStorageName(file.originalName, operationId);
+    const key = operationId
+      ? `${this.prefix}/uploads/${storageName}`
+      : this.objectKey(storageName);
+    const sha256 = crypto.createHash('sha256').update(payload).digest('hex');
+    if (operationId) {
+      const existing = await this.request('GET', key, null, null, { maxResponseBytes: payload.length, allowMissing: true });
+      if (!existing.missing) {
+        assertRetainedObject(existing.body, payload, sha256);
+        return {
+          filename: storageName,
+          storageRef: `s3://${this.bucket}/${key}`,
+          size: payload.length,
+          mimeType: file.mimeType,
+          sha256,
+          reused: true
+        };
+      }
+    }
+    await this.request('PUT', key, payload, file.mimeType || 'application/octet-stream');
+    const retained = await this.request('GET', key, null, null, { maxResponseBytes: payload.length, allowMissing: true });
+    if (retained.missing) {
+      throw new EvidenceStorageError('evidence_retention_unverified', 'Object storage acknowledged the upload but the retained evidence is not yet readable.');
+    }
+    assertRetainedObject(retained.body, payload, sha256);
     return {
       filename: storageName,
       storageRef: `s3://${this.bucket}/${key}`,
-      size: file.size,
+      size: payload.length,
       mimeType: file.mimeType,
-      sha256
+      sha256,
+      reused: false
     };
   }
 
   async read(storageRef) {
-    const result = await this.request('GET', this.keyFromStorageRef(storageRef));
+    const result = await this.request('GET', this.keyFromStorageRef(storageRef), null, null, { maxResponseBytes: this.maxReadBytes });
     return result.body;
   }
 
@@ -257,7 +296,7 @@ class S3EvidenceStorage {
     let verificationError = null;
     try {
       await this.request('PUT', key, STORAGE_READINESS_PAYLOAD, 'application/octet-stream');
-      const result = await this.request('GET', key);
+      const result = await this.request('GET', key, null, null, { maxResponseBytes: STORAGE_READINESS_PAYLOAD.length });
       if (!result.body?.equals(STORAGE_READINESS_PAYLOAD)) {
         throw new EvidenceStorageError('object_storage_verification_failed', 'Object storage did not return the readiness marker that was written.');
       }
@@ -275,6 +314,44 @@ class S3EvidenceStorage {
       throw verificationError;
     }
     return { ready: true, mode: 's3', checkedAt: new Date().toISOString() };
+  }
+}
+
+async function readResponseBounded(response, maxBytes) {
+  const limit = Number(maxBytes);
+  if (!Number.isSafeInteger(limit) || limit < 0) {
+    throw new EvidenceStorageError('invalid_storage_read_limit', 'Evidence read requires a non-negative byte limit.');
+  }
+  const declaredLength = response.headers?.get('content-length');
+  if (declaredLength && /^\d+$/.test(declaredLength) && Number(declaredLength) > limit) {
+    throw new EvidenceStorageError('evidence_response_too_large', 'Object storage returned more bytes than the verified upload allows.');
+  }
+  if (!response.body) return Buffer.alloc(0);
+  const reader = response.body.getReader();
+  const chunks = [];
+  let size = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const chunk = Buffer.from(value);
+      size += chunk.length;
+      if (size > limit) {
+        await reader.cancel().catch(() => {});
+        throw new EvidenceStorageError('evidence_response_too_large', 'Object storage returned more bytes than the verified upload allows.');
+      }
+      chunks.push(chunk);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return Buffer.concat(chunks, size);
+}
+
+function assertRetainedObject(actual, expected, expectedSha256) {
+  if (!actual || actual.length !== expected.length
+      || crypto.createHash('sha256').update(actual).digest('hex') !== expectedSha256) {
+    throw new EvidenceStorageError('evidence_retention_unverified', 'Object storage did not retain the exact evidence bytes that were uploaded.');
   }
 }
 

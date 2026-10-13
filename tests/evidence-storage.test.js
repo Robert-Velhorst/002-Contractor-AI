@@ -65,6 +65,113 @@ test('S3 evidence storage signs private object requests and requires full config
   assert.equal(requests.at(-1).options.method, 'DELETE');
 });
 
+test('S3 upload is not accepted until bounded read-after-write bytes match exactly', async () => {
+  const expected = Buffer.from('private-evidence-payload');
+  for (const [retained, expectedCode] of [
+    [Buffer.alloc(0), 'evidence_retention_unverified'],
+    [Buffer.from('different-evidence'), 'evidence_retention_unverified'],
+    [Buffer.from('private-evidence-payload-extra'), 'evidence_response_too_large']
+  ]) {
+    const storage = new S3EvidenceStorage({
+      endpoint: 'https://s3.eu-central-1.example.test',
+      bucket: 'contractor-private',
+      region: 'eu-central-1',
+      accessKeyId: 'test-access',
+      secretAccessKey: 'test-secret',
+      fetchFn: async (_url, options) => new Response(options.method === 'GET' ? retained : null, { status: 200 })
+    });
+    await assert.rejects(
+      () => storage.store({ originalName: 'proof.bin', mimeType: 'application/octet-stream', size: expected.length, buffer: expected }),
+      error => error instanceof EvidenceStorageError && error.code === expectedCode
+    );
+  }
+});
+
+test('S3 exact idempotent retry reuses a delayed but eventually retained object', async () => {
+  const expected = Buffer.from('retryable-site-evidence');
+  const retained = new Map();
+  const requests = [];
+  let delayedRead = true;
+  const storage = new S3EvidenceStorage({
+    endpoint: 'https://s3.eu-central-1.example.test',
+    bucket: 'contractor-private',
+    region: 'eu-central-1',
+    accessKeyId: 'test-access',
+    secretAccessKey: 'test-secret',
+    fetchFn: async (url, options) => {
+      const target = String(url);
+      requests.push({ target, method: options.method });
+      if (options.method === 'PUT') retained.set(target, Buffer.from(options.body));
+      if (options.method === 'GET' && delayedRead && retained.has(target)) {
+        delayedRead = false;
+        return new Response(null, { status: 404 });
+      }
+      if (options.method === 'GET' && retained.has(target)) return new Response(retained.get(target), { status: 200 });
+      if (options.method === 'GET') return new Response(null, { status: 404 });
+      return new Response(null, { status: 200 });
+    }
+  });
+  const input = { originalName: 'retry.jpg', mimeType: 'image/jpeg', size: expected.length, buffer: expected };
+  await assert.rejects(() => storage.store(input, { operationId: 'stable-request-identity' }),
+    error => error instanceof EvidenceStorageError && error.code === 'evidence_retention_unverified');
+  const retried = await storage.store(input, { operationId: 'stable-request-identity' });
+
+  assert.equal(retried.reused, true);
+  assert.deepEqual(await storage.read(retried.storageRef), expected);
+  assert.equal(requests.filter(request => request.method === 'PUT').length, 1);
+  assert.equal(new Set(requests.filter(request => request.method !== 'DELETE').map(request => request.target)).size, 1);
+});
+
+test('S3 read-after-write rejects oversized provider responses before buffering them', async () => {
+  const storage = new S3EvidenceStorage({
+    endpoint: 'https://s3.eu-central-1.example.test',
+    bucket: 'contractor-private',
+    region: 'eu-central-1',
+    accessKeyId: 'test-access',
+    secretAccessKey: 'test-secret',
+    maxReadBytes: 8,
+    fetchFn: async (_url, options) => options.method === 'GET'
+      ? new Response('012345678', { status: 200 })
+      : new Response(null, { status: 200 })
+  });
+  await assert.rejects(
+    () => storage.store({ originalName: 'proof.bin', mimeType: 'application/octet-stream', size: 4, buffer: Buffer.from('data') }),
+    error => error instanceof EvidenceStorageError && error.code === 'evidence_response_too_large'
+  );
+});
+
+test('S3 exact retry does not create another object version', async () => {
+  const expected = Buffer.from('versioned-object-bytes');
+  const retained = new Map();
+  const requests = [];
+  let versionCount = 0;
+  const storage = new S3EvidenceStorage({
+    endpoint: 'https://s3.eu-central-1.example.test',
+    bucket: 'contractor-private',
+    region: 'eu-central-1',
+    accessKeyId: 'test-access',
+    secretAccessKey: 'test-secret',
+    fetchFn: async (url, options) => {
+      const target = String(url);
+      requests.push(options.method);
+      if (options.method === 'PUT') {
+        versionCount += 1;
+        retained.set(target, Buffer.from(options.body));
+        return new Response(null, { status: 200, headers: { 'x-amz-version-id': `version-${versionCount}` } });
+      }
+      if (options.method === 'GET') return new Response(retained.get(target) || null, { status: retained.has(target) ? 200 : 404 });
+      return new Response(null, { status: 200 });
+    }
+  });
+  const input = { originalName: 'versioned.pdf', mimeType: 'application/pdf', size: expected.length, buffer: expected };
+  const first = await storage.store(input, { operationId: 'same-versioned-request' });
+  const replay = await storage.store(input, { operationId: 'same-versioned-request' });
+  assert.equal(first.reused, false);
+  assert.equal(replay.reused, true);
+  assert.equal(versionCount, 1);
+  assert.equal(requests.filter(method => method === 'PUT').length, 1);
+});
+
 test('S3 evidence references remain inside the configured private prefix', async () => {
   const requests = [];
   const storage = new S3EvidenceStorage({
