@@ -22,9 +22,10 @@ GitHub, Vercel, Meta/WhatsApp, Hetzner, or any other separately operated service
 
 ## Repository safeguards
 
-The public repository has GitHub CodeQL default setup, Dependabot alerts and
-security updates, weekly dependency update proposals, secret scanning with push
-protection, and private vulnerability reporting enabled. Its active `main`
+The public repository has GitHub CodeQL default setup, dependency graph and
+automatic dependency submission, Dependabot alerts and security updates, weekly
+dependency update proposals, secret scanning with push protection, and private
+vulnerability reporting enabled. Its active `main`
 ruleset requires a pull request, current verification and CodeQL checks, resolved
 review threads, and prohibits deletion and force-pushes. It does not require an
 independent approving review because the repository currently has one maintainer;

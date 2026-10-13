@@ -1196,9 +1196,10 @@ See [API usage audit](docs/API_USAGE_AUDIT.md).
 - Minimized owner support bundles.
 - No public evidence serving or bearer secrets in request paths.
 
-The GitHub repository also has CodeQL default setup, Dependabot alerts and
-security updates, provider-pattern secret scanning with push protection, private
-vulnerability reporting, and an active `main` ruleset. The ruleset requires PRs,
+The GitHub repository also has CodeQL default setup, dependency graph and
+automatic dependency submission, Dependabot alerts and security updates,
+provider-pattern secret scanning with push protection, private vulnerability
+reporting, and an active `main` ruleset. The ruleset requires PRs,
 passing verification/CodeQL checks and resolved review conversations, and blocks
 force-pushes and deletion. It does not require an approving review because this
 repository currently has one maintainer. GitHub's non-provider secret patterns
