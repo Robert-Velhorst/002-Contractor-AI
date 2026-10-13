@@ -1,5 +1,4 @@
 .client-portal-shell { min-height: 100vh; color: #17231f; background: #f4f7f5; }
-.client-portal-shell *, .client-portal-shell *::before, .client-portal-shell *::after { box-sizing: border-box; }
 .client-portal-header { display: flex; min-height: 68px; align-items: center; justify-content: space-between; gap: 20px; padding: 0 max(18px, calc((100% - 1040px) / 2)); color: #fff; background: #173f38; }
 .client-portal-header > div, .client-portal-header p { display: flex; align-items: center; gap: 9px; }
 .client-portal-header strong { font-size: 15px; }
@@ -26,7 +25,7 @@
 .client-portal-facts strong { overflow-wrap: anywhere; font-size: 13px; line-height: 1.45; }
 .client-portal-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
 .client-portal-panel { min-width: 0; padding: 18px; background: #fff; border: 1px solid #d9e2de; border-radius: 7px; }
-.client-portal-wide { grid-column: 1 / -1; }
+.client-portal-wide { grid-column: 1 / -1; min-width: 0; }
 .client-portal-panel-title { display: flex; align-items: center; gap: 9px; margin-bottom: 13px; color: #176a59; }
 .client-portal-panel-title h2 { margin: 0; color: #26372f; font-size: 15px; }
 .client-portal-list { margin: 0; padding-left: 19px; color: #4b5f58; }
