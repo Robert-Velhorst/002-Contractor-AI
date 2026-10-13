@@ -22,13 +22,16 @@ GitHub, Vercel, Meta/WhatsApp, Hetzner, or any other separately operated service
 
 ## Repository safeguards
 
-The public repository uses GitHub CodeQL default setup, Dependabot alerts and
+The public repository has GitHub CodeQL default setup, Dependabot alerts and
 security updates, weekly dependency update proposals, secret scanning with push
-protection, and private vulnerability reporting. The `main` branch requires a
-pull request, current verification and CodeQL checks, resolved review threads,
-and prohibits deletion and force-pushes. The repository has a single maintainer,
-so it does not require an independent approving review; automated checks are
-not a substitute for one.
+protection, and private vulnerability reporting enabled. Its active `main`
+ruleset requires a pull request, current verification and CodeQL checks, resolved
+review threads, and prohibits deletion and force-pushes. It does not require an
+independent approving review because the repository currently has one maintainer;
+automated checks are not a substitute for independent review. GitHub's
+non-provider secret patterns and provider validity checks are not currently
+enabled; do not infer those capabilities from provider-pattern scanning or push
+protection.
 
 GitHub security alerts remain review items until a finding is fixed and a new
 scan confirms the result, or its applicability is documented with evidence.
