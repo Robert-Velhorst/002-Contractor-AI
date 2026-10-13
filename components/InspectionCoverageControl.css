@@ -1,0 +1,9 @@
+.inspection-coverage { min-width: 0; }
+.coverage-record { padding-block: 16px; border-top: 1px solid #cbd5d1; overflow-wrap: anywhere; }
+.coverage-record p, .coverage-record li { white-space: pre-wrap; }
+.coverage-check { min-width: 0; margin-block: 16px; }
+.job-workspace-body:has(.inspection-coverage) { scroll-padding-block-start: 64px; }
+@media (max-width: 600px) {
+  .inspection-coverage .context-actions { display: flex; flex-wrap: wrap; }
+  .inspection-coverage .context-actions .secondary-button, .inspection-coverage .context-actions .primary-button { width: 100%; min-height: 44px; white-space: normal; }
+}

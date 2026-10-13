@@ -1,0 +1,625 @@
+{
+  "format": "contractor-dialog-identity/v1",
+  "sourceSha256": "3de54eccc925249409b9c7e989222ec02bd560764bc2d091906b856994d2a321",
+  "dialogs": [
+    {
+      "name": "JobLifecycleModalDialog",
+      "condition": "jobLifecycleAction",
+      "jsxSha256": "10db5a03bcc64b703a72df0b7276725abeea5121f3586b35de40893638da250c",
+      "props": [
+        "closeJobLifecycle",
+        "jobLifecycleAction",
+        "jobLifecycleReason",
+        "setJobLifecycleReason",
+        "submitJobLifecycle",
+        "submitting"
+      ]
+    },
+    {
+      "name": "WorkerEditorDialog",
+      "condition": "workerEditor",
+      "jsxSha256": "a9c9642f4fad1850ef48e66ba2e9a2bf5efc2fbd8b3d21d2aee644dd4980ac1c",
+      "props": [
+        "closeWorkerEditor",
+        "ot",
+        "saveWorker",
+        "setWorkerDraft",
+        "submitting",
+        "workerDraft"
+      ]
+    },
+    {
+      "name": "WorkerRetirementModalDialog",
+      "condition": "workerRetirement",
+      "jsxSha256": "688cf62fbc4eb1311244999d5d6eb6822c42c0dd439ae272eac257a4b993aade",
+      "props": [
+        "closeWorkerRetirement",
+        "ot",
+        "requestWorkerRetirement",
+        "setWorkerRetirementReason",
+        "submitting",
+        "workerRetirement",
+        "workerRetirementReason"
+      ]
+    },
+    {
+      "name": "CredentialEditorDialog",
+      "condition": "credentialEditor",
+      "jsxSha256": "4ac163fcd7230160e65d387c316ab15eca4aa95e761be65b50a9494d4b8ebb15",
+      "props": [
+        "closeCredentialEditor",
+        "credentialDraft",
+        "credentialEditor",
+        "data",
+        "ot",
+        "setCredentialDraft",
+        "submitWorkerCredential",
+        "submitting"
+      ]
+    },
+    {
+      "name": "QualificationRequirementEditorDialog",
+      "condition": "qualificationRequirementEditor",
+      "jsxSha256": "f9935839dc62e6b1327506451b1990a296c84eed487b444ab9b61fe8164d8707",
+      "props": [
+        "closeQualificationRequirementEditor",
+        "data",
+        "jobs",
+        "ot",
+        "qualificationRequirementDraft",
+        "setQualificationRequirementDraft",
+        "submitQualificationRequirement",
+        "submitting"
+      ]
+    },
+    {
+      "name": "QualificationRetirementModalDialog",
+      "condition": "qualificationRequirementRetirement",
+      "jsxSha256": "0435e48bdc6cb01779d9466205a0a0f2a4c8f255ab50036d5c883500bef6cb89",
+      "props": [
+        "closeQualificationRequirementRetirement",
+        "ot",
+        "qualificationRequirementRetirement",
+        "qualificationRequirementRetirementReason",
+        "requestQualificationRequirementRetirement",
+        "setQualificationRequirementRetirementReason",
+        "submitting"
+      ]
+    },
+    {
+      "name": "AvailabilityEditorDialog",
+      "condition": "availabilityEditor",
+      "jsxSha256": "446e31d4d7f3a98c4364ca78f9bc85311727a50fe41a5ea392fce79a1cf27e8d",
+      "props": [
+        "AVAILABILITY_TIME_ZONES",
+        "availabilityDraft",
+        "closeAvailabilityEditor",
+        "data",
+        "ot",
+        "setAvailabilityDraft",
+        "submitWorkerAvailability",
+        "submitting",
+        "workerAvailabilityReviewMinimum"
+      ]
+    },
+    {
+      "name": "AvailabilityCancellationModalDialog",
+      "condition": "availabilityCancellation",
+      "jsxSha256": "d1ad8e41bdef19b9a9ecd32ca07c28075bc686a1fb2bce3d468da34725788e8a",
+      "props": [
+        "availabilityCancellation",
+        "availabilityCancellationReason",
+        "closeAvailabilityCancellation",
+        "ot",
+        "requestAvailabilityCancellation",
+        "setAvailabilityCancellationReason",
+        "submitting"
+      ]
+    },
+    {
+      "name": "EquipmentEditorDialog",
+      "condition": "equipmentEditor",
+      "jsxSha256": "053bc79560ba84c7f26c09915ffb3c40a07774fbcadedeaef5d38ec8455f6325",
+      "props": [
+        "closeEquipmentEditor",
+        "equipmentDraft",
+        "equipmentEditor",
+        "ot",
+        "saveEquipment",
+        "setEquipmentDraft",
+        "submitting"
+      ]
+    },
+    {
+      "name": "EquipmentCheckoutModalDialog",
+      "condition": "equipmentCheckoutEditor",
+      "jsxSha256": "2a67dd0032f9cf6cc5517001e066198887e6472797525f8ddb6be387e53c7bd7",
+      "props": [
+        "closeEquipmentCheckout",
+        "equipmentCheckoutDraft",
+        "equipmentCheckoutPlans",
+        "jobs",
+        "ot",
+        "saveEquipmentCheckout",
+        "selectEquipmentCheckoutJob",
+        "selectEquipmentCheckoutPlan",
+        "selectedEquipmentCheckoutPlan",
+        "setEquipmentCheckoutDraft",
+        "submitting"
+      ]
+    },
+    {
+      "name": "EquipmentReturnModalDialog",
+      "condition": "equipmentReturnEditor",
+      "jsxSha256": "16560a5847216ef95193ddec8f77a978355cd4e013945c531f32f21fb843497b",
+      "props": [
+        "closeEquipmentReturn",
+        "equipmentReturnDraft",
+        "equipmentReturnEditor",
+        "ot",
+        "saveEquipmentReturn",
+        "setEquipmentReturnDraft",
+        "submitting"
+      ]
+    },
+    {
+      "name": "EquipmentInspectionModalDialog",
+      "condition": "equipmentInspection",
+      "jsxSha256": "313b7fc412787a790b2503b5f5c75b334ee59e154402f4b1a4c616bee9cdc700",
+      "props": [
+        "closeEquipmentInspection",
+        "equipmentInspection",
+        "equipmentInspectionDraft",
+        "ot",
+        "recordEquipmentInspection",
+        "setEquipmentInspectionDraft",
+        "submitting"
+      ]
+    },
+    {
+      "name": "EquipmentMaintenanceModalDialog",
+      "condition": "equipmentMaintenance",
+      "jsxSha256": "fe49d6aee62dd97955441dac8eed257ab091fce735a4dcde186bf9136761031b",
+      "props": [
+        "closeEquipmentMaintenance",
+        "equipmentMaintenance",
+        "equipmentMaintenanceDraft",
+        "ot",
+        "recordEquipmentMaintenance",
+        "setEquipmentMaintenanceDraft",
+        "submitting"
+      ]
+    },
+    {
+      "name": "EquipmentRetirementModalDialog",
+      "condition": "equipmentRetirement",
+      "jsxSha256": "5f91222753bc25b3e1fe6ee388a686c96a24245171982f6bb98f9affceb75268",
+      "props": [
+        "closeEquipmentRetirement",
+        "equipmentRetirement",
+        "equipmentRetirementReason",
+        "ot",
+        "requestEquipmentRetirement",
+        "setEquipmentRetirementReason",
+        "submitting"
+      ]
+    },
+    {
+      "name": "TradePartnerEditorDialog",
+      "condition": "tradePartnerEditor",
+      "jsxSha256": "ddc38acd08a16d5979f82435cbf98863b01c2550863130674f1d20664eba7af6",
+      "props": [
+        "closeTradePartnerEditor",
+        "ot",
+        "saveTradePartner",
+        "setTradePartnerDraft",
+        "submitting",
+        "tradePartnerDraft"
+      ]
+    },
+    {
+      "name": "TradePartnerRetirementModalDialog",
+      "condition": "tradePartnerRetirement",
+      "jsxSha256": "5e2d738d1898f61dc5ea1ac39b586b7244b5d2d33b35ee6cddb15fd77bb712b1",
+      "props": [
+        "closeTradePartnerRetirement",
+        "ot",
+        "requestTradePartnerRetirement",
+        "setTradePartnerRetirementReason",
+        "submitting",
+        "tradePartnerRetirement",
+        "tradePartnerRetirementReason"
+      ]
+    },
+    {
+      "name": "ApprovalReviewModalDialog",
+      "condition": "approvalReview",
+      "jsxSha256": "3d7547ceaee388d8c8709b3300dc07923d1eb4ec1bfec08d89e9301477335fd6",
+      "props": [
+        "approvalReason",
+        "approvalReview",
+        "closeApprovalReview",
+        "ot",
+        "resolveApproval",
+        "setApprovalReason",
+        "submitting"
+      ]
+    },
+    {
+      "name": "ClientEditorModalDialog",
+      "condition": "clientEditor",
+      "jsxSha256": "5f040ff40181f6bd5b54841f08a8849a2b733dfdb0066ee6900f82cdde61dc96",
+      "props": [
+        "clientDraft",
+        "clientEditor",
+        "closeClientEditor",
+        "ot",
+        "setClientDraft",
+        "submitClientEditor",
+        "submitting"
+      ]
+    },
+    {
+      "name": "TakeoffCreateModalDialog",
+      "condition": "takeoffDialog?.mode === 'create'",
+      "jsxSha256": "6767495732cd0e30a0d84ae50e649a50f5dbdb04643d4dbf9bc7924821f5c064",
+      "props": [
+        "closeTakeoffDialog",
+        "ot",
+        "selectedJob",
+        "setTakeoffDraft",
+        "submitTakeoff",
+        "submitting",
+        "takeoffDraft"
+      ]
+    },
+    {
+      "name": "TakeoffItemModalDialog",
+      "condition": "['add_item', 'edit_item'].includes(takeoffDialog?.mode)",
+      "jsxSha256": "9526d232e023a4f5ceca596bd09c15e10b6f9d55d11a01ad933fc47fa3817829",
+      "props": [
+        "changeTakeoffMeasurementType",
+        "closeTakeoffDialog",
+        "ot",
+        "setTakeoffItemDraft",
+        "submitTakeoffItem",
+        "submitting",
+        "takeoffDialog",
+        "takeoffItemDraft",
+        "takeoffItemDraftReady",
+        "takeoffPreviewCost",
+        "takeoffPreviewQuantity",
+        "takeoffPreviewSell"
+      ]
+    },
+    {
+      "name": "TakeoffRemoveModalDialog",
+      "condition": "takeoffDialog?.mode === 'remove_item'",
+      "jsxSha256": "a0624990a6832f518c4cd40713c3b5d8c59abd12fbe582b63cbd97d83bde34f4",
+      "props": [
+        "closeTakeoffDialog",
+        "ot",
+        "removeTakeoffItem",
+        "submitting",
+        "takeoffDialog"
+      ]
+    },
+    {
+      "name": "TakeoffConvertModalDialog",
+      "condition": "takeoffDialog?.mode === 'convert'",
+      "jsxSha256": "55f84497f7508e433e68de4b81bec4bef991f2f7e47d9dd55a83f55d26618ee4",
+      "props": [
+        "closeTakeoffDialog",
+        "convertTakeoff",
+        "ot",
+        "selectedJob",
+        "setTakeoffConversionDraft",
+        "submitting",
+        "takeoffConversionDraft",
+        "takeoffDialog"
+      ]
+    },
+    {
+      "name": "CommercialDraftModalDialog",
+      "condition": "commercialDraftMode",
+      "jsxSha256": "9273915c5bfa443d7524c121d908ab52b7fb272b3f705042d6891c015291e29a",
+      "props": [
+        "activeCommercialDraft",
+        "addCommercialLineItem",
+        "changeOrderDraft",
+        "closeCommercialDialog",
+        "commercialDraftMode",
+        "commercialDraftNet",
+        "commercialDraftReady",
+        "commercialDraftTax",
+        "commercialDraftTotal",
+        "ot",
+        "quoteDraft",
+        "removeCommercialLineItem",
+        "selectedJob",
+        "setChangeOrderDraft",
+        "setQuoteDraft",
+        "submitCommercialDraft",
+        "submitting",
+        "updateCommercialLineItem"
+      ]
+    },
+    {
+      "name": "CommercialAcceptanceModalDialog",
+      "condition": "commercialAcceptance",
+      "jsxSha256": "b50de0f38f8021f76731992e1d3d68c62df9995ee7e1fb85e35b0f8373574a57",
+      "props": [
+        "closeCommercialDialog",
+        "commercialAcceptance",
+        "commercialAcceptanceDraft",
+        "ot",
+        "setCommercialAcceptanceDraft",
+        "submitCommercialAcceptance",
+        "submitting"
+      ]
+    },
+    {
+      "name": "CommercialDeliveryModalDialog",
+      "condition": "commercialDelivery",
+      "jsxSha256": "099abb56ce87a37083b746a0a86d7da41d2f230f20a9a41068041989ccf81d17",
+      "props": [
+        "closeCommercialDialog",
+        "commercialDelivery",
+        "commercialDeliveryDraft",
+        "ot",
+        "setCommercialDeliveryDraft",
+        "submitChangeOrderDelivery",
+        "submitting"
+      ]
+    },
+    {
+      "name": "TaskActionModalDialog",
+      "condition": "taskAction",
+      "jsxSha256": "8b4c02e31dfeeb62d0fc5c694183984b442baafb2ac324acab55291290c4b9f2",
+      "props": [
+        "setTaskAction",
+        "setTaskActionNote",
+        "submitTaskTransition",
+        "submitting",
+        "taskAction",
+        "taskActionNote"
+      ]
+    },
+    {
+      "name": "OpportunityActivityModalDialog",
+      "condition": "opportunityActivity",
+      "jsxSha256": "59c8c09dfea1a5fa510d47c0e4316bc2dd721d593902965f3d37ef0cd15e3739",
+      "props": [
+        "opportunityActivity",
+        "opportunityActivityDraft",
+        "setOpportunityActivity",
+        "setOpportunityActivityDraft",
+        "submitOpportunityActivity",
+        "submitting"
+      ]
+    },
+    {
+      "name": "BidPackageModalDialog",
+      "condition": "bidPackageEditor",
+      "jsxSha256": "f96ab962630c7e91661431f6e87997a743384421aec9d7cc685f041f33ef0dbf",
+      "props": [
+        "bidPackageDraft",
+        "data",
+        "ot",
+        "setBidPackageDraft",
+        "setBidPackageEditor",
+        "submitBidPackage",
+        "submitting"
+      ]
+    },
+    {
+      "name": "BidReturnModalDialog",
+      "condition": "bidPackageAction?.type === 'return'",
+      "jsxSha256": "ddc7a4e7313936d5d176a4b899f9b02b0f2c0d966da238f5b969918afd4386a2",
+      "props": [
+        "bidPackageAction",
+        "bidReturnDraft",
+        "ot",
+        "setBidPackageAction",
+        "setBidReturnDraft",
+        "submitBidReturn",
+        "submitting"
+      ]
+    },
+    {
+      "name": "BidSelectionModalDialog",
+      "condition": "bidPackageAction?.type === 'selection'",
+      "jsxSha256": "3e8f4ea7ffc5234eb8354f46e0ed883f18301ba53356931740496148d57a1ebd",
+      "props": [
+        "bidPackageAction",
+        "bidSelectionRationale",
+        "ot",
+        "setBidPackageAction",
+        "setBidSelectionRationale",
+        "submitBidSelection",
+        "submitting"
+      ]
+    },
+    {
+      "name": "BidCommitmentModalDialog",
+      "condition": "bidPackageAction?.type === 'commitment'",
+      "jsxSha256": "ec9c3ccc1d4eb56449ed17fe02a5116fc954883a97d0a3ee0fc307634092723f",
+      "props": [
+        "bidCommitmentDraft",
+        "bidPackageAction",
+        "ot",
+        "setBidCommitmentDraft",
+        "setBidPackageAction",
+        "submitBidCommitment",
+        "submitting"
+      ]
+    },
+    {
+      "name": "BidOrderPackageModalDialog",
+      "condition": "bidPackageAction?.type === 'order_package'",
+      "jsxSha256": "8d3acc36dc3407591225e11a4fcbc559de231445821b1865f4f437014d476200",
+      "props": [
+        "bidOrderDraft",
+        "bidPackageAction",
+        "ot",
+        "setBidOrderDraft",
+        "setBidPackageAction",
+        "submitBidOrderPackage",
+        "submitting"
+      ]
+    },
+    {
+      "name": "BidOrderDeliveryModalDialog",
+      "condition": "bidPackageAction?.type === 'order_delivery'",
+      "jsxSha256": "790a7c5bcedbe2f1ec096aadcaf698e84a12ec2f262543a727365abe1351e99d",
+      "props": [
+        "bidOrderDeliveryDraft",
+        "bidPackageAction",
+        "ot",
+        "setBidOrderDeliveryDraft",
+        "setBidPackageAction",
+        "submitBidOrderDelivery",
+        "submitting"
+      ]
+    },
+    {
+      "name": "BidAddParticipantsModalDialog",
+      "condition": "bidPackageAction?.type === 'add_participants'",
+      "jsxSha256": "1bdc83fb42fa8d89e068738bd1a3cbd4d409573a83752b12a84ba88d7cedd64d",
+      "props": [
+        "bidAddPartnerIds",
+        "bidPackageAction",
+        "data",
+        "ot",
+        "setBidAddPartnerIds",
+        "setBidPackageAction",
+        "submitBidParticipants",
+        "submitting"
+      ]
+    },
+    {
+      "name": "MaterialReceiptModalDialog",
+      "condition": "materialReceiptEditor",
+      "jsxSha256": "893d924663128b424a886b54f7e0cbdc391fbfbe314139fafe6c4f077ccbfe12",
+      "props": [
+        "activeJobs",
+        "closeMaterialReceiptEditor",
+        "emptyMaterialReceiptLine",
+        "materialReceiptDraft",
+        "saveMaterialReceipt",
+        "setMaterialReceiptDraft",
+        "submitting"
+      ]
+    },
+    {
+      "name": "MaterialReceiptReversalDialog",
+      "condition": "materialReceiptReversal",
+      "jsxSha256": "e1a7bb471d887cd91653d392d26427cbea81e99325f269a8f39cce16478340e6",
+      "props": [
+        "materialReceiptReversal",
+        "materialReceiptReversalReason",
+        "requestMaterialReceiptReversal",
+        "setMaterialReceiptReversal",
+        "setMaterialReceiptReversalReason",
+        "submitting"
+      ]
+    },
+    {
+      "name": "InvoiceDraftModalDialog",
+      "condition": "invoiceJob",
+      "jsxSha256": "6c46a0a8d2215b43e859c13b5a409de350b21518b1805a48bdac748d6eb92f2b",
+      "props": [
+        "closeInvoiceDraft",
+        "createInvoiceDraft",
+        "invoiceAmount",
+        "invoiceDraft",
+        "invoiceJob",
+        "invoiceTaxAmount",
+        "invoiceTotal",
+        "setInvoiceDraft",
+        "submitting"
+      ]
+    },
+    {
+      "name": "ClientLifecycleModalDialog",
+      "condition": "clientAction",
+      "jsxSha256": "f1581db2fbdef337656f1e1e49ccb0d3848a15fb3a36b77848db26c54ab8d542",
+      "props": [
+        "clientAction",
+        "clientActionNotes",
+        "clientActionOption",
+        "clientActionReference",
+        "closeClientLifecycle",
+        "ot",
+        "setClientActionNotes",
+        "setClientActionOption",
+        "setClientActionReference",
+        "submitClientLifecycle",
+        "submitting"
+      ]
+    },
+    {
+      "name": "FinanceOrderDeliveryModalDialog",
+      "condition": "financeOrderDelivery",
+      "jsxSha256": "3421be88a320d02cbe5f8ca45697a8f9ca3f67b58589c6b576de18e4ef378d0c",
+      "props": [
+        "closeFinanceOrderDelivery",
+        "financeOrderDelivery",
+        "financeOrderDeliveryDraft",
+        "ot",
+        "setFinanceOrderDeliveryDraft",
+        "submitFinanceOrderDelivery",
+        "submitting"
+      ]
+    },
+    {
+      "name": "EnvironmentalReversalModalDialog",
+      "condition": "environmentalReversal",
+      "jsxSha256": "676d1fdc44fe3b70b9c2aaa4a9b9f1abafa88d4e262e0f09d988ca21d08741d4",
+      "props": [
+        "environmentalReversal",
+        "environmentalReversalReason",
+        "setEnvironmentalReversal",
+        "setEnvironmentalReversalReason",
+        "submitEnvironmentalReversal",
+        "submitting"
+      ]
+    },
+    {
+      "name": "FieldAssuranceModalDialog",
+      "condition": "fieldAction",
+      "jsxSha256": "57ea58e3fe2f8da78d20b2322af1f06fbcb44f61a7cc490127a7af84427e5511",
+      "props": [
+        "closeFieldReview",
+        "fieldAction",
+        "fieldActionDate",
+        "fieldActionNotes",
+        "fieldActionReference",
+        "ot",
+        "setFieldActionDate",
+        "setFieldActionNotes",
+        "setFieldActionReference",
+        "submitFieldReview",
+        "submitting"
+      ]
+    },
+    {
+      "name": "ResourcePlannerDialog",
+      "condition": "showResourcePlanner && selectedJob",
+      "jsxSha256": "e94cd1456648e3d7669c6474e6efb55559efb95e81c6c127a1589b4d86609d55",
+      "props": [
+        "assignWorker",
+        "releaseAssignment",
+        "releaseToolReservation",
+        "reserveTool",
+        "resourceDraft",
+        "resourceOptions",
+        "scheduleDraft",
+        "selectedJob",
+        "setResourceDraft",
+        "setShowResourcePlanner",
+        "submitting"
+      ]
+    }
+  ]
+}

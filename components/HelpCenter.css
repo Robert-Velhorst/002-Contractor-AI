@@ -1,0 +1,37 @@
+.help-center { overflow: hidden; }
+.help-center-heading { align-items: center; flex-wrap: wrap; }
+.help-center-title { display: flex; align-items: center; gap: 11px; min-width: 220px; color: #0b6658; }
+.help-center-title > div { min-width: 0; }
+.help-center-title h2 { margin: 0; color: #1a2823; font-size: 16px; }
+.help-center-title p { margin: 4px 0 0; color: #64746f; font-size: 12px; }
+.help-search { display: flex; align-items: center; gap: 8px; width: min(360px, 100%); min-height: 38px; padding: 0 11px; color: #607169; background: #fff; border: 1px solid #d5e0da; border-radius: 5px; }
+.help-search:focus-within { border-color: #0a7b65; box-shadow: 0 0 0 3px #dff2eb; }
+.help-search input { width: 100%; min-width: 0; padding: 0; color: #20312b; background: transparent; border: 0; outline: 0; }
+.help-audiences { display: flex; flex-wrap: wrap; gap: 4px; padding: 12px 18px 0; border-bottom: 1px solid #e6ece9; }
+.help-audiences button { min-height: 36px; padding: 0 13px; color: #4f625b; background: transparent; border: 0; border-bottom: 2px solid transparent; font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; }
+.help-audiences button:hover { color: #0b6655; }
+.help-audiences button.help-audience-active { color: #0b6655; border-bottom-color: #0b8068; }
+.help-topic-list { display: grid; }
+.help-topic { border-bottom: 1px solid #e8eeeb; }
+.help-topic:last-child { border-bottom: 0; }
+.help-topic summary { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 66px; padding: 14px 18px; cursor: pointer; list-style: none; }
+.help-topic summary::-webkit-details-marker { display: none; }
+.help-topic summary > span:first-child { display: grid; gap: 4px; min-width: 0; }
+.help-topic summary strong { color: #263a32; font-size: 13px; }
+.help-topic summary small { color: #65766f; font-size: 12px; line-height: 1.45; }
+.help-disclosure { display: grid; width: 28px; height: 28px; flex: 0 0 auto; place-items: center; color: #49645a; border: 1px solid #d7e2dc; border-radius: 50%; font-size: 19px; line-height: 1; }
+.help-topic[open] .help-disclosure { transform: rotate(45deg); }
+.help-topic-body { display: grid; gap: 12px; padding: 0 18px 18px 34px; }
+.help-topic-body ol { display: grid; gap: 8px; margin: 0; padding-left: 19px; color: #43574e; font-size: 12px; line-height: 1.55; }
+.help-topic-body .secondary-button { justify-self: start; min-height: 34px; }
+.help-empty { margin: 0; padding: 24px 18px; color: #64746f; font-size: 13px; }
+@media (max-width: 760px) {
+  .help-center-heading { align-items: stretch; flex-direction: column; padding: 15px 14px; }
+  .help-center-title { align-items: flex-start; }
+  .help-search { width: 100%; }
+  .help-audiences { padding: 9px 12px 0; }
+  .help-audiences button { flex: 1 1 auto; min-width: 0; padding: 0 8px; }
+  .help-topic summary { align-items: flex-start; padding: 13px 14px; }
+  .help-topic-body { padding: 0 14px 15px 31px; }
+  .help-topic-body .secondary-button { width: 100%; justify-content: center; }
+}
