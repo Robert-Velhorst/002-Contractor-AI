@@ -6,6 +6,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const zlib = require('node:zlib');
 const { postgresTestDatabaseUrl } = require('./postgres-test-database');
+const { version: packageVersion } = require('../package.json');
 const postgresTestUrl = postgresTestDatabaseUrl();
 
 function stableJson(value) {
@@ -546,7 +547,7 @@ test('owner safety stop blocks autonomous drafting and support bundle excludes o
   const support = await request(baseUrl, '/api/operations/support-bundle');
   assert.equal(support.response.status, 200);
   assert.equal(support.body.format, 'contractor-ai-support-bundle/v1');
-  assert.equal(support.body.application.version, '1.1.0');
+  assert.equal(support.body.application.version, packageVersion);
   assert.equal(support.body.application.releaseSha, '0123456789abcdef');
   assert.equal(support.body.privacy.customerRecordsIncluded, false);
   assert.equal(support.body.privacy.credentialsIncluded, false);
