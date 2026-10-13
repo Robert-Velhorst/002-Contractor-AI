@@ -770,7 +770,11 @@ function normalizeTakeoffItem(payload = {}) {
   if (description.length < 2 || description.length > 240) {
     throw ledgerInputError('takeoff_item_description_invalid', 'Takeoff item description must be between 2 and 240 characters.');
   }
-  const measurementType = normalizeStatus(payload.measurementType || payload.measurement_type, 'manual');
+  const measurementTypeInput = payload.measurementType ?? payload.measurement_type;
+  if (measurementTypeInput !== undefined && typeof measurementTypeInput !== 'string') {
+    throw ledgerInputError('takeoff_measurement_type_invalid', 'Measurement type must be a supported text value.');
+  }
+  const measurementType = normalizeStatus(measurementTypeInput, 'manual');
   if (!TAKEOFF_MEASUREMENT_TYPES.has(measurementType)) {
     throw ledgerInputError('takeoff_measurement_type_invalid', `Measurement type must be one of: ${[...TAKEOFF_MEASUREMENT_TYPES].join(', ')}.`);
   }
