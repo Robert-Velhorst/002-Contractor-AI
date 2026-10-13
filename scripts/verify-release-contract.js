@@ -860,9 +860,17 @@ function verifyReleaseContract(root = path.resolve(__dirname, '..')) {
     '--sbom=true',
     '--provenance=mode=max',
     'release_sha="$(git rev-parse "refs/tags/$tag^{commit}")"',
+    'git merge-base --is-ancestor "$release_sha" "$main_sha"',
+    'ref: ${{ needs.verify-release-source.outputs.tag }}',
     'gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft'
   ]) {
     if (!releaseWorkflow.includes(requirement)) failures.push(`Release workflow is missing a required packaging control: ${requirement}`);
+  }
+  if ((releaseWorkflow.match(/^\s+ref: \$\{\{ needs\.verify-release-source\.outputs\.tag \}\}$/gm) || []).length !== 2) {
+    failures.push('Windows and container packages must check out the exact validated release tag.');
+  }
+  if (!releaseWorkflow.includes('--label "org.opencontainers.image.revision=${{ needs.verify-release-source.outputs.source_sha }}"')) {
+    failures.push('Container provenance labels must use the validated release source commit.');
   }
 
   return {

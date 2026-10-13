@@ -832,8 +832,8 @@ docker run --rm --name contractor-ai `
 
 If a release package job fails, the **Publish Contractor.AI release** workflow
 can be run manually from `main` with the already-published release tag. It
-rebuilds the same release only when the tag, `package.json` version, and current
-`main` commit match; it does not permit packaging a stale tag.
+rebuilds the exact source commit for that tag only when its version matches and
+the tag is in current `main` history; it rejects draft and stale/unrelated tags.
 
 The published container is not an EU-hosted service. Hosted mode still requires
 the provider, region, data protection, database, storage, ingress, backup, and
