@@ -201,7 +201,7 @@ function stopContainer(name = containerName) {
 async function verifyIdentityContainer() {
   identityFixture = fs.mkdtempSync(path.join(os.tmpdir(), 'contractor-ai-container-identity-'));
   const companiesFile = path.join(identityFixture, 'companies.json');
-  fs.writeFileSync(companiesFile, '[]\n', { mode: 0o600 });
+  fs.writeFileSync(companiesFile, '[]\n', { mode: 0o644 });
   docker(['volume', 'create', '--label', `contractor-ai.smoke=${runId}`, identityName]);
   identityVolumeCreated = true;
   identityContainerCreated = true;
