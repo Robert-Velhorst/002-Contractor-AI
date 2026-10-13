@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { createMemoryStorage } from './memory-storage'
 import { DRAFT_STORAGE_PREFIX, DRAFT_TTL_MS, MAX_DRAFT_BYTES, MAX_DRAFT_STORAGE_BYTES,
   clearSessionDraftScope, draftStorageKey, readSessionDraft, removeSessionDraft,
   useSessionDraftRecovery, writeSessionDraft, writeSessionDraftBatch } from '../draft-recovery'
@@ -14,14 +15,17 @@ const change = (name, value) => fireEvent.change(screen.getByLabelText(name), { 
 const hide = () => act(() => window.dispatchEvent(new Event('pagehide')))
 
 describe('shared draft recovery scheduling', () => {
-  beforeEach(() => { vi.useFakeTimers(); window.sessionStorage.clear() })
+  beforeEach(() => {
+    vi.useFakeTimers()
+    Object.defineProperty(window, 'sessionStorage', { configurable: true, value: createMemoryStorage() })
+  })
   afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks() })
 
   it('uses one listener and timer for 32 forms and scans their storage inventory only once per flush', () => {
     const names = Array.from({ length: 32 }, (_, index) => `form-${index}`)
     writeSessionDraftBatch(window.sessionStorage, names.map(name => ({ scope: 'owner:one', name, value: 'stored' })))
     const add = vi.spyOn(window, 'addEventListener'), remove = vi.spyOn(window, 'removeEventListener')
-    const keys = vi.spyOn(window.Storage.prototype, 'key'), writes = vi.spyOn(window.Storage.prototype, 'setItem')
+    const keys = vi.spyOn(window.sessionStorage, 'key'), writes = vi.spyOn(window.sessionStorage, 'setItem')
     const view = render(<>{names.map(name => <Field key={name} name={name} />)}</>)
     act(() => names.forEach((name, index) => change(name, `latest-${index}`)))
     act(() => vi.advanceTimersByTime(0))
@@ -106,8 +110,8 @@ describe('shared draft recovery scheduling', () => {
   })
 
   it('retries a failed write on pagehide without a timer loop and does not repeat successful writes', () => {
-    const original = window.Storage.prototype.setItem
-    const write = vi.spyOn(window.Storage.prototype, 'setItem').mockImplementationOnce(() => { throw new Error('Temporarily full') })
+    const original = window.sessionStorage.setItem
+    const write = vi.spyOn(window.sessionStorage, 'setItem').mockImplementationOnce(() => { throw new Error('Temporarily full') })
     render(<Field name="a" />)
     change('a', 'retained in UI')
     act(() => vi.advanceTimersByTime(181))

@@ -4,6 +4,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import ClientDeliveryResponses from '../components/ClientDeliveryResponses'
 import { companyFetch } from '../company-request.mjs'
 import { DRAFT_STORAGE_PREFIX } from '../draft-recovery'
+import { createMemoryStorage } from './memory-storage'
 
 const photoWork = vi.hoisted(() => ({ renders: 0 }))
 vi.mock('../company-request.mjs', () => ({ companyFetch: vi.fn() }))
@@ -20,7 +21,6 @@ const retainedOffer = (photos = []) => ({ id: 'offer', sourceHash: 'current', ti
   scope: 'Only this door', version: 1, state: 'available', expiresAt: '2099-01-01T00:00:00Z',
   responseAllowed: true, quantities: [], tasks: [], photos, coverageStatus: 'not_configured', response: null })
 const result = offers => ({ ok: true, json: async () => ({ offers }) })
-
 it('does not reread retained photo labels while typing a customer response', async () => {
   let reads = 0
   const photos = Array.from({ length: 40 }, (_, index) => ({ id: `photo-${index}`,
@@ -58,11 +58,12 @@ it('updates fresh photo lists and language while retaining the customer draft', 
 })
 
 it('batches ordinary customer input but pagehide retains the exact latest draft immediately', async () => {
+  Object.defineProperty(window, 'sessionStorage', { configurable: true, value: createMemoryStorage() })
   companyFetch.mockResolvedValue(result([retainedOffer()]))
   const firstRender = render(<ClientDeliveryResponses token="scoped-photo-reader" />)
   const name = await screen.findByLabelText('Uw naam')
-  const storageWrite = vi.spyOn(Storage.prototype, 'setItem')
-  const storageRead = vi.spyOn(Storage.prototype, 'getItem')
+  const storageWrite = vi.spyOn(window.sessionStorage, 'setItem')
+  const storageRead = vi.spyOn(window.sessionStorage, 'getItem')
   vi.useFakeTimers()
   for (const [input, text] of [[name, 'Exact final customer draft'],
     [screen.getByLabelText('Toelichting en eventuele voorbehouden'), 'Retain after interrupted navigation']]) {
@@ -86,9 +87,10 @@ it('batches ordinary customer input but pagehide retains the exact latest draft 
 })
 
 it('automatically saves ordinary customer input once after the shared quiet interval', async () => {
+  Object.defineProperty(window, 'sessionStorage', { configurable: true, value: createMemoryStorage() })
   companyFetch.mockResolvedValue(result([retainedOffer()]))
   render(<ClientDeliveryResponses token="scoped-photo-reader" />)
-  const name = await screen.findByLabelText('Uw naam'), storageWrite = vi.spyOn(Storage.prototype, 'setItem')
+  const name = await screen.findByLabelText('Uw naam'), storageWrite = vi.spyOn(window.sessionStorage, 'setItem')
   vi.useFakeTimers()
   for (const value of ['A', 'Al', 'Ali', 'Alice']) fireEvent.change(name, { target: { value } })
   expect(storageWrite).not.toHaveBeenCalled()
