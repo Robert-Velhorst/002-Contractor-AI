@@ -685,7 +685,7 @@ function rateLimitAuthLogin(req, res, next) {
   }
 }
 
-function recordAuthenticationFailure(req, res) {
+function recordAuthenticationFailure(req, res, { failureMessage = 'The supplied access key is not valid.' } = {}) {
   try {
     const state = operatingLedger.recordAuthenticationFailure(req.authenticationRateLimit.keyHash, {
       limit: authLoginRateLimit,
@@ -697,7 +697,7 @@ function recordAuthenticationFailure(req, res) {
       res.setHeader('Retry-After', String(resetSeconds));
       return sendError(req, res, 429, 'authentication_rate_limited', 'Too many sign-in attempts. Try again later.');
     }
-    return sendError(req, res, 401, 'authentication_failed', 'The supplied access key is not valid.');
+    return sendError(req, res, 401, 'authentication_failed', failureMessage);
   } catch (error) {
     return authenticationRateLimitUnavailable(req, res, error);
   }
@@ -6513,6 +6513,7 @@ const workBoardRoutes = require('./work-board-routes');
 workBoardRoutes.registerWorkBoardRoutes(app, {
   ledger: operatingLedger, sendError, actor: trustedRequestActor,
   authLimit: rateLimitAuthLogin, originAllowed: authenticationOriginAllowed,
+  authFailure: (req, res) => recordAuthenticationFailure(req, res, { failureMessage: 'Inloggen niet gelukt.' }),
   ...workBoardRoutes.resolveWorkBoardSettings({
     isProduction, runtimeMode,
     enabled: process.env.CONTRACTOR_AI_WORK_BOARD_ENABLED,

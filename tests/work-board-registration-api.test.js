@@ -12,6 +12,7 @@ process.env.UPLOAD_DIR = path.join(directory, 'uploads');
 process.env.CONTRACTOR_AI_REQUIRE_AUTH = 'false';
 process.env.CONTRACTOR_AI_WORK_BOARD_ENABLED = 'true';
 process.env.CONTRACTOR_AI_WORK_BOARD_REGISTRATION_ENABLED = 'false';
+process.env.CONTRACTOR_AI_LOGIN_RATE_LIMIT = '3';
 
 const app = require('../server');
 const { ContractorOperatingLedger } = require('../operating-ledger');
@@ -56,6 +57,22 @@ test('closed public registration does not disable login for existing worker acco
     });
     assert.equal(loginResponse.status, 200);
     assert.equal((await loginResponse.json()).account.email, 'existing-worker@example.test');
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const failedLogin = await fetch(`${baseUrl}/api/work-board/login`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: 'existing-worker@example.test', password: 'incorrect passphrase' })
+      });
+      assert.equal(failedLogin.status, 401);
+      assert.equal((await failedLogin.json()).error.code, 'authentication_failed');
+    }
+
+    const throttledLogin = await fetch(`${baseUrl}/api/work-board/login`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'existing-worker@example.test', password: 'incorrect passphrase' })
+    });
+    assert.equal(throttledLogin.status, 429);
+    assert.equal((await throttledLogin.json()).error.code, 'authentication_rate_limited');
   } finally {
     await new Promise(resolve => server.close(resolve));
   }

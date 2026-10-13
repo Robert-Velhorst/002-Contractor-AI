@@ -9,17 +9,21 @@ function resolveWorkBoardSettings({ isProduction, runtimeMode, enabled: enabledS
   return { enabled, registrationEnabled: enabled && registrationEnabled };
 }
 
-function registerWorkBoardRoutes(app, { ledger, sendError, actor, authLimit, originAllowed, enabled = true, registrationEnabled = enabled }) {
+function registerWorkBoardRoutes(app, { ledger, sendError, actor, authLimit, authFailure, originAllowed, enabled = true, registrationEnabled = enabled }) {
   const board = new WorkBoard(ledger), packs = new FieldWorkPack(ledger);
   const token = req => String(req.headers.authorization || '').replace(/^Bearer /, '');
-  const run = fn => async (req, res) => {
+  const run = (fn, onError) => async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     try {
       if (!enabled) fail('Het werkbord is niet geactiveerd voor deze omgeving.', 503);
       if (req.method === 'POST' && (!req.body || typeof req.body !== 'object' || Array.isArray(req.body))) fail('Een JSON-object is vereist.');
       res.json({ success: true, ...await fn(req) });
     }
-    catch (error) { sendError(req, res, error.statusCode || 500, error.code || 'work_board_failed', error.statusCode ? error.message : 'Aanvraag mislukt.'); }
+    catch (error) {
+      const handled = onError?.(error, req, res);
+      if (handled !== undefined) return handled;
+      sendError(req, res, error.statusCode || 500, error.code || 'work_board_failed', error.statusCode ? error.message : 'Aanvraag mislukt.');
+    }
   };
   const owner = req => { if (req.operator?.role !== 'owner') fail('Alleen de eigenaar kan dit beheren.', 403); };
   const account = req => token(req) ? board.authenticate(token(req)) : board.identityAccount(req.operator);
@@ -45,7 +49,9 @@ function registerWorkBoardRoutes(app, { ledger, sendError, actor, authLimit, ori
     if (!registrationEnabled) fail('Registratie van nieuwe uitvoerenden is niet geopend.', 503, { code: 'work_board_registration_disabled' });
     return { account: await board.register(req.body) };
   }));
-  app.post('/api/work-board/login', authLimit, run(req => board.login(req.body)));
+  app.post('/api/work-board/login', authLimit, run(req => board.login(req.body), (error, req, res) => (
+    error.statusCode === 401 ? authFailure?.(req, res) : undefined
+  )));
   app.post('/api/work-board/logout', run(req => { board.logout(token(req)); return {}; }));
   app.get('/api/work-board/me', run(req => { const self = account(req); const { admission: _admission, ...safe } = self; const applications = board.applications(self.id).map(row => ({ ...row, position: board.workerApplicationPosition(row) })); return { account: safe, applications, standbyCallouts: self.status === 'admitted' && self.workerId ? board.workerStandbyCallouts(self.workerId) : [], notifications: board.workerNotifications(self.id) }; }));
   app.post('/api/work-board/profile/skills', run(req => {
