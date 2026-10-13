@@ -96,6 +96,8 @@ const REQUIRED_PATHS = [
   'scripts/migrate-local-backup-to-hosted.js',
   'scripts/benchmark-ledger.js',
   'scripts/doctor.js',
+  'scripts/node-compatibility.js',
+  'tests/doctor.test.js',
   'scripts/restore-local-backup.js',
   'scripts/runtime-healthcheck.js',
   'scripts/identity-maintenance.js',

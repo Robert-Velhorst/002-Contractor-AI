@@ -32,6 +32,7 @@ COPY server.js operating-ledger.js company-runtime.js contractor-review.js field
 COPY scripts/restore-local-backup.js ./scripts/restore-local-backup.js
 COPY scripts/migrate-local-backup-to-hosted.js ./scripts/migrate-local-backup-to-hosted.js
 COPY scripts/runtime-healthcheck.js ./scripts/runtime-healthcheck.js
+COPY scripts/node-compatibility.js ./scripts/node-compatibility.js
 COPY scripts/identity-maintenance.js ./scripts/identity-maintenance.js
 COPY scripts/company-handover.js ./scripts/company-handover.js
 COPY docs/IDENTITY_AND_MEMBERSHIP.md docs/IDENTITY_RECOVERY.md docs/TOTAL_SOLUTION_DELIVERY.md docs/COMPANY_ENVIRONMENTS.md ./docs/

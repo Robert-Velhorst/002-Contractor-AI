@@ -42,6 +42,7 @@ const {
   verifyBackupManifestAuthenticity
 } = require('./backup-manifest');
 const { acquireRuntimeLock, acquireLedgerRuntimeLock } = require('./runtime-lock');
+const { assessNodeCompatibility, nodeCompatibilityIssue } = require('./scripts/node-compatibility');
 const { readPrivateKeyFile } = require('./company-authority');
 const { copyEvidenceBackup } = require('./backup-evidence');
 const { assertSameCompany, bindCompanyDirectories, companyScopeKey, inspectCompanyDirectories, normalizeCompanyId } = require('./company-runtime');
@@ -313,6 +314,9 @@ function isStrongOperatorToken(value) {
 function runtimeConfiguration(options = {}) {
   const issues = [];
   const hosted = runtimeMode === 'hosted';
+  const nodeCompatibility = assessNodeCompatibility(process.version);
+  const nodeIssue = nodeCompatibilityIssue(nodeCompatibility, { isProduction, runtimeMode });
+  if (nodeIssue) issues.push(nodeIssue);
   if (hosted && !configuredCompanyId) {
     issues.push({ code: 'hosted_company_id_required', message: 'Hosted mode requires an explicit CONTRACTOR_AI_COMPANY_ID bound to its own database and storage.' });
   }
@@ -466,6 +470,7 @@ function runtimeConfiguration(options = {}) {
   const publicTunnelVerified = ngrokState === 'true' && Number.isFinite(ngrokVerifiedTimestamp);
   return {
     mode: runtimeMode,
+    runtimeCompatibility: { node: nodeCompatibility },
     storageMode,
     databaseMode: operatingLedger?.databaseMode || (hostedDatabaseUrl ? 'postgres' : 'sqlite'),
     exposure: {

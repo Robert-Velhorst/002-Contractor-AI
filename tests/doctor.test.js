@@ -1,6 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { assessNodeCompatibility, runDoctor } = require('../scripts/doctor');
+const { runDoctor } = require('../scripts/doctor');
+const { assessNodeCompatibility, nodeCompatibilityIssue } = require('../scripts/node-compatibility');
 
 test('checks the running app against the declared Node major version', () => {
   assert.deepEqual(assessNodeCompatibility('v22.18.0'), {
@@ -10,6 +11,14 @@ test('checks the running app against the declared Node major version', () => {
     status: 'unsupported', supported: false, actual: 'v25.2.1', required: '22.x'
   });
   assert.equal(assessNodeCompatibility('unknown').status, 'unknown');
+});
+
+test('enforces the supported Node version in production and hosted modes only', () => {
+  const unsupported = assessNodeCompatibility('v25.2.1');
+  assert.equal(nodeCompatibilityIssue(unsupported, { isProduction: false, runtimeMode: 'local' }), null);
+  assert.equal(nodeCompatibilityIssue(unsupported, { isProduction: true, runtimeMode: 'local' })?.code, 'unsupported_node_version');
+  assert.equal(nodeCompatibilityIssue(unsupported, { isProduction: false, runtimeMode: 'hosted' })?.code, 'unsupported_node_version');
+  assert.equal(nodeCompatibilityIssue(assessNodeCompatibility('v22.18.0'), { isProduction: true, runtimeMode: 'hosted' }), null);
 });
 
 test('does not report readiness when the application runs on an unsupported Node version', async () => {

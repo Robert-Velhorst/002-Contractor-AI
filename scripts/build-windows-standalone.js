@@ -99,6 +99,7 @@ const runtimeFiles = [
   'scripts/export-hai-feed.js',
   'scripts/migrate-local-backup-to-hosted.js',
   'scripts/restore-local-backup.js',
+  'scripts/node-compatibility.js',
   'scripts/runtime-healthcheck.js',
   'scripts/identity-maintenance.js',
   'scripts/company-handover.js',

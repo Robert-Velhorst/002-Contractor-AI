@@ -1,15 +1,5 @@
 const DEFAULT_TIMEOUT_MS = 8_000;
-const SUPPORTED_NODE_RANGE = require('../package.json').engines.node;
-
-function assessNodeCompatibility(actualVersion, supportedRange = SUPPORTED_NODE_RANGE) {
-  const actualMajor = /^v?(\d+)\./.exec(String(actualVersion || ''))?.[1];
-  const requiredMajor = /^(\d+)\.x$/.exec(String(supportedRange || '').trim())?.[1];
-  if (!actualMajor || !requiredMajor) {
-    return { status: 'unknown', supported: false, actual: actualVersion || null, required: supportedRange };
-  }
-  const supported = actualMajor === requiredMajor;
-  return { status: supported ? 'supported' : 'unsupported', supported, actual: actualVersion, required: supportedRange };
-}
+const { assessNodeCompatibility } = require('./node-compatibility');
 
 function parseArguments(args = process.argv.slice(2)) {
   const options = {
@@ -97,4 +87,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { assessNodeCompatibility, parseArguments, readJson, runDoctor };
+module.exports = { parseArguments, readJson, runDoctor };
