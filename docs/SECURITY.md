@@ -71,8 +71,9 @@ Rotate the role key to invalidate its sessions after suspected disclosure.
   source address.
 - Helmet-equivalent explicit security headers and CSP compatible with the Vite
   production bundle; no inline event handlers or runtime HTML-string UI rendering.
-- JSON and upload size limits; extension, MIME, signature, path, checksum, ownership,
-  and status checks for evidence.
+- JSON and upload size limits; `MAX_UPLOAD_BYTES` is validated as a finite,
+  bounded base-10 integer before the server listens. Extension, MIME, signature,
+  path, checksum, ownership, and status checks apply to evidence.
 - Stored evidence is read through authenticated ledger routes, never public static
   paths or object URLs.
 - Request bodies cannot select an audit identity. The server binds every parsed

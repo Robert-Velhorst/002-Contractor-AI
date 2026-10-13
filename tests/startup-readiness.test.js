@@ -90,6 +90,38 @@ test('direct production startup refuses an invalid runtime configuration', t => 
   assert.match(result.stderr, /production_auth_token_required/);
 });
 
+test('server refuses invalid upload byte limits before accepting requests', t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'contractor-ai-upload-limit-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+
+  for (const value of ['NaN', 'Infinity', '1023', '104857601', '10485760.5']) {
+    const dataDirectory = path.join(directory, value);
+    const result = childProcess.spawnSync(process.execPath, ['server.js'], {
+      cwd: path.resolve(__dirname, '..'),
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        NODE_ENV: 'development',
+        CONTRACTOR_AI_RUNTIME_MODE: 'local',
+        CONTRACTOR_AI_STORAGE_MODE: 'local',
+        CONTRACTOR_AI_REQUIRE_AUTH: 'false',
+        CONTRACTOR_AI_AUTH_TOKEN: '',
+        CONTRACTOR_AI_ROLE_TOKENS: '',
+        CONTRACTOR_AI_TRUST_PROXY: '',
+        CONTRACTOR_AI_COMPANY_ID: 'invalid-upload-limit-test',
+        CONTRACTOR_AI_DATA_DIR: dataDirectory,
+        MAX_UPLOAD_BYTES: value,
+        STATE_FILE: path.join(dataDirectory, 'state.json'),
+        LEDGER_DB_FILE: path.join(dataDirectory, 'ledger.sqlite'),
+        UPLOAD_DIR: path.join(dataDirectory, 'uploads')
+      }
+    });
+
+    assert.equal(result.status, 1, `MAX_UPLOAD_BYTES=${value} must fail startup`);
+    assert.match(result.stderr, /upload_limit_invalid/);
+  }
+});
+
 test('credential-free local startup refuses a non-loopback listener', async t => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'contractor-ai-startup-bind-'));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
