@@ -842,8 +842,11 @@ function verifyReleaseContract(root = path.resolve(__dirname, '..')) {
     failures.push('CI PostgreSQL contract must run with sslmode=verify-full and an explicit trusted CA.');
   }
   if (!workflow.includes("SHOW ssl")) failures.push('CI workflow must verify PostgreSQL TLS is active.');
-  for (const windowsRequirement of ['windows-standalone:', 'runs-on: windows-latest', 'npm run package:windows', 'npm run test:windows-package', 'actions/upload-artifact@v7']) {
+  for (const windowsRequirement of ['windows-standalone:', 'runs-on: windows-latest', 'npm run package:windows', 'npm run test:windows-package']) {
     if (!workflow.includes(windowsRequirement)) failures.push(`CI workflow is missing Windows package verification: ${windowsRequirement}`);
+  }
+  if (!/^\s+uses: actions\/upload-artifact@[a-f0-9]{40} # v7\.0\.2$/m.test(workflow)) {
+    failures.push('CI workflow must upload Windows package evidence with the pinned actions/upload-artifact v7.0.2 action.');
   }
   if (workflow.includes('actions/checkout@v7') || workflow.includes('actions/setup-node@v7')) {
     failures.push('CI workflow references an unavailable major for checkout or setup-node.');
