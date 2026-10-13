@@ -279,8 +279,8 @@ async function verifyWindowsStandalone() {
   try {
     const baseUrl = `http://127.0.0.1:${port}`;
     const readiness = await waitForReadiness(baseUrl, ownerToken, child, () => stderr);
-    assert.equal(readiness.ledger?.migrations?.currentVersion, '096_loading_read_indexes');
-    for (const version of ['093_client_completion_office_review', '094_worker_notification_inbox', '095_field_reply_notifications', '096_loading_read_indexes']) {
+    assert.equal(readiness.ledger?.migrations?.currentVersion, '097_durable_evidence_storage_reservations');
+    for (const version of ['093_client_completion_office_review', '094_worker_notification_inbox', '095_field_reply_notifications', '096_loading_read_indexes', '097_durable_evidence_storage_reservations']) {
       assert.ok(readiness.ledger.migrations.applied.some(migration => migration.version === version), `${version} must be applied in the packaged ledger.`);
     }
     assert.deepEqual(readiness.ledger?.migrations?.pending, []);
