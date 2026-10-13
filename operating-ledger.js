@@ -6,8 +6,38 @@ const { Graph, alg: graphAlgorithms } = require('@dagrejs/graphlib');
 const { PostgresSyncDatabase } = require('./postgres-sync-database');
 const { getFrameworkDefinition, listFrameworkCatalog } = require('./framework-catalog');
 const { encodeCsvCell } = require('./csv-safety');
+const { jhaSafetyDefinitionHash, normalizeJhaLinkedTaskIds } = require('./jha-safety-definition');
+const { fieldJhaRecords } = require('./field-safety-projection');
+const { fieldTaskScope } = require('./field-task-scope');
+const { taskJhaApplicability, taskJhaDefinitionHash } = require('./task-jha-applicability');
+const { normalizeSubmittalAttachmentManifest, submittalAttachmentManifest } = require('./submittal-attachment-manifest');
+const { assignmentTradePartnerRequirement, workerMatchesAssignmentTradePartner } = require('./work-board-company-scope');
+const { expandRecurrence, validateRecurrence } = require('./worker-availability-recurrence');
 
 const DASHBOARD_SUMMARY_CACHE_TTL_MS = 2_000;
+const MAX_WORKER_AVAILABILITY_RECURRENCE_DAYS = 366;
+const WEATHER_ASSESSMENT_MAX_AGE_MS = 12 * 60 * 60 * 1000;
+const WEATHER_FORECAST_TARGET_TOLERANCE_MS = 60 * 60 * 1000;
+const WEATHER_RISK_CONDITIONS = new Set(['rain_risk', 'wind_risk', 'storm_risk', 'visibility_risk', 'heat_risk', 'unsafe']);
+
+function weatherAssessmentReadiness(weather, plannedStart, nowMs = Date.now()) {
+  if (!weather) return { status: 'missing' };
+  const assessedAt = Date.parse(weather.data?.fetchedAt || weather.createdAt || '');
+  const ageMs = nowMs - assessedAt;
+  if (!Number.isFinite(assessedAt) || ageMs < -5 * 60 * 1000 || ageMs > WEATHER_ASSESSMENT_MAX_AGE_MS) {
+    return { status: 'stale', assessedAt: Number.isFinite(assessedAt) ? new Date(assessedAt).toISOString() : null };
+  }
+  const targetMs = Date.parse(plannedStart || '');
+  const forecastMs = Date.parse(weather.forecastAt || '');
+  if (!Number.isFinite(targetMs) || !Number.isFinite(forecastMs)
+    || Math.abs(forecastMs - targetMs) > WEATHER_FORECAST_TARGET_TOLERANCE_MS) {
+    return { status: 'not_comparable', assessedAt: new Date(assessedAt).toISOString(), forecastAt: weather.forecastAt || null };
+  }
+  const condition = String(weather.condition || '').toLowerCase();
+  const risk = WEATHER_RISK_CONDITIONS.has(condition)
+    || normalizeNumber(weather.precipitationPercent, 0) >= 60;
+  return { status: risk ? 'risk' : 'checked', assessedAt: new Date(assessedAt).toISOString(), forecastAt: weather.forecastAt };
+}
 
 const LEDGER_CAPABILITY_BLUEPRINT = [
   {
@@ -501,10 +531,21 @@ const WORKFORCE_AVAILABILITY_CATALOG = Object.freeze([
   { key: 'leave', label: 'Leave' },
   { key: 'training', label: 'Training' },
   { key: 'external_commitment', label: 'External commitment' },
+  { key: 'standby', label: 'On-call' },
   { key: 'unavailable', label: 'Unavailable' },
   { key: 'other', label: 'Other operational absence' }
 ]);
 const WORKFORCE_AVAILABILITY_BY_KEY = new Map(WORKFORCE_AVAILABILITY_CATALOG.map(item => [item.key, item]));
+const WORKER_AVAILABILITY_UNKNOWN_END = '9999-12-31T23:59:59.999Z';
+const workerAvailabilityEndMs = period => period?.returnUnknown || !period?.endsAt ? Number.POSITIVE_INFINITY : Date.parse(period.endsAt);
+const workerAvailabilityOverlapsDate = (period, date) => {
+  if (period?.recurrenceOccurrenceDate) {
+    return date >= period.recurrenceOccurrenceDate && date <= (period.recurrenceOccurrenceEndDate || period.recurrenceOccurrenceDate);
+  }
+  const dayStart = Date.parse(`${date}T00:00:00.000Z`);
+  const dayEnd = dayStart + 24 * 60 * 60 * 1000 - 1;
+  return workerAvailabilityEndMs(period) >= dayStart && Date.parse(period.startsAt) <= dayEnd;
+};
 
 const TOOL_RESERVATION_CLOSED_STATUSES = new Set([
   'released',
@@ -1237,7 +1278,9 @@ const AUDIT_CHAIN_FORMAT = 'contractor-ai-audit-chain/v1';
 const AUDIT_CHAIN_ALGORITHM = 'sha256';
 const AUDIT_CHAIN_GENESIS_HASH = '0'.repeat(64);
 const SCHEDULE_BASELINE_FORMAT = 'contractor-ai-schedule-baseline/v1';
-const CREW_CAPACITY_PROFILE_FORMAT = 'contractor-ai-crew-capacity-profile/v1';
+const CREW_CAPACITY_PROFILE_FORMAT_V1 = 'contractor-ai-crew-capacity-profile/v1';
+const CREW_CAPACITY_PROFILE_FORMAT_V2 = 'contractor-ai-crew-capacity-profile/v2';
+const CREW_CAPACITY_PROFILE_FORMAT_V3 = 'contractor-ai-crew-capacity-profile/v3';
 const CREW_LOOKAHEAD_FORMAT = 'contractor-ai-crew-lookahead/v1';
 const DAILY_OPERATING_CYCLE_FORMAT = 'contractor-ai-daily-operating-cycle/v1';
 const LAST_PLANNER_CONSTRAINT_FORMAT = 'contractor-ai-last-planner-constraint/v1';
@@ -1419,6 +1462,7 @@ const ENVIRONMENTAL_REPORT_FORMAT = 'contractor-ai-environmental-report/v1';
 const SAFETY_BRIEFING_FORMAT = 'contractor-ai-safety-briefing/v1';
 const WORK_PERMIT_FORMAT = 'contractor-ai-work-permit/v1';
 const PRE_TASK_PLAN_FORMAT = 'contractor-ai-pre-task-plan/v1';
+const PRE_TASK_PLAN_FORMAT_SCOPED = 'contractor-ai-pre-task-plan/v2';
 const LMRA_ASSESSMENT_FORMAT = 'contractor-ai-lmra-assessment/v1';
 const LMRA_CHECK_KEYS = Object.freeze([
   'task_understood',
@@ -1430,9 +1474,11 @@ const LMRA_CHECK_KEYS = Object.freeze([
   'no_changed_conditions'
 ]);
 const LMRA_CHECK_KEY_SET = new Set(LMRA_CHECK_KEYS);
-const SDS_REVISION_FORMAT = 'contractor-ai-sds-revision/v1';
+const SDS_REVISION_FORMAT = 'contractor-ai-sds-revision/v2';
+const LEGACY_SDS_REVISION_FORMAT = 'contractor-ai-sds-revision/v1';
 const SDS_CURRENT_STATUSES = new Set(['current', 'approved', 'accepted', 'active']);
-const DRAWING_REVISION_FORMAT = 'contractor-ai-drawing-revision/v1';
+const DRAWING_REVISION_FORMAT = 'contractor-ai-drawing-revision/v2';
+const LEGACY_DRAWING_REVISION_FORMAT = 'contractor-ai-drawing-revision/v1';
 const DRAWING_CURRENT_STATUSES = new Set(['current']);
 
 function sdsProductKey(material, manufacturer, productCode = '') {
@@ -1448,8 +1494,11 @@ function sdsRevisionSourceBasis(values = {}) {
   const data = values.data && typeof values.data === 'object'
     ? values.data
     : fromJson(values.data_json, {});
-  return {
-    format: SDS_REVISION_FORMAT,
+  const format = data.sdsRevisionFormat === SDS_REVISION_FORMAT
+    ? SDS_REVISION_FORMAT
+    : LEGACY_SDS_REVISION_FORMAT;
+  const basis = {
+    format,
     sdsSheetId: values.id,
     jobId: values.jobId || values.job_id,
     productKey: values.productKey || values.product_key,
@@ -1474,14 +1523,18 @@ function sdsRevisionSourceBasis(values = {}) {
     emergencyContact: normalizeText(values.emergencyContact || data.emergencyContact, '') || null,
     revisionReason: normalizeText(values.revisionReason || data.revisionReason, '') || null
   };
+  if (format === SDS_REVISION_FORMAT) {
+    basis.linkedMaterialIds = [...new Set(normalizeList(data.linkedMaterialIds))].sort();
+  }
+  return basis;
 }
 
-function drawingRevisionSourceBasis(values = {}) {
+function drawingRevisionSourceBasis(values = {}, format = DRAWING_REVISION_FORMAT) {
   const data = values.data && typeof values.data === 'object'
     ? values.data
     : fromJson(values.data_json, {});
-  return {
-    format: DRAWING_REVISION_FORMAT,
+  const basis = {
+    format,
     drawingRevisionId: values.id,
     jobId: values.jobId || values.job_id,
     sheetNumber: values.sheetNumber || values.document_number,
@@ -1499,6 +1552,11 @@ function drawingRevisionSourceBasis(values = {}) {
     revisionReason: normalizeText(values.revisionReason || data.revisionReason, '') || null,
     reviewNotes: normalizeText(values.reviewNotes || data.reviewNotes, '') || null
   };
+  if (format !== LEGACY_DRAWING_REVISION_FORMAT) {
+    basis.linkedTaskIds = [...new Set(Array.isArray(values.linkedTaskIds) ? values.linkedTaskIds : Array.isArray(data.linkedTaskIds) ? data.linkedTaskIds : [])]
+      .map(value => normalizeText(value, '')).filter(Boolean).sort();
+  }
+  return basis;
 }
 const SCHEDULE_HOUR_MS = 60 * 60 * 1000;
 const SCHEDULE_TASK_STATUSES = new Set(['open', 'in_progress', 'blocked']);
@@ -1808,6 +1866,16 @@ function fromJson(value, fallback = {}) {
 function normalizeText(value, fallback = '') {
   const text = String(value ?? '').trim();
   return text || fallback;
+}
+
+function isConfirmedMissingCheckinRecovery(period, assignment, now = Date.now()) {
+  if (!period || !assignment?.scheduled_start || !assignment?.scheduled_end
+    || period.period_type !== 'unavailable' || period.status === 'cancelled'
+    || period.starts_at !== assignment.scheduled_start || period.ends_at !== assignment.scheduled_end
+    || now < Date.parse(assignment.scheduled_start) || now >= Date.parse(assignment.scheduled_end)) return false;
+  const data = fromJson(period.data_json, {});
+  return data.source === 'office_confirmed_missing_checkin'
+    && /^[a-f0-9]{64}$/i.test(data.sourceReferenceHash || '');
 }
 
 function parseSupportedLocale(value) {
@@ -2771,6 +2839,185 @@ function normalizeInstallationQcStage(value, fallback = 'in_process') {
     );
   }
   return stage;
+}
+
+function normalizeOpportunityCapacityForecast(value) {
+  if (value === undefined || value === null) return null;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw ledgerInputError('opportunity_capacity_forecast_invalid', 'Expected work period and crew demand must be an object.');
+  }
+  const windowStart = normalizeRetainedDate(value.windowStart || value.window_start, {
+    required: true, label: 'Expected work start', code: 'opportunity_capacity_window_invalid'
+  });
+  const windowEnd = normalizeRetainedDate(value.windowEnd || value.window_end, {
+    required: true, label: 'Expected work end', code: 'opportunity_capacity_window_invalid'
+  });
+  const spanDays = (Date.parse(`${windowEnd}T00:00:00.000Z`) - Date.parse(`${windowStart}T00:00:00.000Z`)) / 86_400_000 + 1;
+  if (spanDays < 1 || spanDays > 90) {
+    throw ledgerInputError('opportunity_capacity_window_invalid', 'Expected work must span from 1 to 90 calendar days.');
+  }
+  if (!Array.isArray(value.trades) || value.trades.length < 1 || value.trades.length > 12) {
+    throw ledgerInputError('opportunity_capacity_trades_invalid', 'Add between 1 and 12 trade roles with estimated crew hours.');
+  }
+  const seen = new Set();
+  const trades = value.trades.map((item, index) => {
+    const role = normalizeText(item?.role || item?.trade, '');
+    const hours = Number(item?.hours);
+    const roleKey = role.toLocaleLowerCase('en');
+    if (role.length < 2 || role.length > 100 || seen.has(roleKey)) {
+      throw ledgerInputError('opportunity_capacity_trade_invalid', 'Trade roles must be unique and contain 2 to 100 characters.', { index });
+    }
+    if (!Number.isFinite(hours) || hours <= 0 || hours > 20_000) {
+      throw ledgerInputError('opportunity_capacity_hours_invalid', 'Estimated crew hours must be greater than zero and no more than 20,000.', { index });
+    }
+    seen.add(roleKey);
+    const dailyInput = item.dailyDemand ?? item.daily_demand;
+    if (dailyInput !== undefined && dailyInput !== null && !Array.isArray(dailyInput)) {
+      throw ledgerInputError('opportunity_capacity_daily_demand_invalid', 'Daily crew demand must be a list of dated workday hours.', { index });
+    }
+    if ((dailyInput || []).length > spanDays) {
+      throw ledgerInputError('opportunity_capacity_daily_demand_limit', 'Daily crew demand cannot contain more rows than the expected work window.', { index, spanDays });
+    }
+    const qualificationInput = item.requiredQualifications ?? item.required_qualifications ?? [];
+    if (!Array.isArray(qualificationInput) || qualificationInput.length > 16) {
+      throw ledgerInputError('opportunity_capacity_qualifications_invalid', 'Each trade can require at most 16 catalogue qualifications.', { index });
+    }
+    const requiredQualifications = [...new Set(qualificationInput.map(value => {
+      const key = normalizeStatus(value?.key || value?.credentialType || value?.credential_type || value, '');
+      if (!WORKFORCE_REQUIREMENT_BY_KEY.has(key)) {
+        throw ledgerInputError('opportunity_capacity_qualification_invalid', 'Choose qualifications from the verified company requirements catalogue.', { index, credentialType: key || null });
+      }
+      return key;
+    }))];
+    if (requiredQualifications.length !== qualificationInput.length) {
+      throw ledgerInputError('opportunity_capacity_qualification_duplicate', 'A required qualification can only be selected once per trade.', { index });
+    }
+    const skillInput = item.requiredSkills ?? item.required_skills ?? [];
+    if (!Array.isArray(skillInput) || skillInput.length > 20) {
+      throw ledgerInputError('opportunity_capacity_skills_invalid', 'Each trade can list at most 20 declared skills to check.', { index });
+    }
+    const requiredSkills = skillInput.map(value => normalizeText(value, ''));
+    const normalizedSkills = requiredSkills.map(skill => skill.normalize('NFKC').toLocaleLowerCase('en-US'));
+    if (requiredSkills.some(skill => skill.length < 2 || skill.length > 80)) {
+      throw ledgerInputError('opportunity_capacity_skill_invalid', 'Declared skill names must contain 2 to 80 characters.', { index });
+    }
+    if (new Set(normalizedSkills).size !== normalizedSkills.length) {
+      throw ledgerInputError('opportunity_capacity_skill_duplicate', 'A declared skill can only be required once per trade.', { index });
+    }
+    const dailyDates = new Set();
+    const dailyDemand = (dailyInput || []).map((day, dayIndex) => {
+      if (!day || typeof day !== 'object' || Array.isArray(day)) {
+        throw ledgerInputError('opportunity_capacity_daily_demand_invalid', `Daily demand row ${dayIndex + 1} must be an object.`, { index, dayIndex });
+      }
+      const date = normalizeRetainedDate(day.date || day.workDate || day.work_date, {
+        required: true, label: 'Expected work date', code: 'opportunity_capacity_daily_date_invalid'
+      });
+      if (date < windowStart || date > windowEnd) {
+        throw ledgerInputError('opportunity_capacity_daily_date_outside_window', 'Daily crew demand must fall inside the expected work window.', { index, date, windowStart, windowEnd });
+      }
+      if (dailyDates.has(date)) {
+        throw ledgerInputError('opportunity_capacity_daily_date_duplicate', 'Daily crew demand can contain a date only once per trade.', { index, date });
+      }
+      const dailyHours = Number(day.hours);
+      if (!Number.isFinite(dailyHours) || dailyHours <= 0 || dailyHours > 20_000) {
+        throw ledgerInputError('opportunity_capacity_daily_hours_invalid', 'Expected crew hours for each workday must be greater than zero and no more than 20,000.', { index, dayIndex });
+      }
+      dailyDates.add(date);
+      return { date, hours: roundScheduleHours(dailyHours) };
+    }).sort((left, right) => left.date.localeCompare(right.date));
+    if (dailyDemand.length && Math.abs(dailyDemand.reduce((sum, day) => sum + day.hours, 0) - hours) > 0.05) {
+      throw ledgerInputError('opportunity_capacity_daily_total_mismatch', 'Dated workday hours must add up to the trade total.', { index, tradeHours: roundScheduleHours(hours) });
+    }
+    const supervisionInput = item.supervision ?? null;
+    let supervision = null;
+    if (supervisionInput !== null && supervisionInput !== undefined && supervisionInput !== false) {
+      if (!supervisionInput || typeof supervisionInput !== 'object' || Array.isArray(supervisionInput)) {
+        throw ledgerInputError('opportunity_supervision_invalid', 'Supervision demand must identify a supervisor role, a ratio, and dated crew peaks.', { index });
+      }
+      const supervisorRole = normalizeText(supervisionInput.role || supervisionInput.supervisorRole || supervisionInput.supervisor_role, '');
+      if (supervisorRole.length < 2 || supervisorRole.length > 100) {
+        throw ledgerInputError('opportunity_supervision_role_invalid', 'The supervisor role must contain 2 to 100 characters.', { index });
+      }
+      const workersPerSupervisor = Number(supervisionInput.workersPerSupervisor ?? supervisionInput.workers_per_supervisor);
+      if (!Number.isInteger(workersPerSupervisor) || workersPerSupervisor < 1 || workersPerSupervisor > 12) {
+        throw ledgerInputError('opportunity_supervision_ratio_invalid', 'Workers per supervisor must be a whole number from 1 to 12.', { index });
+      }
+      const supervisionQualificationInput = supervisionInput.requiredQualifications ?? supervisionInput.required_qualifications ?? [];
+      if (!Array.isArray(supervisionQualificationInput) || supervisionQualificationInput.length > 16) {
+        throw ledgerInputError('opportunity_supervision_qualifications_invalid', 'Supervision can require at most 16 catalogue qualifications.', { index });
+      }
+      const supervisionQualifications = supervisionQualificationInput.map(value => {
+        const key = normalizeStatus(value?.key || value?.credentialType || value?.credential_type || value, '');
+        if (!WORKFORCE_REQUIREMENT_BY_KEY.has(key)) {
+          throw ledgerInputError('opportunity_supervision_qualification_invalid', 'Choose supervisor qualifications from the verified company requirements catalogue.', { index, credentialType: key || null });
+        }
+        return key;
+      });
+      if (new Set(supervisionQualifications).size !== supervisionQualifications.length) {
+        throw ledgerInputError('opportunity_supervision_qualification_duplicate', 'A supervisor qualification can only be selected once.', { index });
+      }
+      const dailySupervisionInput = supervisionInput.dailyDemand ?? supervisionInput.daily_demand;
+      if (!Array.isArray(dailySupervisionInput) || dailySupervisionInput.length < 1 || dailySupervisionInput.length > spanDays) {
+        throw ledgerInputError('opportunity_supervision_daily_demand_invalid', 'Add dated peak crew sizes and supervisor shift hours for the expected supervision workdays.', { index });
+      }
+      const supervisionDates = new Set();
+      const dailySupervisionDemand = dailySupervisionInput.map((day, dayIndex) => {
+        if (!day || typeof day !== 'object' || Array.isArray(day)) {
+          throw ledgerInputError('opportunity_supervision_daily_demand_invalid', `Supervision row ${dayIndex + 1} must be an object.`, { index, dayIndex });
+        }
+        const date = normalizeRetainedDate(day.date || day.workDate || day.work_date, {
+          required: true, label: 'Supervision work date', code: 'opportunity_supervision_daily_date_invalid'
+        });
+        if (date < windowStart || date > windowEnd) {
+          throw ledgerInputError('opportunity_supervision_daily_date_outside_window', 'Supervision workdays must fall inside the expected work window.', { index, date, windowStart, windowEnd });
+        }
+        if (supervisionDates.has(date)) {
+          throw ledgerInputError('opportunity_supervision_daily_date_duplicate', 'Supervision demand can contain a date only once per trade.', { index, date });
+        }
+        const crewSize = Number(day.crewSize ?? day.crew_size);
+        const supervisorShiftHours = Number(day.supervisorShiftHours ?? day.supervisor_shift_hours ?? day.hoursPerSupervisor ?? day.hours_per_supervisor);
+        if (!Number.isInteger(crewSize) || crewSize < 1 || crewSize > 500) {
+          throw ledgerInputError('opportunity_supervision_crew_size_invalid', 'Peak crew size must be a whole number from 1 to 500.', { index, dayIndex });
+        }
+        if (!Number.isFinite(supervisorShiftHours) || supervisorShiftHours <= 0 || supervisorShiftHours > 24) {
+          throw ledgerInputError('opportunity_supervision_shift_hours_invalid', 'Supervisor shift hours must be greater than zero and no more than 24.', { index, dayIndex });
+        }
+        supervisionDates.add(date);
+        return { date, crewSize, supervisorShiftHours: roundScheduleHours(supervisorShiftHours) };
+      }).sort((left, right) => left.date.localeCompare(right.date));
+      supervision = { role: supervisorRole, workersPerSupervisor, requiredQualifications: supervisionQualifications, dailyDemand: dailySupervisionDemand };
+    }
+    return { role, hours: roundScheduleHours(hours), dailyDemand: dailyDemand.length ? dailyDemand : null, requiredQualifications, requiredSkills, supervision };
+  });
+  const productionRoleKeys = new Set(trades.map(item => item.role.normalize('NFKC').trim().toLocaleLowerCase('en-US')));
+  if (trades.some(item => item.supervision && productionRoleKeys.has(item.supervision.role.normalize('NFKC').trim().toLocaleLowerCase('en-US')))) {
+    throw ledgerInputError('opportunity_supervisor_role_overlaps_trade', 'Model supervision as a distinct role from the trades it supervises.', {});
+  }
+  return { windowStart, windowEnd, trades };
+}
+
+function normalizeOpportunityMaterialForecast(value) {
+  if (value === undefined || value === null) return null;
+  if (!Array.isArray(value) || value.length < 1 || value.length > 50) {
+    throw ledgerInputError('opportunity_material_forecast_invalid', 'Add between 1 and 50 exact material requirements.');
+  }
+  const seen = new Set();
+  return value.map((item, index) => {
+    const materialId = normalizeText(item?.materialId || item?.material_id, '');
+    const unit = normalizeText(item?.unit, '');
+    const quantity = Number(item?.quantity);
+    if (!materialId || materialId.length > 160 || seen.has(materialId)) {
+      throw ledgerInputError('opportunity_material_id_invalid', 'Material requirements need unique catalogue IDs.', { index });
+    }
+    if (!unit || unit.length > 40) {
+      throw ledgerInputError('opportunity_material_unit_invalid', 'Every material requirement needs the catalogue unit.', { index });
+    }
+    if (!Number.isFinite(quantity) || quantity <= 0 || quantity > 1_000_000_000 || Math.abs(Math.round(quantity * 10_000) / 10_000 - quantity) > 0.0000001) {
+      throw ledgerInputError('opportunity_material_quantity_invalid', 'Material quantities must be positive with at most four decimal places.', { index });
+    }
+    seen.add(materialId);
+    return { materialId, quantity: Math.round(quantity * 10_000) / 10_000, unit };
+  });
 }
 
 function normalizeInspectionControlPoint(value, fallback = 'check') {
@@ -6126,12 +6373,168 @@ const LEDGER_SCHEMA_MIGRATIONS = [
   }
 ];
 
+LEDGER_SCHEMA_MIGRATIONS.push({
+  version: '073_self_service_work_board',
+  description: 'Retain applicant admission, published positions and unique enrollments.',
+  apply: require('./work-board').migrateWorkBoard
+});
+LEDGER_SCHEMA_MIGRATIONS.push({
+  version: '074_company_runtime_boundary',
+  description: 'Retain the immutable company and ledger identity of a single-company runtime.',
+  apply: require('./company-runtime').migrateCompanyRuntime
+});
+LEDGER_SCHEMA_MIGRATIONS.push({
+  version: '075_shared_identity_sessions',
+  description: 'Encrypted company-bound identity sessions and explicitly reviewed worker account links.',
+  apply: require('./identity-runtime').migrateIdentityRuntime
+});
+LEDGER_SCHEMA_MIGRATIONS.push({
+  version: '076_company_authority_handover',
+  description: 'Fence transferred company environments and retain explicit source/target authority.',
+  apply: require('./company-authority').migrateCompanyAuthority
+});
+LEDGER_SCHEMA_MIGRATIONS.push({
+  version: '077_shared_work_context',
+  description: 'Connect physical places, job parties and versioned work packages to retained tasks and measured scope.',
+  apply: require('./work-context').migrateWorkContext
+});
+LEDGER_SCHEMA_MIGRATIONS.push({
+  version: '078_work_delivery_lifecycle',
+  description: 'Retain partial work deliveries with separate inspection, reviewed client response and linked financial settlement.',
+  apply: require('./work-delivery').migrateWorkDelivery
+});
+LEDGER_SCHEMA_MIGRATIONS.push({
+  version: '079_installed_asset_history',
+  description: 'Retain installed-asset identity, source-linked service history and existing aftercare/recurring relationships.',
+  apply: require('./asset-history').migrateAssetHistory
+});
+LEDGER_SCHEMA_MIGRATIONS.push({
+  version: '080_inspection_coverage',
+  description: 'Retain reviewed inspection coverage plans and source-current evidence mappings for partial deliveries.',
+  apply: require('./inspection-coverage').migrateInspectionCoverage
+});
+LEDGER_SCHEMA_MIGRATIONS.push({
+  version: '081_client_delivery_responses',
+  description: 'Retain approval-gated client delivery offers and scoped, source-bound customer responses.',
+  apply: require('./client-delivery').migrateClientDelivery
+});
+LEDGER_SCHEMA_MIGRATIONS.push({
+  version: '082_work_balance',
+  description: 'Retain reviewed package allocations and compute source-current remaining work without duplicating production.',
+  apply: require('./work-balance').migrateWorkBalance
+});
+LEDGER_SCHEMA_MIGRATIONS.push({
+  version: '083_standby_callout_workflow',
+  description: 'Retain person-scoped standby offers, explicit worker response and source-bound replacement approval.',
+  apply: require('./work-board').migrateStandbyCallouts
+});
+LEDGER_SCHEMA_MIGRATIONS.push({
+  version: '084_operational_recovery_cases',
+  description: 'Retain source-bound recovery ownership, due dates, decisions and evidence across active job disruptions.',
+  apply: require('./operational-recovery').migrateOperationalRecovery
+});
+LEDGER_SCHEMA_MIGRATIONS.push({
+  version: '085_shared_material_stock',
+  description: 'Retain company stocktakes, cross-job material reservations, releases and consumption evidence.',
+  apply: require('./shared-material-stock').migrateSharedMaterialStock
+});
+LEDGER_SCHEMA_MIGRATIONS.push({
+  version: '086_warehouse_receipt_stock_movements',
+  description: 'Link accepted company-warehouse receipt lines to shared stock and approval-backed receipt reversals.',
+  apply: require('./shared-material-stock').migrateSharedMaterialReceiptStock
+});
+LEDGER_SCHEMA_MIGRATIONS.push({
+  version: '087_warehouse_to_site_material_flow',
+  description: 'Separate warehouse stock from site availability and retain evidence-bound job-site issues and arrival estimates.',
+  apply: (db, options) => require('./shared-material-stock').migrateSharedMaterialSiteIssues(db, options)
+});
+LEDGER_SCHEMA_MIGRATIONS.push({
+  version: '088_durable_work_board_sessions',
+  description: 'Persist hashed and revocable worker portal sessions across application restarts.',
+  apply: require('./work-board').migrateWorkBoardSessions
+});
+LEDGER_SCHEMA_MIGRATIONS.push({
+  version: '089_position_offer_acceptance',
+  description: 'Retain expiring, revision-bound position offers and explicit worker acceptance or refusal.',
+  apply: require('./work-board').migratePositionOffers
+});
+LEDGER_SCHEMA_MIGRATIONS.push({
+  version: '090_durable_conversation_analysis',
+  description: 'Retain scoped, retryable source-bound local client-conversation analysis jobs.',
+  apply: require('./conversation-analysis-queue').migrateConversationAnalysisQueue
+});
+LEDGER_SCHEMA_MIGRATIONS.push({
+  version: '091_site_receipt_inspection_reviews',
+  description: 'Retain idempotent office inspection decisions for withheld job-site receipt quantities.',
+  apply: require('./shared-material-stock').migrateSharedMaterialSiteIssueReceiptReviews
+});
+LEDGER_SCHEMA_MIGRATIONS.push({
+  version: '092_client_completion_review',
+  description: 'Retain source-bound client responses to the current delivered handover dossier without changing contract or job state.',
+  apply: require('./client-completion-review').migrateClientCompletionReview
+});
+LEDGER_SCHEMA_MIGRATIONS.push({
+  version: '093_client_completion_office_review',
+  description: 'Retain append-only, idempotent office dispositions for client handover responses.',
+  apply: require('./client-completion-review').migrateClientCompletionReviewActions
+});
+LEDGER_SCHEMA_MIGRATIONS.push({
+  version: '094_worker_notification_inbox',
+  description: 'Retain person-scoped actionable worker notifications across offline periods and application restarts.',
+  apply: require('./work-board').migrateWorkBoardNotifications
+});
+LEDGER_SCHEMA_MIGRATIONS.push({
+  version: '095_field_reply_notifications',
+  description: 'Allow durable worker inbox notices for approved answers to field questions.',
+  apply: require('./work-board').migrateWorkerFieldReplyNotifications
+});
+LEDGER_SCHEMA_MIGRATIONS.push({
+  version: '096_loading_read_indexes',
+  description: 'Index job-scoped tool and material reads without changing retained resource records.',
+  apply: db => db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_tool_reservations_job_status_id ON tool_reservations(job_id, status, id);
+    CREATE INDEX IF NOT EXISTS idx_material_requirements_job_status_id ON material_requirements(job_id, status, id);
+  `)
+});
+LEDGER_SCHEMA_MIGRATIONS.push({
+  version: '097_durable_evidence_storage_reservations',
+  description: 'Reserve evidence quota atomically across instances and recover orphaned private objects after crashes.',
+  apply: db => db.exec(`
+    CREATE TABLE IF NOT EXISTS evidence_storage_quota_lock (
+      id INTEGER PRIMARY KEY CHECK (id = 1)
+    );
+    INSERT INTO evidence_storage_quota_lock (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
+    CREATE TABLE IF NOT EXISTS evidence_storage_reservations (
+      reservation_id TEXT PRIMARY KEY,
+      request_hash TEXT NOT NULL,
+      idempotency_key_hash TEXT,
+      owner_lease_id TEXT NOT NULL,
+      lease_until TEXT NOT NULL,
+      reserved_bytes INTEGER NOT NULL CHECK (reserved_bytes >= 0),
+      status TEXT NOT NULL CHECK (status IN ('reserved', 'cleanup_pending', 'cleaning', 'committed', 'released')),
+      storage_ref TEXT,
+      sha256 TEXT,
+      cleanup_lease_id TEXT,
+      cleanup_lease_until TEXT,
+      last_error_code TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_evidence_reservations_cleanup
+      ON evidence_storage_reservations(status, lease_until, cleanup_lease_until, updated_at);
+    CREATE INDEX IF NOT EXISTS idx_evidence_reservations_idempotency
+      ON evidence_storage_reservations(idempotency_key_hash, request_hash, status);
+  `)
+});
 class ContractorOperatingLedger {
   constructor(options = {}) {
-    const unknownOptions = Object.keys(options).filter(key => !['dbFile', 'databaseUrl', 'stateProvider', 'logger', 'clock'].includes(key));
+    const unknownOptions = Object.keys(options).filter(key => !['dbFile', 'databaseUrl', 'stateProvider', 'logger', 'clock', 'companyId', 'expectedCompany', 'authorityKey', 'authorityMaintenance'].includes(key));
     if (unknownOptions.length) {
-      throw new Error(`Unsupported operating-ledger option(s): ${unknownOptions.join(', ')}. Supported options are dbFile, databaseUrl, stateProvider, logger, and clock.`);
+      throw new Error(`Unsupported operating-ledger option(s): ${unknownOptions.join(', ')}. Supported options are dbFile, databaseUrl, stateProvider, logger, clock, companyId, expectedCompany, authorityKey, and authorityMaintenance.`);
     }
+    const bindCompany = Object.hasOwn(options, 'companyId');
+    const { assertSameCompany, bindCompanyRuntime, normalizeCompanyId, readCompanyRuntime } = require('./company-runtime');
+    const requestedCompanyId = bindCompany ? normalizeCompanyId(options.companyId) : null;
     const { dbFile, databaseUrl, stateProvider, logger, clock } = options;
     this.dbFile = dbFile || path.join(__dirname, 'data', 'contractor-ledger.sqlite');
     this.databaseMode = databaseUrl ? 'postgres' : 'sqlite';
@@ -6139,8 +6542,12 @@ class ContractorOperatingLedger {
     this.logger = typeof logger === 'function' ? logger : () => {};
     this.clock = typeof clock === 'function' ? clock : () => new Date();
     this.transactionDepth = 0;
+    this.transactionAffectsDashboard = false;
     this.mutationRevision = 0;
     this.dashboardSummaryCache = null;
+    this.transactionFailure = null;
+    this.authorityKey = options.authorityKey || null;
+    this.authorityMaintenance = options.authorityMaintenance === true;
     if (databaseUrl) {
       this.db = new PostgresSyncDatabase({ connectionString: databaseUrl });
     } else {
@@ -6148,9 +6555,23 @@ class ContractorOperatingLedger {
       this.db = new DatabaseSync(this.dbFile);
     }
     const initializeLedger = () => {
+      if (require('./identity-registry').tableExists(this.db, 'registry_identities')) {
+        throw new Error('A company ledger cannot use the shared identity registry database.');
+      }
+      const authorityMarker = databaseUrl ? null : require('./company-authority').readAuthorityMarker(this.dbFile);
+      if (!this.authorityMaintenance) require('./company-authority').assertAuthorityRuntime(this.db, this.authorityKey, databaseUrl ? 'hosted' : 'local', authorityMarker);
+      // Refuse a foreign environment before schema changes or first-time binding.
+      if (bindCompany || options.expectedCompany) {
+        const retainedCompany = readCompanyRuntime(this.db);
+        if (options.expectedCompany) assertSameCompany(options.expectedCompany, bindCompany ? retainedCompany : null);
+        if (requestedCompanyId && retainedCompany) assertSameCompany({ ...retainedCompany, id: requestedCompanyId }, retainedCompany);
+      }
       this.initialize();
       this.applyMigrations();
-      this.seedFromState();
+      if (!this.authorityMaintenance) this.authority = require('./company-authority').assertAuthorityRuntime(this.db, this.authorityKey, databaseUrl ? 'hosted' : 'local', authorityMarker);
+      this.company = bindCompany ? bindCompanyRuntime(this.db, options.companyId) : null;
+      if (options.expectedCompany) assertSameCompany(options.expectedCompany, this.company);
+      if (!this.authorityMaintenance) this.seedFromState();
     };
     try {
       if (this.databaseMode === 'postgres') {
@@ -7044,6 +7465,7 @@ class ContractorOperatingLedger {
 
       CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
       CREATE INDEX IF NOT EXISTS idx_jobs_updated ON jobs(updated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_jobs_updated_id ON jobs(updated_at DESC, id DESC);
       CREATE INDEX IF NOT EXISTS idx_jobs_status_updated ON jobs(status, updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_clients_updated ON clients(updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_trade_partners_status ON trade_partners(status, partner_type, updated_at);
@@ -7067,6 +7489,7 @@ class ContractorOperatingLedger {
       CREATE INDEX IF NOT EXISTS idx_sds_sheets_job ON sds_sheets(job_id);
       CREATE INDEX IF NOT EXISTS idx_site_access_logs_job ON site_access_logs(job_id);
       CREATE INDEX IF NOT EXISTS idx_assignments_worker ON assignments(worker_id, status);
+      CREATE INDEX IF NOT EXISTS idx_assignments_worker_status_job ON assignments(worker_id, status, job_id);
       CREATE INDEX IF NOT EXISTS idx_assignments_job_status ON assignments(job_id, status);
       CREATE INDEX IF NOT EXISTS idx_quality_checks_job ON quality_checks(job_id);
       CREATE INDEX IF NOT EXISTS idx_safety_checks_job ON safety_checks(job_id);
@@ -7112,10 +7535,11 @@ class ContractorOperatingLedger {
       const applied = new Set(this.db.prepare('SELECT version FROM ledger_schema_migrations').all().map(row => row.version));
       for (const migration of LEDGER_SCHEMA_MIGRATIONS) {
         if (applied.has(migration.version)) continue;
-        migration.apply(this.db, { databaseMode: this.databaseMode });
+        migration.apply(this.db, { databaseMode: this.databaseMode, audit: event => this.audit(event) });
         this.db.prepare('INSERT INTO ledger_schema_migrations (version, description, applied_at) VALUES (?, ?, ?)')
           .run(migration.version, migration.description, nowIso());
       }
+      require('./company-authority').ensureAuthorityGuards(this.db);
     });
   }
 
@@ -7292,6 +7716,7 @@ class ContractorOperatingLedger {
       ? {
           principalId: row.principal_id,
           locale: normalizeLocale(row.locale),
+          isPersisted: true,
           updatedBy: row.updated_by,
           createdAt: row.created_at,
           updatedAt: row.updated_at
@@ -7299,6 +7724,7 @@ class ContractorOperatingLedger {
       : {
           principalId: id,
           locale: 'en-GB',
+          isPersisted: false,
           updatedBy: null,
           createdAt: null,
           updatedAt: null
@@ -7829,12 +8255,39 @@ class ContractorOperatingLedger {
   requireDataSubject(subjectType, subjectId) {
     const type = this.normalizeDataSubjectType(subjectType);
     const id = normalizeText(subjectId, '');
-    const row = type === 'client'
-      ? this.db.prepare('SELECT * FROM clients WHERE id = ?').get(id)
-      : this.db.prepare('SELECT * FROM workers WHERE id = ?').get(id);
-    if (!row) throw ledgerInputError('data_subject_not_found', `The selected ${type} record does not exist.`, { subjectType: type, subjectId: id }, 404);
-    const record = type === 'client' ? this.mapClient(row) : this.mapWorker(row);
-    return { type, id, label: record.name || id, row, record };
+    if (type === 'client') {
+      const row = this.db.prepare('SELECT * FROM clients WHERE id = ?').get(id);
+      if (!row) throw ledgerInputError('data_subject_not_found', `The selected ${type} record does not exist.`, { subjectType: type, subjectId: id }, 404);
+      const record = this.mapClient(row);
+      return { type, id, label: record.name || id, row, record, source: 'client' };
+    }
+    const row = this.db.prepare('SELECT * FROM workers WHERE id = ?').get(id);
+    if (row) {
+      const record = this.mapWorker(row);
+      return { type, id, label: record.name || id, row, record, source: 'worker' };
+    }
+    if (databaseTableExists(this.db, 'work_board_accounts', this.databaseMode)) {
+      const account = this.db.prepare("SELECT * FROM work_board_accounts WHERE id = ? AND worker_id IS NULL AND status = 'pending'").get(id);
+      if (account) {
+        const data = fromJson(account.data_json, {});
+        const record = {
+          id, name: data.name || id, role: data.skills?.[0] || 'Applicant', email: account.email,
+          phone: data.phone || null, status: 'pending', homeRegion: data.region || null, hourlyRate: 0,
+          skills: Array.isArray(data.skills) ? data.skills : [], data,
+          createdAt: account.created_at, updatedAt: account.created_at
+        };
+        return { type, id, label: record.name, row: account, record, source: 'work_board_applicant' };
+      }
+    }
+    throw ledgerInputError('data_subject_not_found', `The selected ${type} record does not exist.`, { subjectType: type, subjectId: id }, 404);
+  }
+
+  dataSubjectWorkBoardAccounts(subjectId) {
+    if (!databaseTableExists(this.db, 'work_board_accounts', this.databaseMode)) return [];
+    const worker = this.db.prepare('SELECT id FROM workers WHERE id = ?').get(subjectId);
+    return worker
+      ? this.db.prepare('SELECT * FROM work_board_accounts WHERE worker_id = ? ORDER BY id').all(subjectId)
+      : this.db.prepare("SELECT * FROM work_board_accounts WHERE id = ? AND worker_id IS NULL AND status = 'pending' ORDER BY id").all(subjectId);
   }
 
   dataSubjectPrivacyState(subjectType, subjectId) {
@@ -7899,6 +8352,19 @@ class ContractorOperatingLedger {
       `).all(subject.id));
       records.communications = compact(this.db.prepare('SELECT id, status, job_id, updated_at FROM communication_records WHERE client_id = ? ORDER BY id').all(subject.id));
       records.portalAccess = compact(this.db.prepare('SELECT id, status, job_id, updated_at FROM client_portal_access WHERE client_id = ? ORDER BY id').all(subject.id));
+      records.completionReviews = compact(this.db.prepare(`
+        SELECT client_completion_reviews.id, client_completion_reviews.status, client_completion_reviews.job_id, client_completion_reviews.created_at
+        FROM client_completion_reviews
+        JOIN client_portal_access ON client_portal_access.id = client_completion_reviews.portal_access_id
+        WHERE client_portal_access.client_id = ? ORDER BY client_completion_reviews.id
+      `).all(subject.id));
+      records.completionReviewActions = compact(this.db.prepare(`
+        SELECT actions.id, actions.disposition, actions.completion_review_id, actions.created_at
+        FROM client_completion_review_actions actions
+        JOIN client_completion_reviews reviews ON reviews.id = actions.completion_review_id
+        JOIN client_portal_access ON client_portal_access.id = reviews.portal_access_id
+        WHERE client_portal_access.client_id = ? ORDER BY actions.id
+      `).all(subject.id));
       records.feedback = compact(this.db.prepare(`
         SELECT client_feedback.id, client_feedback.status, client_feedback.job_id, client_feedback.updated_at
         FROM client_feedback JOIN jobs ON jobs.id = client_feedback.job_id
@@ -7935,6 +8401,38 @@ class ContractorOperatingLedger {
       records.expenses = compact(this.db.prepare('SELECT id, status, job_id, updated_at FROM expenses WHERE worker_id = ? ORDER BY id').all(subject.id));
       records.custody = compact(this.db.prepare('SELECT id, status, job_id, updated_at FROM equipment_custody_sessions WHERE worker_id = ? ORDER BY id').all(subject.id));
       records.timesheets = compact(this.db.prepare('SELECT id, status, updated_at FROM weekly_timesheets WHERE worker_id = ? ORDER BY id').all(subject.id));
+      if (databaseTableExists(this.db, 'work_board_accounts', this.databaseMode)) {
+        const accounts = this.dataSubjectWorkBoardAccounts(subject.id);
+        const accountIds = accounts.map(account => account.id);
+        records.workBoardAccounts = accounts.map(account => ({ id: account.id, status: account.status, updatedAt: account.created_at,
+          profileRevision: sha256Json({ email: account.email, data: account.data_json, authSource: account.auth_source,
+            membershipId: account.membership_id, personId: account.person_id }) }));
+        records.workBoardApplications = accountIds.length
+          ? compact(this.db.prepare(`SELECT applications.id, applications.status, positions.job_id, applications.created_at
+              FROM work_board_applications applications
+              JOIN work_board_positions positions ON positions.id = applications.position_id
+              WHERE applications.account_id IN (${accountIds.map(() => '?').join(', ')}) ORDER BY applications.id`).all(...accountIds))
+          : [];
+        records.workBoardOffers = accountIds.length
+          ? compact(this.db.prepare(`SELECT offers.id, offers.status, positions.job_id, offers.created_at
+              FROM work_board_position_offers offers
+              JOIN work_board_applications applications ON applications.id = offers.application_id
+              JOIN work_board_positions positions ON positions.id = applications.position_id
+              WHERE applications.account_id IN (${accountIds.map(() => '?').join(', ')}) ORDER BY offers.id`).all(...accountIds))
+          : [];
+        records.workBoardSessions = accountIds.length
+          ? this.db.prepare(`SELECT account_id AS id, COUNT(*) AS session_count,
+              SUM(CASE WHEN revoked_at IS NULL AND expires_at > ? THEN 1 ELSE 0 END) AS active_count,
+              MAX(updated_at) AS updated_at FROM work_board_sessions
+              WHERE account_id IN (${accountIds.map(() => '?').join(', ')}) GROUP BY account_id ORDER BY account_id`)
+            .all(nowIso(), ...accountIds).map(row => ({ accountId: row.id, sessionCount: Number(row.session_count),
+              activeCount: Number(row.active_count), updatedAt: row.updated_at }))
+          : [];
+        const openApplications = records.workBoardApplications.filter(record => ['interested', 'waitlisted', 'offer_pending'].includes(record.status));
+        if (openApplications.length) blockers.push({ code: 'open_work_board_applications', count: openApplications.length,
+          message: 'Withdraw or resolve open work-board applications and offers before pseudonymizing this worker.' });
+        if (accounts.length || records.workBoardApplications.length || records.workBoardOffers.length) retainedCategories.push('work_board_profile_and_recruitment_evidence');
+      }
       records.pendingApprovals = compact(this.db.prepare(`
         SELECT id, status, updated_at FROM approvals
         WHERE status = 'pending' AND target_type <> 'data_subject_request' AND (
@@ -7945,7 +8443,8 @@ class ContractorOperatingLedger {
       const activeAssignments = records.assignments.filter(record => !['released', 'cancelled', 'completed', 'closed', 'rejected'].includes(record.status));
       const activeCustody = records.custody.filter(record => record.status === 'checked_out');
       const openTimesheets = records.timesheets.filter(record => ['pending_approval', 'draft'].includes(record.status));
-      if (subject.record.status !== 'retired') blockers.push({ code: 'worker_not_retired', count: 1, message: 'Complete the approval-gated worker retirement before pseudonymization.' });
+      if (subject.source === 'worker' && subject.record.status !== 'retired') blockers.push({ code: 'worker_not_retired', count: 1, message: 'Complete the approval-gated worker retirement before pseudonymization.' });
+      if (subject.source === 'work_board_applicant' && !records.workBoardAccounts.some(account => account.status === 'pending')) blockers.push({ code: 'applicant_state_changed', count: 1, message: 'Resolve the changed applicant account state before pseudonymization.' });
       if (activeAssignments.length) blockers.push({ code: 'active_assignments', count: activeAssignments.length, message: 'Release active assignments before pseudonymization.' });
       if (activeCustody.length) blockers.push({ code: 'active_equipment_custody', count: activeCustody.length, message: 'Return assigned equipment before pseudonymization.' });
       if (openTimesheets.length) blockers.push({ code: 'open_timesheets', count: openTimesheets.length, message: 'Resolve draft or pending timesheets before pseudonymization.' });
@@ -8183,6 +8682,10 @@ class ContractorOperatingLedger {
     if (Object.hasOwn(corrections, 'email')) {
       normalized.email = normalizeText(corrections.email, '').toLowerCase();
       if (normalized.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized.email)) throw ledgerInputError('worker_email_invalid', 'Worker email address is invalid.');
+      if (!normalized.email && subject.source === 'work_board_applicant') throw ledgerInputError('data_subject_correction_email_required', 'A registered work-board account must retain a usable sign-in email address.');
+      if (normalized.email && subject.source === 'worker' && this.dataSubjectWorkBoardAccounts(subject.id).some(account => account.auth_source === 'identity')) {
+        throw ledgerInputError('data_subject_identity_registry_correction_required', 'Correct this email through the linked identity account; the work-board privacy flow cannot change identity-provider records.');
+      }
     }
     if (Object.hasOwn(corrections, 'phone')) normalized.phone = normalizeText(corrections.phone, '').slice(0, 80) || null;
     if (Object.hasOwn(corrections, 'homeRegion')) normalized.homeRegion = normalizeText(corrections.homeRegion, '').slice(0, 160) || null;
@@ -8286,6 +8789,7 @@ class ContractorOperatingLedger {
         }
       };
     } else {
+      const accountIds = this.dataSubjectWorkBoardAccounts(request.subjectId).map(row => row.id);
       records = {
         profile: this.requireDataSubject('worker', request.subjectId).record,
         assignments: projectRows(this.db.prepare('SELECT * FROM assignments WHERE worker_id = ? ORDER BY created_at').all(request.subjectId)),
@@ -8295,7 +8799,25 @@ class ContractorOperatingLedger {
         timeLogs: projectRows(this.db.prepare('SELECT * FROM time_logs WHERE worker_id = ? ORDER BY created_at').all(request.subjectId)),
         expenses: projectRows(this.db.prepare('SELECT * FROM expenses WHERE worker_id = ? ORDER BY created_at').all(request.subjectId)),
         equipmentCustody: projectRows(this.db.prepare('SELECT * FROM equipment_custody_sessions WHERE worker_id = ? ORDER BY created_at').all(request.subjectId)),
-        timesheets: projectRows(this.db.prepare('SELECT * FROM weekly_timesheets WHERE worker_id = ? ORDER BY created_at').all(request.subjectId))
+        timesheets: projectRows(this.db.prepare('SELECT * FROM weekly_timesheets WHERE worker_id = ? ORDER BY created_at').all(request.subjectId)),
+        workBoardAccounts: accountIds.length ? projectRows(this.db.prepare(`SELECT id, email, status, worker_id, data_json, created_at,
+          auth_source, membership_id, person_id FROM work_board_accounts WHERE id IN (${accountIds.map(() => '?').join(', ')}) ORDER BY id`).all(...accountIds)) : [],
+        workBoardApplications: accountIds.length ? this.db.prepare(`SELECT applications.id, applications.position_id,
+          applications.status, applications.assignment_id, applications.created_at, positions.data_json AS position_data
+          FROM work_board_applications applications JOIN work_board_positions positions ON positions.id = applications.position_id
+          WHERE applications.account_id IN (${accountIds.map(() => '?').join(', ')}) ORDER BY applications.created_at`).all(...accountIds).map(row => {
+            const position = fromJson(row.position_data, {});
+            return { id: row.id, positionId: row.position_id, status: row.status, assignmentId: row.assignment_id,
+              createdAt: row.created_at, position: Object.fromEntries(['title', 'role', 'city', 'startsAt', 'endsAt', 'hours', 'rate', 'description', 'materials', 'equipment', 'prerequisites']
+                .filter(key => position[key] !== undefined).map(key => [key, position[key]])) };
+          }) : [],
+        workBoardOffers: accountIds.length ? projectRows(this.db.prepare(`SELECT offers.id, offers.terms_revision, offers.return_status,
+          offers.status, offers.expires_at, offers.responded_at, offers.actor, offers.created_at
+          FROM work_board_position_offers offers JOIN work_board_applications applications ON applications.id = offers.application_id
+          WHERE applications.account_id IN (${accountIds.map(() => '?').join(', ')}) ORDER BY offers.created_at`).all(...accountIds)) : [],
+        workBoardSessions: accountIds.length ? projectRows(this.db.prepare(`SELECT account_id, issued_at, expires_at, revoked_at,
+          revocation_reason, created_at, updated_at FROM work_board_sessions
+          WHERE account_id IN (${accountIds.map(() => '?').join(', ')}) ORDER BY issued_at`).all(...accountIds)) : []
       };
     }
     const payload = {
@@ -8328,10 +8850,41 @@ class ContractorOperatingLedger {
         UPDATE clients SET name = ?, company = ?, email = ?, phone = ?, address = ?, city = ?, country = ?, vat_number = ?,
           preferred_language = ?, data_json = ?, updated_at = ? WHERE id = ?
       `).run(profile.name, profile.company, profile.email, profile.phone, profile.address, profile.city, profile.country, profile.vatNumber, profile.preferredLanguage, toJson(profile.data), timestamp, subject.id);
+    } else if (subject.source === 'work_board_applicant') {
+      const account = this.db.prepare('SELECT id, email, data_json FROM work_board_accounts WHERE id = ? AND worker_id IS NULL').get(subject.id);
+      if (!account) throw ledgerInputError('data_subject_source_stale', 'The applicant account changed after assessment.', {}, 409);
+      const email = corrections.email ?? account.email;
+      const duplicate = this.db.prepare('SELECT id FROM work_board_accounts WHERE lower(email) = lower(?) AND id <> ? LIMIT 1').get(email, account.id);
+      if (duplicate) throw ledgerInputError('data_subject_correction_duplicate_email', 'The corrected address is already used by another work-board account.', {}, 409);
+      const profile = fromJson(account.data_json, {});
+      if (Object.hasOwn(corrections, 'name')) profile.name = corrections.name;
+      if (Object.hasOwn(corrections, 'phone')) profile.phone = corrections.phone || '';
+      if (Object.hasOwn(corrections, 'homeRegion')) profile.region = corrections.homeRegion || '';
+      if (Object.hasOwn(corrections, 'role')) {
+        const remaining = (profile.skills || []).filter(skill => skill !== subject.record.role);
+        profile.skills = corrections.role ? [corrections.role, ...remaining] : remaining;
+      }
+      this.db.prepare('UPDATE work_board_accounts SET email = ?, data_json = ? WHERE id = ?')
+        .run(email, toJson(profile), account.id);
     } else {
       const next = { ...subject.record, ...corrections };
       this.db.prepare('UPDATE workers SET name = ?, role = ?, email = ?, phone = ?, home_region = ?, updated_at = ? WHERE id = ?')
         .run(next.name, next.role || null, next.email || null, next.phone || null, next.homeRegion || null, timestamp, subject.id);
+      for (const account of this.dataSubjectWorkBoardAccounts(subject.id).filter(item => item.auth_source !== 'identity')) {
+        const profile = fromJson(account.data_json, {});
+        if (Object.hasOwn(corrections, 'name')) profile.name = next.name;
+        if (Object.hasOwn(corrections, 'phone')) profile.phone = next.phone || '';
+        if (Object.hasOwn(corrections, 'homeRegion')) profile.region = next.homeRegion || '';
+        if (Object.hasOwn(corrections, 'role')) {
+          const remaining = (profile.skills || []).filter(skill => skill !== subject.record.role);
+          profile.skills = next.role ? [next.role, ...remaining] : remaining;
+        }
+        const email = Object.hasOwn(corrections, 'email') ? (next.email || '') : account.email;
+        if (!email) throw ledgerInputError('data_subject_correction_email_required', 'A registered work-board account must retain a usable sign-in email address.');
+        const duplicate = this.db.prepare('SELECT id FROM work_board_accounts WHERE lower(email) = lower(?) AND id <> ? LIMIT 1').get(email, account.id);
+        if (duplicate) throw ledgerInputError('data_subject_correction_duplicate_email', 'The corrected address is already used by another work-board account.', {}, 409);
+        this.db.prepare('UPDATE work_board_accounts SET email = ?, data_json = ? WHERE id = ?').run(email, toJson(profile), account.id);
+      }
     }
     const after = this.requireDataSubject(request.subjectType, request.subjectId).record;
     this.audit({ entityType: request.subjectType, entityId: request.subjectId, action: 'apply_data_subject_rectification', actor, before: subject.record, after, metadata: { requestId: request.id, approvalId: request.approvalId, externalCommitments: 0 } });
@@ -8341,6 +8894,11 @@ class ContractorOperatingLedger {
   updateDataSubjectPrivacyState(request, patch, timestamp) {
     const subject = this.requireDataSubject(request.subjectType, request.subjectId);
     const data = { ...subject.record.data, privacy: { ...(subject.record.data?.privacy || {}), ...patch, requestId: request.id, changedAt: timestamp } };
+    if (subject.source === 'work_board_applicant') {
+      this.db.prepare('UPDATE work_board_accounts SET data_json = ? WHERE id = ? AND worker_id IS NULL')
+        .run(toJson(data), subject.id);
+      return this.dataSubjectPrivacyState(request.subjectType, request.subjectId);
+    }
     const table = request.subjectType === 'client' ? 'clients' : 'workers';
     this.db.prepare(`UPDATE ${table} SET data_json = ?, updated_at = ? WHERE id = ?`).run(toJson(data), timestamp, subject.id);
     return this.dataSubjectPrivacyState(request.subjectType, request.subjectId);
@@ -8353,6 +8911,7 @@ class ContractorOperatingLedger {
     const pseudonym = request.subjectType === 'client' ? `Pseudonymized client ${suffix}` : `Pseudonymized worker ${suffix}`;
     let revokedPortalAccess = 0;
     let deactivatedOperatorAccounts = 0;
+    let revokedWorkBoardSessions = 0;
     if (request.subjectType === 'client') {
       this.db.prepare(`
         UPDATE clients SET name = ?, company = NULL, email = NULL, phone = NULL, address = NULL, city = NULL, vat_number = NULL,
@@ -8365,16 +8924,42 @@ class ContractorOperatingLedger {
         UPDATE client_feedback SET respondent_name = NULL, comment = NULL, data_json = ?, updated_at = ?
         WHERE job_id IN (SELECT id FROM jobs WHERE client_id = ?)
       `).run(toJson({ privacy: { pseudonymizedByRequestId: request.id } }), timestamp, request.subjectId);
+      this.db.prepare(`
+        UPDATE client_completion_reviews
+        SET respondent_name = ?, note = ''
+        WHERE portal_access_id IN (SELECT id FROM client_portal_access WHERE client_id = ?)
+      `).run(pseudonym, request.subjectId);
+      this.db.prepare(`UPDATE client_completion_review_actions SET note = ''
+        WHERE completion_review_id IN (
+          SELECT reviews.id FROM client_completion_reviews reviews
+          JOIN client_portal_access ON client_portal_access.id = reviews.portal_access_id
+          WHERE client_portal_access.client_id = ?
+        )`).run(request.subjectId);
       const revoked = this.db.prepare(`
         UPDATE client_portal_access SET status = 'revoked', revoked_at = COALESCE(revoked_at, ?), updated_at = ?
         WHERE client_id = ? AND status IN ('active', 'pending_approval')
       `).run(timestamp, timestamp, request.subjectId);
       revokedPortalAccess = Number(revoked.changes || 0);
     } else {
-      this.db.prepare(`
-        UPDATE workers SET name = ?, role = 'retired', email = NULL, phone = NULL, home_region = NULL, hourly_rate = 0,
-          skills_json = '[]', data_json = ?, updated_at = ? WHERE id = ?
-      `).run(pseudonym, toJson({ privacy: { pseudonymized: true, pseudonymizedAt: timestamp, requestId: request.id, retainedCategories: inventory.retainedCategories } }), timestamp, request.subjectId);
+      if (this.db.prepare('SELECT id FROM workers WHERE id = ?').get(request.subjectId)) {
+        this.db.prepare(`
+          UPDATE workers SET name = ?, role = 'retired', email = NULL, phone = NULL, home_region = NULL, hourly_rate = 0,
+            skills_json = '[]', data_json = ?, updated_at = ? WHERE id = ?
+        `).run(pseudonym, toJson({ privacy: { pseudonymized: true, pseudonymizedAt: timestamp, requestId: request.id, retainedCategories: inventory.retainedCategories } }), timestamp, request.subjectId);
+      }
+      if (databaseTableExists(this.db, 'work_board_accounts', this.databaseMode)) {
+        const accounts = this.dataSubjectWorkBoardAccounts(request.subjectId);
+        for (const account of accounts) {
+          const accountData = { name: pseudonym, phone: '', skills: [], region: '', company: '',
+            privacy: { pseudonymizedByRequestId: request.id, pseudonymizedAt: timestamp } };
+          this.db.prepare(`UPDATE work_board_accounts SET email = ?, password_hash = '', salt = '', status = 'suspended', data_json = ? WHERE id = ?`)
+            .run(`redacted+${account.id}@invalid.example`, toJson(accountData), account.id);
+          const revoked = this.db.prepare(`UPDATE work_board_sessions SET revoked_at = COALESCE(revoked_at, ?),
+            revocation_reason = COALESCE(revocation_reason, 'worker_privacy_pseudonymization'), updated_at = ?
+            WHERE account_id = ? AND revoked_at IS NULL`).run(timestamp, timestamp, account.id);
+          revokedWorkBoardSessions += Number(revoked.changes || 0);
+        }
+      }
       for (const table of ['safety_meeting_attendees', 'work_permit_attendees', 'pre_task_plan_attendees']) {
         this.db.prepare(`UPDATE ${table} SET attendee_name = ?, company = NULL, updated_at = ? WHERE worker_id = ?`).run(pseudonym, timestamp, request.subjectId);
       }
@@ -8392,7 +8977,7 @@ class ContractorOperatingLedger {
       SET subject_label = ?, updated_at = ?
       WHERE subject_type = ? AND subject_id = ?
     `).run(pseudonym, timestamp, request.subjectType, request.subjectId);
-    return { pseudonym, retainedCategories: inventory.retainedCategories, revokedPortalAccess, deactivatedOperatorAccounts };
+    return { pseudonym, retainedCategories: inventory.retainedCategories, revokedPortalAccess, deactivatedOperatorAccounts, revokedWorkBoardSessions };
   }
 
   applyDataSubjectRequestDecision(requestId) {
@@ -8519,7 +9104,7 @@ class ContractorOperatingLedger {
         `).run(normalizedKeyHash, excess);
       }
       return this.getAuthenticationRateLimit(normalizedKeyHash, { limit, windowMs, now: timestamp });
-    });
+    }, { dashboardReadOnly: true });
   }
 
   clearAuthenticationRateLimit(keyHash) {
@@ -8561,7 +9146,7 @@ class ContractorOperatingLedger {
         windowStartedAt: row.window_started_at,
         expiresAt: row.expires_at
       };
-    });
+    }, { dashboardReadOnly: true });
   }
 
   clearApiRateLimits() {
@@ -8782,8 +9367,12 @@ class ContractorOperatingLedger {
     return Number(released.changes || 0) === 1;
   }
 
-  transaction(callback) {
+  transaction(callback, { dashboardReadOnly = false } = {}) {
+    if (this.transactionFailure) throw this.transactionFailure;
+    // Hosted connections keep conservative invalidation until a shared business revision exists.
+    const affectsDashboard = this.databaseMode !== 'sqlite' || dashboardReadOnly !== true;
     if (this.transactionDepth > 0) {
+      this.transactionAffectsDashboard ||= affectsDashboard;
       this.transactionDepth += 1;
       try {
         return callback();
@@ -8793,17 +9382,39 @@ class ContractorOperatingLedger {
     }
     this.db.exec('BEGIN IMMEDIATE');
     this.transactionDepth = 1;
+    this.transactionAffectsDashboard = affectsDashboard;
     try {
+      if (this.authority && !this.authorityMaintenance) require('./company-authority').assertAuthorityRuntime(this.db, this.authorityKey, this.databaseMode === 'postgres' ? 'hosted' : 'local');
       const result = callback();
       this.db.exec('COMMIT');
       this.mutationRevision += 1;
-      this.dashboardSummaryCache = null;
+      if (this.transactionAffectsDashboard) this.dashboardSummaryCache = null;
+      else if (this.dashboardSummaryCache) this.dashboardSummaryCache.revision = this.mutationRevision;
       return result;
     } catch (error) {
-      this.db.exec('ROLLBACK');
+      try {
+        if (this.databaseMode !== 'sqlite' || this.db.isTransaction) this.db.exec('ROLLBACK');
+      } catch (rollbackError) {
+        this.transactionFailure = new AggregateError(
+          [error, rollbackError],
+          'The ledger transaction failed and its rollback also failed.',
+          { cause: error }
+        );
+        try {
+          this.db.close();
+        } catch (closeError) {
+          this.transactionFailure = new AggregateError(
+            [error, rollbackError, closeError],
+            'The ledger transaction, rollback, and connection shutdown all failed.',
+            { cause: error }
+          );
+        }
+        throw this.transactionFailure;
+      }
       throw error;
     } finally {
       this.transactionDepth = 0;
+      this.transactionAffectsDashboard = false;
     }
   }
 
@@ -8828,6 +9439,172 @@ class ContractorOperatingLedger {
       bytes: Number(usage?.bytes || 0),
       objects: Number(usage?.objects || 0)
     };
+  }
+
+  evidenceStorageReservationsUsage() {
+    const usage = this.db.prepare(`
+      SELECT COALESCE(SUM(reserved_bytes), 0) AS bytes, COUNT(*) AS reservations
+      FROM evidence_storage_reservations
+      WHERE status IN ('reserved', 'cleanup_pending', 'cleaning')
+    `).get();
+    return { bytes: Number(usage?.bytes || 0), reservations: Number(usage?.reservations || 0) };
+  }
+
+  reserveEvidenceStorage({ reservationId, requestHash, idempotencyKeyHash = null, ownerLeaseId, leaseUntil, bytes, maxBytes }) {
+    const values = {
+      reservationId: normalizeText(reservationId),
+      requestHash: normalizeText(requestHash),
+      idempotencyKeyHash: normalizeText(idempotencyKeyHash) || null,
+      ownerLeaseId: normalizeText(ownerLeaseId),
+      leaseUntil: normalizeText(leaseUntil),
+      bytes: Number(bytes),
+      maxBytes: Number(maxBytes)
+    };
+    if (!values.reservationId || !values.requestHash || !values.ownerLeaseId
+        || !Number.isFinite(Date.parse(values.leaseUntil))
+        || !Number.isSafeInteger(values.bytes) || values.bytes < 1
+        || !Number.isSafeInteger(values.maxBytes) || values.maxBytes < 1) {
+      throw Object.assign(new Error('Evidence quota reservation parameters are invalid.'), { code: 'evidence_reservation_invalid', statusCode: 503 });
+    }
+    const timestamp = nowIso();
+    return this.transaction(() => {
+      const lockSuffix = this.databaseMode === 'postgres' ? ' FOR UPDATE' : '';
+      if (!this.db.prepare(`SELECT id FROM evidence_storage_quota_lock WHERE id = 1${lockSuffix}`).get()) {
+        throw Object.assign(new Error('Evidence storage quota lock is unavailable.'), { code: 'evidence_quota_lock_unavailable', statusCode: 503 });
+      }
+      const existing = this.db.prepare('SELECT * FROM evidence_storage_reservations WHERE reservation_id = ?').get(values.reservationId);
+      if (existing && existing.request_hash !== values.requestHash) {
+        throw Object.assign(new Error('Evidence reservation identity conflicts with a different upload.'), { code: 'evidence_reservation_conflict', statusCode: 409 });
+      }
+      if (existing && existing.idempotency_key_hash !== values.idempotencyKeyHash) {
+        throw Object.assign(new Error('Evidence reservation identity conflicts with a different retry key.'), { code: 'evidence_reservation_conflict', statusCode: 409 });
+      }
+      if (existing?.status === 'committed') return { committed: true, reservedBytes: 0 };
+      const cleanupLeaseUntil = Date.parse(existing?.cleanup_lease_until || '');
+      if (existing?.status === 'cleaning' && Number.isFinite(cleanupLeaseUntil) && cleanupLeaseUntil > Date.parse(timestamp)) {
+        throw Object.assign(new Error('Evidence cleanup is already processing this upload; retry after it completes.'), { code: 'evidence_cleanup_in_progress', statusCode: 409 });
+      }
+      const existingLeaseUntil = Date.parse(existing?.lease_until || '');
+      if (existing && existing.owner_lease_id !== values.ownerLeaseId) {
+        if (existing.status === 'reserved' && Number.isFinite(existingLeaseUntil) && existingLeaseUntil > Date.parse(timestamp)) {
+          throw Object.assign(new Error('Another live upload lease owns this evidence reservation.'), { code: 'evidence_reservation_in_progress', statusCode: 409 });
+        }
+        if (values.idempotencyKeyHash) {
+          const activeRequest = this.db.prepare(`SELECT 1 AS active FROM idempotency_records
+            WHERE key_hash = ? AND request_hash = ? AND status = 'processing' AND lease_id = ? AND lease_until > ?`)
+            .get(values.idempotencyKeyHash, values.requestHash, values.ownerLeaseId, timestamp);
+          if (!activeRequest) {
+            throw Object.assign(new Error('The current idempotency lease does not own this evidence reservation.'), { code: 'evidence_reservation_lease_lost', statusCode: 409 });
+          }
+        }
+      }
+      const usage = this.evidenceStorageUsage();
+      const otherReservations = this.db.prepare(`SELECT COALESCE(SUM(reserved_bytes), 0) AS bytes
+        FROM evidence_storage_reservations
+        WHERE status IN ('reserved', 'cleanup_pending', 'cleaning') AND reservation_id <> ?`)
+        .get(values.reservationId);
+      const pendingBytes = Number(otherReservations?.bytes || 0);
+      if (usage.bytes + pendingBytes + values.bytes > values.maxBytes) {
+        throw Object.assign(new Error('The retained evidence storage quota has been reached. Archive or remove governed evidence before uploading more.'), {
+          code: 'evidence_storage_quota_exceeded', statusCode: 507,
+          details: { usageBytes: usage.bytes, pendingBytes, requestedBytes: values.bytes, maxBytes: values.maxBytes }
+        });
+      }
+      if (existing) {
+        this.db.prepare(`UPDATE evidence_storage_reservations SET idempotency_key_hash = ?, owner_lease_id = ?, lease_until = ?,
+          reserved_bytes = ?, status = 'reserved', cleanup_lease_id = NULL, cleanup_lease_until = NULL,
+          last_error_code = NULL, updated_at = ? WHERE reservation_id = ? AND request_hash = ?`)
+          .run(values.idempotencyKeyHash, values.ownerLeaseId, values.leaseUntil, values.bytes, timestamp, values.reservationId, values.requestHash);
+      } else {
+        this.db.prepare(`INSERT INTO evidence_storage_reservations (
+          reservation_id, request_hash, idempotency_key_hash, owner_lease_id, lease_until, reserved_bytes,
+          status, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, 'reserved', ?, ?)`)
+          .run(values.reservationId, values.requestHash, values.idempotencyKeyHash, values.ownerLeaseId, values.leaseUntil,
+            values.bytes, timestamp, timestamp);
+      }
+      return { committed: false, reservedBytes: values.bytes, usageBytes: usage.bytes, pendingBytes };
+    });
+  }
+
+  setEvidenceStorageReservationObject(reservationId, ownerLeaseId, storageRef, sha256) {
+    const result = this.db.prepare(`UPDATE evidence_storage_reservations SET storage_ref = ?, sha256 = ?, updated_at = ?
+      WHERE reservation_id = ? AND owner_lease_id = ? AND status = 'reserved' AND lease_until > ?`)
+      .run(normalizeText(storageRef), normalizeText(sha256), nowIso(), normalizeText(reservationId), normalizeText(ownerLeaseId), nowIso());
+    return Number(result.changes || 0) === 1;
+  }
+
+  commitEvidenceStorageReservation(reservationId, ownerLeaseId) {
+    const result = this.db.prepare(`UPDATE evidence_storage_reservations SET status = 'committed', cleanup_lease_id = NULL,
+      cleanup_lease_until = NULL, last_error_code = NULL, updated_at = ?
+      WHERE reservation_id = ? AND owner_lease_id = ? AND status = 'reserved' AND storage_ref IS NOT NULL AND lease_until > ?`)
+      .run(nowIso(), normalizeText(reservationId), normalizeText(ownerLeaseId), nowIso());
+    return Number(result.changes || 0) === 1;
+  }
+
+  markEvidenceStorageCleanupPending(reservationId, ownerLeaseId, errorCode = null) {
+    const result = this.db.prepare(`UPDATE evidence_storage_reservations SET status = 'cleanup_pending', cleanup_lease_id = NULL,
+      cleanup_lease_until = NULL, last_error_code = ?, updated_at = ?
+      WHERE reservation_id = ? AND owner_lease_id = ? AND status = 'reserved'`)
+      .run(normalizeText(errorCode) || null, nowIso(), normalizeText(reservationId), normalizeText(ownerLeaseId));
+    return Number(result.changes || 0) === 1;
+  }
+
+  claimEvidenceStorageCleanup({ reservationId = null, limit = 10, leaseMs = 120_000 } = {}) {
+    const timestamp = nowIso();
+    const until = new Date(Date.parse(timestamp) + Math.max(10_000, Number(leaseMs) || 0)).toISOString();
+    const cleanupLeaseId = makeId('evidence_cleanup');
+    const normalizedId = normalizeText(reservationId) || null;
+    const batchSize = Math.max(1, Math.min(100, Math.floor(Number(limit) || 10)));
+    return this.transaction(() => {
+      const lockSuffix = this.databaseMode === 'postgres' ? ' FOR UPDATE' : '';
+      this.db.prepare(`SELECT id FROM evidence_storage_quota_lock WHERE id = 1${lockSuffix}`).get();
+      const candidates = this.db.prepare(`SELECT r.* FROM evidence_storage_reservations r
+        WHERE r.status IN ('reserved', 'cleanup_pending', 'cleaning')
+          AND (r.lease_until <= ? OR r.status = 'cleanup_pending' OR r.cleanup_lease_until <= ?)
+          AND (r.cleanup_lease_until IS NULL OR r.cleanup_lease_until <= ?)
+          AND (? IS NULL OR r.reservation_id = ?)
+          AND (r.idempotency_key_hash IS NULL OR NOT EXISTS (
+            SELECT 1 FROM idempotency_records i WHERE i.key_hash = r.idempotency_key_hash
+              AND i.request_hash = r.request_hash AND i.status = 'processing' AND i.lease_until > ?
+          ))
+        ORDER BY r.updated_at ASC LIMIT ?`).all(timestamp, timestamp, timestamp, normalizedId, normalizedId, timestamp, batchSize);
+      const claimed = [];
+      for (const row of candidates) {
+        if (row.storage_ref) {
+          const referenced = this.db.prepare(`SELECT 1 AS retained FROM documents WHERE storage_ref = ?
+            UNION ALL SELECT 1 AS retained FROM opportunity_evidence WHERE storage_ref = ? LIMIT 1`)
+            .get(row.storage_ref, row.storage_ref);
+          if (referenced) {
+            this.db.prepare(`UPDATE evidence_storage_reservations SET status = 'committed', cleanup_lease_id = NULL,
+              cleanup_lease_until = NULL, last_error_code = NULL, updated_at = ? WHERE reservation_id = ? AND status = ?`)
+              .run(timestamp, row.reservation_id, row.status);
+            continue;
+          }
+        }
+        if (!row.storage_ref) {
+          this.db.prepare(`UPDATE evidence_storage_reservations SET status = 'released', reserved_bytes = 0,
+            cleanup_lease_id = NULL, cleanup_lease_until = NULL, updated_at = ? WHERE reservation_id = ?`)
+            .run(timestamp, row.reservation_id);
+          continue;
+        }
+        const updated = this.db.prepare(`UPDATE evidence_storage_reservations SET status = 'cleaning', cleanup_lease_id = ?,
+          cleanup_lease_until = ?, updated_at = ? WHERE reservation_id = ? AND status = ?
+          AND (cleanup_lease_until IS NULL OR cleanup_lease_until <= ?)`)
+          .run(cleanupLeaseId, until, timestamp, row.reservation_id, row.status, timestamp);
+        if (Number(updated.changes || 0) === 1) claimed.push({ ...row, status: 'cleaning', cleanupLeaseId, cleanupLeaseUntil: until });
+      }
+      return claimed;
+    });
+  }
+
+  finishEvidenceStorageCleanup(reservationId, cleanupLeaseId, { removed, errorCode = null } = {}) {
+    const result = this.db.prepare(`UPDATE evidence_storage_reservations SET status = ?, cleanup_lease_id = NULL,
+      cleanup_lease_until = NULL, last_error_code = ?, updated_at = ?
+      WHERE reservation_id = ? AND status = 'cleaning' AND cleanup_lease_id = ?`)
+      .run(removed === true ? 'released' : 'cleanup_pending', removed === true ? null : normalizeText(errorCode) || 'evidence_cleanup_failed',
+        nowIso(), normalizeText(reservationId), normalizeText(cleanupLeaseId));
+    return Number(result.changes || 0) === 1;
   }
 
   qaResetInventory() {
@@ -8947,6 +9724,8 @@ class ContractorOperatingLedger {
     }
     if (table === 'job_requests') {
       return {
+        // A request can have multiple jobs; all other scopes join at most one primary-key job.
+        distinct: true,
         from: 'job_requests AS records LEFT JOIN jobs ON jobs.request_id = records.id',
         condition: `(jobs.id IS NULL OR ${this.operationalJobStatusSql('jobs')})`
       };
@@ -8960,7 +9739,7 @@ class ContractorOperatingLedger {
   countActiveRecords(table, condition = '1 = 1', params = []) {
     const scope = this.activeRecordScope(table);
     return Number(this.db.prepare(`
-      SELECT COUNT(DISTINCT records.id) AS count
+      SELECT COUNT(${scope.distinct ? 'DISTINCT ' : ''}records.id) AS count
       FROM ${scope.from}
       WHERE ${scope.condition} AND (${condition})
     `).get(...params).count || 0);
@@ -9651,6 +10430,8 @@ class ContractorOperatingLedger {
         data: {
           notes: normalizeText(payload.notes, '') || null,
           clientSegment: normalizeText(payload.clientSegment || payload.client_segment, '') || null,
+          capacityForecast: normalizeOpportunityCapacityForecast(payload.capacityForecast ?? payload.capacity_forecast),
+          materialForecast: normalizeOpportunityMaterialForecast(payload.materialForecast ?? payload.material_forecast),
           externalCommitments: 0
         },
         createdAt: timestamp,
@@ -9735,6 +10516,12 @@ class ContractorOperatingLedger {
         clientSegment: payload.clientSegment === undefined && payload.client_segment === undefined
           ? before.data?.clientSegment || null
           : normalizeText(payload.clientSegment || payload.client_segment, '') || null,
+        capacityForecast: payload.capacityForecast === undefined && payload.capacity_forecast === undefined
+          ? before.data?.capacityForecast || null
+          : normalizeOpportunityCapacityForecast(payload.capacityForecast ?? payload.capacity_forecast),
+        materialForecast: payload.materialForecast === undefined && payload.material_forecast === undefined
+          ? before.data?.materialForecast || null
+          : normalizeOpportunityMaterialForecast(payload.materialForecast ?? payload.material_forecast),
         externalCommitments: 0
       };
       this.db.prepare(`
@@ -10507,14 +11294,397 @@ class ContractorOperatingLedger {
     return after;
   }
 
+  assessOpportunityMaterialReadiness(opportunity) {
+    const forecast = opportunity?.data?.materialForecast;
+    if (!Array.isArray(forecast) || forecast.length === 0) {
+      return { status: 'not_configured', configured: false, materials: [], sourceHash: null, safeguards: { advisoryOnly: true, reservationsChanged: 0, ordersPlaced: 0, externalCommitments: 0 } };
+    }
+    const openRows = this.db.prepare(`
+      SELECT id,stage,updated_at,data_json FROM opportunities
+      WHERE id<>? AND converted_job_id IS NULL AND stage IN (${[...OPEN_OPPORTUNITY_STAGES].map(() => '?').join(',')})
+    `).all(opportunity.id, ...OPEN_OPPORTUNITY_STAGES);
+    const materials = forecast.map(requirement => {
+      const stock = this.db.prepare(`
+        SELECT m.id,m.name,m.unit,m.stock_quantity,m.updated_at,
+          COALESCE((SELECT SUM(a.quantity-a.consumed_quantity) FROM shared_material_allocations a
+            WHERE a.material_id=m.id AND a.status='reserved'),0) AS reserved_quantity
+        FROM materials m WHERE m.id=?
+      `).get(requirement.materialId);
+      if (!stock) return {
+        materialId: requirement.materialId, name: null, unit: requirement.unit, requiredQuantity: requirement.quantity,
+        status: 'material_not_found', availableQuantity: null, competingPipelineQuantity: 0, availableAfterPipeline: null,
+        shortfallQuantity: null, competingOpportunityCount: 0
+      };
+      const stockUnit = normalizeText(stock.unit, '');
+      if (stockUnit !== requirement.unit) return {
+        materialId: stock.id, name: stock.name, unit: stockUnit, requestedUnit: requirement.unit,
+        requiredQuantity: requirement.quantity, status: 'unit_mismatch', availableQuantity: null,
+        competingPipelineQuantity: 0, availableAfterPipeline: null, shortfallQuantity: null, competingOpportunityCount: 0
+      };
+      const availableQuantity = Math.round(Math.max(0, Number(stock.stock_quantity || 0) - Number(stock.reserved_quantity || 0)) * 10_000) / 10_000;
+      let competingPipelineQuantity = 0;
+      const competingOpportunityIds = [];
+      for (const row of openRows) {
+        const data = fromJson(row.data_json, {});
+        const competingRequirement = Array.isArray(data.materialForecast)
+          ? data.materialForecast.find(item => item.materialId === requirement.materialId && item.unit === requirement.unit)
+          : null;
+        if (!competingRequirement) continue;
+        competingPipelineQuantity += Number(competingRequirement.quantity || 0);
+        competingOpportunityIds.push({ id: row.id, stage: row.stage, updatedAt: row.updated_at, quantity: competingRequirement.quantity });
+      }
+      competingPipelineQuantity = Math.round(competingPipelineQuantity * 10_000) / 10_000;
+      const availableAfterPipeline = Math.round(Math.max(0, availableQuantity - competingPipelineQuantity) * 10_000) / 10_000;
+      const shortfallQuantity = Math.round(Math.max(0, requirement.quantity - availableQuantity) * 10_000) / 10_000;
+      const pipelineShortfallQuantity = Math.round(Math.max(0, requirement.quantity + competingPipelineQuantity - availableQuantity) * 10_000) / 10_000;
+      return {
+        materialId: stock.id, name: stock.name, unit: stockUnit, requiredQuantity: requirement.quantity,
+        status: shortfallQuantity > 0 ? 'known_stock_shortfall' : pipelineShortfallQuantity > 0 ? 'pipeline_contention' : 'within_known_stock',
+        availableQuantity, competingPipelineQuantity, availableAfterPipeline, shortfallQuantity,
+        pipelineShortfallQuantity, competingOpportunityCount: competingOpportunityIds.length,
+        competingOpportunityIds,
+        stockUpdatedAt: stock.updated_at
+      };
+    });
+    const status = materials.some(item => ['material_not_found', 'unit_mismatch'].includes(item.status))
+      ? 'unknown'
+      : materials.some(item => item.status === 'known_stock_shortfall')
+        ? 'shortfall'
+        : materials.some(item => item.status === 'pipeline_contention')
+          ? 'pipeline_contention'
+          : 'within_known_stock';
+    const sourceHash = sha256Json({
+      opportunityId: opportunity.id,
+      forecast,
+      materials: materials.map(({ materialId, availableQuantity, status, stockUpdatedAt, competingPipelineQuantity, competingOpportunityIds }) => ({
+        materialId, availableQuantity, status, stockUpdatedAt, competingPipelineQuantity, competingOpportunityIds
+      })),
+      openOpportunitySources: materials.flatMap(item => item.competingOpportunityIds || [])
+    });
+    return {
+      status, configured: true, materials, sourceHash, generatedAt: nowIso(),
+      safeguards: { advisoryOnly: true, reservationsChanged: 0, ordersPlaced: 0, externalCommitments: 0 }
+    };
+  }
+
+  assessOpportunityCrewCapacity(opportunity) {
+    const forecast = opportunity?.data?.capacityForecast;
+    if (!forecast) return { status: 'not_configured', configured: false, trades: [], gaps: [], sourceHash: null };
+
+    const dates = [];
+    const firstDay = Date.parse(`${forecast.windowStart}T00:00:00.000Z`);
+    const lastDay = Date.parse(`${forecast.windowEnd}T00:00:00.000Z`);
+    for (let instant = firstDay; instant <= lastDay; instant += 86_400_000) dates.push(new Date(instant).toISOString().slice(0, 10));
+    const activeWorkers = this.db.prepare("SELECT * FROM workers WHERE status NOT IN ('retired', 'inactive') ORDER BY id").all().map(row => this.mapWorker(row));
+    const profiles = this.listCrewCapacityProfiles({ includeHistory: false, limit: 10_000 });
+    const profilesByWorker = new Map(profiles.map(profile => [String(profile.workerId), profile]));
+    const allocations = this.listCrewCapacityAllocations({ status: 'active', startDate: forecast.windowStart, endDate: forecast.windowEnd, limit: 20_000 });
+    const allocationHoursByWorkerDate = new Map();
+    const allocationHoursByAssignmentDate = new Map();
+    const availabilityRows = this.db.prepare(`
+      SELECT periods.*, workers.name AS worker_name, workers.role AS worker_role
+      FROM worker_availability_periods periods JOIN workers ON workers.id = periods.worker_id
+      WHERE periods.status IN ('active', 'pending_cancellation')
+    `).all().map(row => this.mapWorkerAvailabilityPeriod(row));
+    const availabilityByWorker = new Map();
+    const expandedAvailabilityRows = this.expandWorkerAvailabilityPeriods(
+      availabilityRows,
+      `${forecast.windowStart}T00:00:00.000Z`,
+      `${forecast.windowEnd}T23:59:59.999Z`
+    );
+    for (const period of expandedAvailabilityRows) {
+      if (!availabilityByWorker.has(String(period.workerId))) availabilityByWorker.set(String(period.workerId), []);
+      availabilityByWorker.get(String(period.workerId)).push(period);
+    }
+    const assignmentRows = this.db.prepare(`
+      SELECT assignments.*, workers.role AS worker_role, workers.status AS worker_status
+      FROM assignments JOIN workers ON workers.id = assignments.worker_id
+      WHERE assignments.status NOT IN ('released', 'cancelled', 'completed', 'closed', 'rejected', 'declined', 'offline')
+        AND (assignments.scheduled_start IS NULL OR substr(assignments.scheduled_start, 1, 10) <= ?)
+        AND (assignments.scheduled_end IS NULL OR substr(assignments.scheduled_end, 1, 10) >= ?)
+    `).all(forecast.windowEnd, forecast.windowStart);
+    const activeAssignmentIds = new Set(assignmentRows.map(assignment => String(assignment.id)));
+    for (const allocation of allocations) {
+      if (!activeAssignmentIds.has(String(allocation.assignmentId))) continue;
+      const workerDateKey = `${allocation.workerId}:${allocation.workDate}`;
+      allocationHoursByWorkerDate.set(workerDateKey, roundScheduleHours(
+        (allocationHoursByWorkerDate.get(workerDateKey) || 0) + allocation.plannedHours
+      ));
+      const assignmentDateKey = `${allocation.assignmentId}:${allocation.workDate}`;
+      allocationHoursByAssignmentDate.set(assignmentDateKey, roundScheduleHours(
+        (allocationHoursByAssignmentDate.get(assignmentDateKey) || 0) + allocation.plannedHours
+      ));
+    }
+    const assignmentsByWorker = new Map();
+    for (const assignment of assignmentRows) {
+      const workerId = String(assignment.worker_id);
+      if (!assignmentsByWorker.has(workerId)) assignmentsByWorker.set(workerId, []);
+      assignmentsByWorker.get(workerId).push(assignment);
+    }
+
+    const gaps = [];
+    const qualificationSources = [];
+    const supervisionDemandByRole = new Map();
+    for (const crewDemand of forecast.trades) {
+      if (!crewDemand.supervision) continue;
+      const supervision = crewDemand.supervision;
+      const supervisorRoleKey = supervision.role.normalize('NFKC').trim().toLocaleLowerCase('en-US');
+      let supervisorDemand = supervisionDemandByRole.get(supervisorRoleKey);
+      if (!supervisorDemand) {
+        supervisorDemand = {
+          role: supervision.role,
+          hours: 0,
+          dailyHours: new Map(),
+          requiredQualifications: new Set(),
+          requiredSkills: [],
+          dailyDemand: [],
+          demandKind: 'supervision',
+          supervisionFor: []
+        };
+        supervisionDemandByRole.set(supervisorRoleKey, supervisorDemand);
+      }
+      for (const credentialType of supervision.requiredQualifications) supervisorDemand.requiredQualifications.add(credentialType);
+      for (const day of supervision.dailyDemand) {
+        const supervisorsRequired = Math.ceil(day.crewSize / supervision.workersPerSupervisor);
+        const requiredHours = roundScheduleHours(supervisorsRequired * day.supervisorShiftHours);
+        supervisorDemand.dailyHours.set(day.date, roundScheduleHours((supervisorDemand.dailyHours.get(day.date) || 0) + requiredHours));
+        supervisorDemand.supervisionFor.push({
+          crewRole: crewDemand.role,
+          date: day.date,
+          crewSize: day.crewSize,
+          workersPerSupervisor: supervision.workersPerSupervisor,
+          supervisorsRequired,
+          supervisorShiftHours: day.supervisorShiftHours,
+          requiredHours
+        });
+      }
+    }
+    const capacityDemands = [
+      ...forecast.trades.map(demand => ({ ...demand, demandKind: 'trade' })),
+      ...[...supervisionDemandByRole.values()].map(demand => {
+        const dailyDemand = [...demand.dailyHours.entries()].sort(([left], [right]) => left.localeCompare(right))
+          .map(([date, hours]) => ({ date, hours }));
+        return {
+          role: demand.role,
+          hours: roundScheduleHours(dailyDemand.reduce((sum, day) => sum + day.hours, 0)),
+          dailyDemand,
+          requiredQualifications: [...demand.requiredQualifications],
+          requiredSkills: demand.requiredSkills,
+          demandKind: demand.demandKind,
+          supervisionFor: demand.supervisionFor
+        };
+      })
+    ];
+    const tradeResults = capacityDemands.map(demand => {
+      const tradeKey = demand.role.trim().toLocaleLowerCase('en');
+      const matchingWorkers = activeWorkers.filter(worker => String(worker.role || '').trim().toLocaleLowerCase('en') === tradeKey);
+      if (!matchingWorkers.length) gaps.push({ code: 'trade_role_not_in_workforce', role: demand.role });
+      const qualificationRequirements = (demand.requiredQualifications || []).map(credentialType => ({
+        id: `opportunity:${opportunity.id}:${tradeKey}:${credentialType}`,
+        credentialType,
+        title: WORKFORCE_REQUIREMENT_BY_KEY.get(credentialType)?.label || credentialType,
+        roleKey: this.normalizeQualificationRole(demand.role),
+        mandatory: true,
+        status: 'active'
+      }));
+      let profileHours = 0;
+      let allocatedHours = 0;
+      const remainingHoursByDate = new Map();
+      const declaredSkillRemainingHoursByDate = new Map();
+      const qualifiedWorkerIds = new Set();
+      const qualificationBlockedWorkerIds = new Set();
+      const declaredSkillMatchedWorkerIds = new Set();
+      for (const worker of matchingWorkers) {
+        const profile = profilesByWorker.get(String(worker.id));
+        if (!profile) {
+          gaps.push({ code: 'capacity_profile_missing', role: demand.role, workerId: worker.id });
+          continue;
+        }
+        if (worker.status !== 'available') {
+          gaps.push({ code: 'worker_status_not_available', role: demand.role, workerId: worker.id, status: worker.status });
+          continue;
+        }
+        const credentialRows = qualificationRequirements.length ? this.db.prepare(`
+          SELECT worker_credentials.*, workers.name AS worker_name
+          FROM worker_credentials JOIN workers ON workers.id = worker_credentials.worker_id
+          WHERE worker_credentials.worker_id = ? AND worker_credentials.status IN ('approved', 'pending_approval')
+          ORDER BY worker_credentials.version_number DESC
+        `).all(worker.id) : [];
+        const periods = availabilityByWorker.get(String(worker.id)) || [];
+        const assignments = assignmentsByWorker.get(String(worker.id)) || [];
+        const declaredSkills = new Set((Array.isArray(worker.skills) ? worker.skills : [])
+          .map(skill => normalizeText(skill, '').normalize('NFKC').toLocaleLowerCase('en-US')));
+        const missingDeclaredSkills = (demand.requiredSkills || []).filter(skill => !declaredSkills.has(
+          skill.normalize('NFKC').toLocaleLowerCase('en-US')
+        ));
+        const hasDeclaredSkills = missingDeclaredSkills.length === 0;
+        if (!hasDeclaredSkills) gaps.push({
+          code: 'worker_declared_skill_not_listed', role: demand.role, workerId: worker.id,
+          missingSkills: missingDeclaredSkills
+        });
+        if (assignments.some(assignment => !assignment.scheduled_start || !assignment.scheduled_end)) {
+          gaps.push({ code: 'assignment_window_unknown', role: demand.role, workerId: worker.id });
+        }
+        for (const date of dates) {
+          if (date < profile.effectiveFrom) {
+            gaps.push({ code: 'capacity_profile_not_effective', role: demand.role, workerId: worker.id, date });
+            continue;
+          }
+          const weekdayName = new Intl.DateTimeFormat('en-US', { weekday: 'long', timeZone: profile.timezone || 'Europe/Amsterdam' })
+            .format(new Date(`${date}T12:00:00.000Z`)).toLowerCase();
+          const weekday = CREW_CAPACITY_DAY_KEYS.find(day => day === weekdayName);
+          const hours = roundScheduleHours(profile.dailyHours?.[weekday] || 0);
+          if (qualificationRequirements.length && hours > 0) {
+            const qualification = this.assessWorkerQualifications(worker.id, {
+              role: demand.role,
+              requirements: qualificationRequirements,
+              at: `${date}T23:59:59.999Z`,
+              credentialRows
+            });
+            qualificationSources.push({
+              workerId: worker.id,
+              role: demand.role,
+              date,
+              items: qualification.items.map(item => ({
+                credentialType: item.requirement.credentialType,
+                status: item.status,
+                credentialId: item.credential?.id || null,
+                credentialSnapshotHash: item.credential?.snapshotHash || null,
+                pendingCredentialId: item.pendingCredentialId || null
+              }))
+            });
+            if (!qualification.ready) {
+              qualificationBlockedWorkerIds.add(String(worker.id));
+              gaps.push({
+                code: 'worker_qualification_not_ready',
+                role: demand.role,
+                workerId: worker.id,
+                date,
+                qualifications: qualification.items.filter(item => !item.ready).map(item => ({
+                  credentialType: item.requirement.credentialType,
+                  status: item.status
+                }))
+              });
+              continue;
+            }
+            qualifiedWorkerIds.add(String(worker.id));
+          }
+          const dayPeriods = periods.filter(period => workerAvailabilityOverlapsDate(period, date));
+          if (dayPeriods.some(period => period.periodType !== 'standby')) continue;
+          if (dayPeriods.some(period => period.periodType === 'standby')) {
+            gaps.push({ code: 'standby_window', role: demand.role, workerId: worker.id, date });
+            continue;
+          }
+          profileHours = roundScheduleHours(profileHours + hours);
+          const allocationKey = `${worker.id}:${date}`;
+          let committedHours = allocationHoursByWorkerDate.get(allocationKey) || 0;
+          const hasUnallocatedAssignment = assignments.some(assignment => {
+            const start = String(assignment.scheduled_start || '').slice(0, 10);
+            const end = String(assignment.scheduled_end || '').slice(0, 10);
+            return start && end && date >= start && date <= end
+              && !(allocationHoursByAssignmentDate.get(`${assignment.id}:${date}`) > 0);
+          });
+          if (hasUnallocatedAssignment) {
+            gaps.push({ code: 'assignment_without_day_allocation', role: demand.role, workerId: worker.id, date });
+            committedHours = hours;
+          }
+          const workerAllocatedHours = Math.min(hours, Math.max(0, committedHours));
+          allocatedHours = roundScheduleHours(allocatedHours + workerAllocatedHours);
+          remainingHoursByDate.set(date, roundScheduleHours(
+            (remainingHoursByDate.get(date) || 0) + Math.max(0, hours - workerAllocatedHours)
+          ));
+          if (hasDeclaredSkills && hours > workerAllocatedHours) {
+            declaredSkillMatchedWorkerIds.add(String(worker.id));
+            declaredSkillRemainingHoursByDate.set(date, roundScheduleHours(
+              (declaredSkillRemainingHoursByDate.get(date) || 0) + Math.max(0, hours - workerAllocatedHours)
+            ));
+          }
+        }
+      }
+      const knownRemainingHours = roundScheduleHours(Math.max(0, profileHours - allocatedHours));
+      if (!demand.dailyDemand) gaps.push({ code: 'daily_demand_distribution_missing', role: demand.role });
+      const dailyDemandAssessment = (demand.dailyDemand || []).map(day => {
+        const knownAvailableHours = roundScheduleHours(remainingHoursByDate.get(day.date) || 0);
+        return {
+          date: day.date,
+          requiredHours: day.hours,
+          knownAvailableHours,
+          observedShortfall: knownAvailableHours < day.hours
+        };
+      });
+      const declaredSkillReadiness = (demand.requiredSkills || []).length ? {
+        requiredSkills: demand.requiredSkills,
+        matchedWorkers: declaredSkillMatchedWorkerIds.size,
+        knownRemainingHours: roundScheduleHours([...declaredSkillRemainingHoursByDate.values()].reduce((sum, hours) => sum + hours, 0)),
+        dailyDemandAssessment: (demand.dailyDemand || []).map(day => {
+          const knownAvailableHours = roundScheduleHours(declaredSkillRemainingHoursByDate.get(day.date) || 0);
+          return { date: day.date, requiredHours: day.hours, knownAvailableHours, observedShortfall: knownAvailableHours < day.hours };
+        }),
+        evidence: 'self_declared_unverified'
+      } : null;
+      const observedShortfall = knownRemainingHours < demand.hours
+        || dailyDemandAssessment.some(day => day.observedShortfall);
+      return {
+        role: demand.role,
+        demandKind: demand.demandKind,
+        supervisionFor: demand.supervisionFor || null,
+        requiredHours: demand.hours,
+        dailyDemand: demand.dailyDemand,
+        dailyDemandAssessment,
+        profiledWorkers: matchingWorkers.filter(worker => profilesByWorker.has(String(worker.id))).length,
+        matchingWorkers: matchingWorkers.length,
+        qualificationReadiness: qualificationRequirements.length ? {
+          requirements: qualificationRequirements.map(requirement => ({
+            credentialType: requirement.credentialType,
+            title: requirement.title
+          })),
+          qualifiedWorkers: qualifiedWorkerIds.size,
+          blockedWorkers: qualificationBlockedWorkerIds.size
+        } : null,
+        declaredSkillReadiness,
+        allocatedHours,
+        knownRemainingHours,
+        observedShortfall,
+        status: observedShortfall ? 'known_capacity_shortfall' : demand.dailyDemand ? 'within_known_capacity' : 'daily_distribution_required'
+      };
+    });
+    const uniqueGaps = [...new Map(gaps.map(gap => [sha256Json(gap), gap])).values()];
+    const hasKnownShortfall = tradeResults.some(trade => trade.observedShortfall);
+    const status = hasKnownShortfall ? 'shortfall' : uniqueGaps.length ? 'unknown' : 'within_known_capacity';
+    const sourceHash = sha256Json({
+      opportunityId: opportunity.id,
+      forecast,
+      workers: activeWorkers.map(worker => ({ id: worker.id, role: worker.role, status: worker.status, updatedAt: worker.updatedAt })),
+      qualificationSources,
+      profiles: profiles.map(profile => ({ id: profile.id, sourceHash: profile.sourceHash, status: profile.status })),
+      allocations: allocations.map(allocation => ({ id: allocation.id, workerId: allocation.workerId, assignmentId: allocation.assignmentId, jobId: allocation.jobId, taskId: allocation.taskId, workDate: allocation.workDate, plannedHours: allocation.plannedHours, status: allocation.status })),
+      availability: availabilityRows.map(period => ({ id: period.id, workerId: period.workerId, periodType: period.periodType,
+        startsAt: period.startsAt, endsAt: period.endsAt, status: period.status, sourceFingerprint: period.sourceFingerprint })),
+      assignments: assignmentRows.map(assignment => ({ id: assignment.id, workerId: assignment.worker_id, jobId: assignment.job_id, role: assignment.worker_role, status: assignment.status, scheduledStart: assignment.scheduled_start, scheduledEnd: assignment.scheduled_end, updatedAt: assignment.updated_at }))
+    });
+    return {
+      status,
+      configured: true,
+      window: { start: forecast.windowStart, end: forecast.windowEnd, calendarDays: dates.length },
+      trades: tradeResults,
+      gaps: uniqueGaps,
+      scopeLimits: ['trade_role_is_exact_text_match', 'declared_skills_are_unverified', 'supervision_is_an_estimated_distinct_role', 'supervisor_overlapping_work_windows', 'travel_time', 'task_dependencies', 'unregistered_workforce'],
+      sourceHash,
+      generatedAt: nowIso(),
+      safeguards: { advisoryOnly: true, assignmentsChanged: 0, notifications: 0, externalCommitments: 0 }
+    };
+  }
+
   evaluateOpportunityBidDecision(opportunityId, payload = {}, options = {}) {
     const opportunity = this.mapOpportunity(this.requireOpportunity(opportunityId));
+    const capacityAssessment = this.assessOpportunityCrewCapacity(opportunity);
+    const materialReadiness = this.assessOpportunityMaterialReadiness(opportunity);
     const policy = options.policy || this.activeBidDecisionPolicy();
     if (!policy) {
       return {
         format: BID_DECISION_FORMAT,
         status: 'unconfigured', opportunityId, policy: null, score: null, recommendation: 'review',
-        criteria: [], gates: [], blockers: [], evidenceGaps: ['approved_bid_decision_policy'],
+        criteria: [], gates: [], blockers: [], evidenceGaps: ['approved_bid_decision_policy'], capacityAssessment, materialReadiness,
         sourceHash: sha256Json({ opportunityId, opportunityUpdatedAt: opportunity.updatedAt, policyId: null }),
         approvalRequired: true, opportunityStageMutation: false, externalCommitments: 0
       };
@@ -10600,12 +11770,19 @@ class ContractorOperatingLedger {
       return {
         ...definition,
         status,
-        outcome: status === 'yes' ? 'pass' : status === 'no' ? 'block' : 'missing_evidence'
+        outcome: definition.key === 'capacity_available' && capacityAssessment.configured && capacityAssessment.status === 'shortfall'
+          ? 'block'
+          : definition.key === 'capacity_available' && capacityAssessment.configured && capacityAssessment.status === 'unknown'
+            ? 'missing_evidence'
+            : status === 'yes' ? 'pass' : status === 'no' ? 'block' : 'missing_evidence',
+        ...(definition.key === 'capacity_available' && capacityAssessment.configured ? { assessmentStatus: capacityAssessment.status } : {})
       };
     });
     const normalizedInput = {
       criteria: normalizedInputCriteria,
-      gates: gates.map(gate => ({ key: gate.key, status: gate.status }))
+      gates: gates.map(gate => ({ key: gate.key, status: gate.status })),
+      capacityForecast: opportunity.data?.capacityForecast || null,
+      materialForecast: opportunity.data?.materialForecast || null
     };
     const score = roundMeasurement(criteria.reduce((sum, criterion) => sum + criterion.awardedWeight, 0), 1);
     const blockers = [
@@ -10638,6 +11815,8 @@ class ContractorOperatingLedger {
       marketFitAssessmentHash: retainedFit?.snapshotHash || null,
       marketFitSourceHash: fitEvaluation.sourceHash,
       marketFitCurrent: fitCurrent,
+      capacityAssessmentSourceHash: capacityAssessment.sourceHash,
+      materialReadinessSourceHash: materialReadiness.sourceHash,
       input: normalizedInput
     };
     return {
@@ -10669,6 +11848,8 @@ class ContractorOperatingLedger {
         evidenceGaps: fitEvaluation.evidenceGaps
       },
       input: normalizedInput,
+      capacityAssessment,
+      materialReadiness,
       score,
       recommendation,
       criteria,
@@ -11638,8 +12819,49 @@ class ContractorOperatingLedger {
         source: 'opportunity_conversion',
         sourceOpportunityId: opportunityId,
         opportunityStageAtConversion: before.stage,
+        ...(before.data?.capacityForecast ? { preconstructionCapacityForecast: {
+          format: 'contractor_ai_preconstruction_capacity_forecast_v1',
+          sourceOpportunityId: opportunityId,
+          forecast: structuredClone(before.data.capacityForecast),
+          snapshotHash: sha256Json(before.data.capacityForecast),
+          status: 'planning_basis_only',
+          assignmentsCreated: 0,
+          externalCommitments: 0
+        } } : {}),
         externalCommitments: 0
       };
+      const convertedMaterials = (before.data?.materialForecast || []).map(requirement => {
+        const material = this.db.prepare('SELECT id,name,unit FROM materials WHERE id=?').get(requirement.materialId);
+        if (!material || material.unit !== requirement.unit) {
+          throw ledgerInputError(
+            'opportunity_material_source_unavailable',
+            'An exact forecast material is no longer available with its retained unit; reconcile the material catalogue before converting this opportunity.',
+            { opportunityId, materialId: requirement.materialId, expectedUnit: requirement.unit, actualUnit: material?.unit || null },
+            409
+          );
+        }
+        return this.addMaterialRequirement(job.id, {
+          name: material.name,
+          materialId: material.id,
+          quantity: requirement.quantity,
+          unit: material.unit,
+          data: { sourceOpportunityId: opportunityId, source: 'opportunity_material_forecast' }
+        }, { actor, audit: false });
+      });
+      const qualificationRequirements = (before.data?.capacityForecast?.trades || []).flatMap(trade => [
+        ...(trade.requiredQualifications || []).map(credentialType => ({ role: trade.role, credentialType })),
+        ...(trade.supervision?.requiredQualifications || []).map(credentialType => ({ role: trade.supervision.role, credentialType }))
+      ]);
+      const uniqueQualificationRequirements = [...new Map(qualificationRequirements.map(item => [
+        `${item.role.normalize('NFKC').trim().toLocaleLowerCase('en-US')}\0${item.credentialType}`,
+        item
+      ])).values()];
+      const convertedQualifications = uniqueQualificationRequirements.map(({ role, credentialType }) => this.createQualificationRequirement(job.id, {
+          credentialType,
+          role,
+          mandatory: true,
+          source: 'opportunity_capacity_forecast'
+        }, { actor }).requirement);
       const timestamp = nowIso();
       this.db.prepare('UPDATE jobs SET data_json = ?, updated_at = ? WHERE id = ?').run(toJson(jobData), timestamp, job.id);
       this.db.prepare('UPDATE bid_packages SET job_id = ?, updated_at = ? WHERE opportunity_id = ? AND job_id IS NULL')
@@ -11665,7 +12887,15 @@ class ContractorOperatingLedger {
         actor,
         before,
         after: opportunity,
-        metadata: { jobId: job.id, replayed: false, externalCommitments: 0 }
+        metadata: {
+          jobId: job.id,
+          materialRequirementIds: convertedMaterials.map(item => item.id),
+          qualificationRequirementIds: convertedQualifications.map(item => item.id),
+          capacityForecastCopied: Boolean(before.data?.capacityForecast),
+          capacityForecastSnapshotHash: jobData.preconstructionCapacityForecast?.snapshotHash || null,
+          replayed: false,
+          externalCommitments: 0
+        }
       });
       return { opportunity, job: this.getJobDetail(job.id), replayed: false };
     });
@@ -13236,8 +14466,10 @@ class ContractorOperatingLedger {
       summary.expiredCredentials += Number(worker.qualification?.expired || 0);
       summary.currentAvailabilityBlocks += Number(worker.availability?.current || 0);
       summary.upcomingAvailabilityBlocks += Number(worker.availability?.upcoming || 0);
+      summary.currentStandbyWindows += Number(worker.availability?.currentStandby || 0);
+      summary.upcomingStandbyWindows += Number(worker.availability?.upcomingStandby || 0);
       return summary;
-    }, { total: 0, active: 0, available: 0, unavailable: 0, pendingRetirement: 0, retired: 0, activeAssignments: 0, dormantAssignments: 0, credentialed: 0, pendingCredentials: 0, expiringCredentials: 0, expiredCredentials: 0, currentAvailabilityBlocks: 0, upcomingAvailabilityBlocks: 0 });
+    }, { total: 0, active: 0, available: 0, unavailable: 0, pendingRetirement: 0, retired: 0, activeAssignments: 0, dormantAssignments: 0, credentialed: 0, pendingCredentials: 0, expiringCredentials: 0, expiredCredentials: 0, currentAvailabilityBlocks: 0, upcomingAvailabilityBlocks: 0, currentStandbyWindows: 0, upcomingStandbyWindows: 0 });
   }
 
   workforceQualificationCatalog() {
@@ -13908,12 +15140,27 @@ class ContractorOperatingLedger {
       payload.startsAt || payload.starts_at || payload.startAt || payload.start_at,
       'startsAt'
     );
-    const endsAt = this.normalizeReservationDate(
-      payload.endsAt || payload.ends_at || payload.endAt || payload.end_at,
-      'endsAt'
-    );
-    if (!startsAt || !endsAt) {
+    const returnUnknown = normalizeBoolean(payload.returnUnknown ?? payload.return_unknown, false);
+    const suppliedEnd = payload.endsAt ?? payload.ends_at ?? payload.endAt ?? payload.end_at;
+    if (returnUnknown && suppliedEnd !== undefined && suppliedEnd !== null && suppliedEnd !== '') {
+      throw ledgerInputError('worker_availability_end_conflict', 'Do not provide an end date when the return date is unknown.');
+    }
+    const reviewAt = returnUnknown
+      ? this.normalizeReservationDate(payload.reviewAt || payload.review_at, 'reviewAt')
+      : null;
+    const endsAt = returnUnknown
+      ? WORKER_AVAILABILITY_UNKNOWN_END
+      : this.normalizeReservationDate(suppliedEnd, 'endsAt');
+    if (!startsAt || (!endsAt && !returnUnknown)) {
       throw ledgerInputError('worker_availability_window_required', 'Availability requires both a start and an end date/time.');
+    }
+    if (returnUnknown) {
+      if (!reviewAt) throw ledgerInputError('worker_availability_review_required', 'Unknown return dates require a follow-up date.');
+      const reviewDelta = Date.parse(reviewAt) - Date.parse(startsAt);
+      if (reviewDelta <= 0 || reviewDelta > 31 * 24 * 60 * 60 * 1000) {
+        throw ledgerInputError('worker_availability_review_window_invalid', 'Set a follow-up after the unavailability starts and within 31 days.');
+      }
+      return { startsAt, endsAt, returnUnknown, reviewAt };
     }
     if (Date.parse(endsAt) <= Date.parse(startsAt)) {
       throw ledgerInputError('worker_availability_window_invalid', 'Availability end must be after its start.');
@@ -13921,7 +15168,7 @@ class ContractorOperatingLedger {
     if (Date.parse(endsAt) - Date.parse(startsAt) > 366 * 24 * 60 * 60 * 1000) {
       throw ledgerInputError('worker_availability_window_too_long', 'One availability period cannot exceed 366 days.');
     }
-    return { startsAt, endsAt };
+    return { startsAt, endsAt, returnUnknown: false, reviewAt: null };
   }
 
   listWorkerAvailability(filters = {}) {
@@ -13960,17 +15207,29 @@ class ContractorOperatingLedger {
   workerAvailabilitySummaryFromPeriods(periods = [], referenceAt = nowIso()) {
     const reference = Date.parse(referenceAt);
     const retained = periods.filter(period => ['active', 'pending_cancellation'].includes(period.status));
-    const active = retained.filter(period => Date.parse(period.endsAt) >= reference);
+    const horizon = new Date(reference + MAX_WORKER_AVAILABILITY_RECURRENCE_DAYS * 24 * 60 * 60 * 1000).toISOString();
+    const occurrences = retained.flatMap(period => expandRecurrence(period, { rangeStart: referenceAt, rangeEnd: horizon }));
+    const unavailablePeriods = occurrences.filter(period => period.periodType !== 'standby');
+    const standbyPeriods = occurrences.filter(period => period.periodType === 'standby');
+    const active = unavailablePeriods.filter(period => workerAvailabilityEndMs(period) >= reference);
     const current = active.filter(period => Date.parse(period.startsAt) <= reference);
     const upcoming = active.filter(period => Date.parse(period.startsAt) > reference);
+    const activeStandby = standbyPeriods.filter(period => workerAvailabilityEndMs(period) >= reference);
+    const currentStandby = activeStandby.filter(period => Date.parse(period.startsAt) <= reference);
+    const upcomingStandby = activeStandby.filter(period => Date.parse(period.startsAt) > reference);
     return {
       active: active.length,
       current: current.length,
       upcoming: upcoming.length,
-      past: retained.filter(period => Date.parse(period.endsAt) < reference).length,
+      standby: activeStandby.length,
+      currentStandby: currentStandby.length,
+      upcomingStandby: upcomingStandby.length,
+      past: unavailablePeriods.filter(period => workerAvailabilityEndMs(period) < reference).length,
+      followUpDue: active.filter(period => period.returnUnknown && period.followUpAt && Date.parse(period.followUpAt) <= reference).length,
       pendingCancellation: retained.filter(period => period.status === 'pending_cancellation').length,
       nextPeriod: [...current, ...upcoming].sort((left, right) => Date.parse(left.startsAt) - Date.parse(right.startsAt))[0] || null,
-      status: current.length ? 'unavailable' : upcoming.length ? 'scheduled' : 'available'
+      nextStandbyPeriod: [...currentStandby, ...upcomingStandby].sort((left, right) => Date.parse(left.startsAt) - Date.parse(right.startsAt))[0] || null,
+      status: current.length ? 'unavailable' : currentStandby.length ? 'standby' : upcoming.length ? 'scheduled' : upcomingStandby.length ? 'standby_scheduled' : 'available'
     };
   }
 
@@ -13979,6 +15238,69 @@ class ContractorOperatingLedger {
       this.listWorkerAvailability({ workerId, includeCancelled: false, limit: 250 }),
       referenceAt
     );
+  }
+
+  invalidateWorkerStandbyCallouts(workerId, options = {}) {
+    const startsAt = options.startsAt ? Date.parse(options.startsAt) : null;
+    const endsAt = options.returnUnknown ? Number.POSITIVE_INFINITY : options.endsAt ? Date.parse(options.endsAt) : null;
+    const actor = normalizeText(options.actor, 'system:worker_availability');
+    const reason = normalizeText(options.reason, 'De actuele beschikbaarheid is gewijzigd; de oproep moet opnieuw worden beoordeeld.');
+    const timestamp = nowIso();
+    const callouts = this.db.prepare(`
+      SELECT callouts.*, assignments.scheduled_start, assignments.scheduled_end
+      FROM standby_callouts callouts
+      JOIN assignments ON assignments.id = callouts.assignment_id
+      WHERE callouts.worker_id = ? AND callouts.status IN ('offered', 'accepted', 'pending_approval')
+      ORDER BY callouts.created_at, callouts.id
+    `).all(workerId);
+    const invalidated = [];
+    const mapCallout = row => ({ id: row.id, jobId: row.job_id, assignmentId: row.assignment_id, workerId: row.worker_id,
+      availabilityPeriodId: row.unavailability_period_id, standbyPeriodId: row.standby_period_id,
+      status: row.status, expiresAt: row.expires_at, approvalId: row.approval_id,
+      ...fromJson(row.data_json, {}), createdAt: row.created_at, updatedAt: row.updated_at });
+    for (const callout of callouts) {
+      if (options.recurrence) {
+        const overlappingOccurrences = expandRecurrence({ startsAt: options.startsAt, endsAt: options.endsAt, recurrence: options.recurrence }, {
+          rangeStart: callout.scheduled_start, rangeEnd: callout.scheduled_end
+        });
+        if (!overlappingOccurrences.some(occurrence => this.assignmentWindowsOverlap(
+          callout.scheduled_start, callout.scheduled_end, occurrence.startsAt, occurrence.endsAt
+        ))) continue;
+      } else if (startsAt !== null && endsAt !== null
+        && !(Date.parse(callout.scheduled_end) > startsAt && Date.parse(callout.scheduled_start) < endsAt)) continue;
+      const beforeCallout = mapCallout(callout);
+      const data = fromJson(callout.data_json, {});
+      const approval = callout.approval_id
+        ? this.db.prepare("SELECT * FROM approvals WHERE id = ? AND status = 'pending'").get(callout.approval_id)
+        : null;
+      if (approval) {
+        const replacement = this.db.prepare("SELECT * FROM assignments WHERE id = ? AND status = 'pending_approval'").get(approval.target_id);
+        if (replacement) {
+          const replacementData = fromJson(replacement.data_json, {});
+          this.db.prepare("UPDATE assignments SET status = 'cancelled', data_json = ?, updated_at = ? WHERE id = ? AND status = 'pending_approval'")
+            .run(toJson({ ...replacementData, approvalResolution: { status: 'cancelled', resolvedAt: timestamp, resolvedBy: actor, reason } }), timestamp, replacement.id);
+          const afterAssignment = this.mapAssignment(this.db.prepare('SELECT assignments.*, workers.name AS worker_name FROM assignments LEFT JOIN workers ON workers.id = assignments.worker_id WHERE assignments.id = ?').get(replacement.id));
+          this.audit({ entityType: 'assignment', entityId: replacement.id, jobId: replacement.job_id,
+            action: 'cancel_stale_standby_replacement', actor, before: this.mapAssignment(replacement), after: afterAssignment,
+            metadata: { approvalId: approval.id, standbyCalloutId: callout.id, externalCommitments: 0 } });
+        }
+        const beforeApproval = this.mapApproval(approval);
+        this.db.prepare("UPDATE approvals SET status = 'cancelled', resolved_by = ?, resolved_at = ?, reason = ?, updated_at = ? WHERE id = ? AND status = 'pending'")
+          .run(actor, timestamp, reason, timestamp, approval.id);
+        const afterApproval = this.mapApproval(this.db.prepare('SELECT * FROM approvals WHERE id = ?').get(approval.id));
+        this.audit({ entityType: 'approval', entityId: approval.id, jobId: approval.job_id,
+          action: 'cancel_stale_standby_replacement_approval', actor, before: beforeApproval, after: afterApproval,
+          metadata: { standbyCalloutId: callout.id, externalCommitments: 0 } });
+      }
+      this.db.prepare("UPDATE standby_callouts SET status = 'revoked', data_json = ?, updated_at = ? WHERE id = ? AND status IN ('offered', 'accepted', 'pending_approval')")
+        .run(toJson({ ...data, revocation: { at: timestamp, by: actor, reason } }), timestamp, callout.id);
+      const afterCallout = mapCallout(this.db.prepare('SELECT * FROM standby_callouts WHERE id = ?').get(callout.id));
+      this.audit({ entityType: 'standby_callout', entityId: callout.id, jobId: callout.job_id,
+        action: 'revoke_standby_callout_after_availability_change', actor, before: beforeCallout, after: afterCallout,
+        metadata: { approvalId: approval?.id || null, externalCommitments: 0 } });
+      invalidated.push({ calloutId: callout.id, approvalId: approval?.id || null });
+    }
+    return invalidated;
   }
 
   createWorkerAvailabilityPeriod(workerId, payload = {}, options = {}) {
@@ -14005,7 +15327,22 @@ class ContractorOperatingLedger {
           'Do not retain diagnosis, illness, or medical details in operational availability records.'
         );
       }
-      const { startsAt, endsAt } = this.normalizeWorkerAvailabilityWindow(payload);
+      const { startsAt, endsAt, returnUnknown, reviewAt } = this.normalizeWorkerAvailabilityWindow(payload);
+      if (periodType === 'standby' && returnUnknown) {
+        throw ledgerInputError('worker_standby_window_end_required', 'A standby window requires a known end time.');
+      }
+      if (returnUnknown && payload.recurrence) {
+        throw ledgerInputError('worker_availability_recurrence_unknown_return', 'A recurring availability rule requires a known end for each occurrence.');
+      }
+      const recurrence = validateRecurrence(payload.recurrence, startsAt, endsAt, {
+        defaultTimeZone: payload.timeZone || payload.time_zone || 'Europe/Amsterdam'
+      });
+      const minimumNoticeHours = periodType === 'standby'
+        ? normalizeNumber(payload.minimumNoticeHours ?? payload.minimum_notice_hours, 0)
+        : 0;
+      if (!Number.isInteger(minimumNoticeHours) || minimumNoticeHours < 0 || minimumNoticeHours > 168) {
+        throw ledgerInputError('worker_standby_notice_invalid', 'Standby notice must be a whole number of hours from 0 to 168.');
+      }
       const notes = normalizeText(payload.notes || payload.operationalNotes || payload.operational_notes, '');
       if (notes.length > 1000) {
         throw ledgerInputError('worker_availability_notes_invalid', 'Operational availability notes must be 1000 characters or fewer.');
@@ -14016,11 +15353,31 @@ class ContractorOperatingLedger {
           'Operational availability notes cannot contain medical or illness details.'
         );
       }
-      const sourceFingerprint = sha256Json({ workerId, periodType, title, startsAt, endsAt });
-      const existing = this.db.prepare(`
+      const sourceReferenceHash = normalizeText(payload.sourceReferenceHash || payload.source_reference_hash, '');
+      if (sourceReferenceHash && !/^[a-f0-9]{64}$/i.test(sourceReferenceHash)) {
+        throw ledgerInputError('worker_availability_source_reference_invalid', 'Availability source reference must be a SHA-256 fingerprint.');
+      }
+      if ((sourceReferenceHash && payload.source !== 'office_confirmed_missing_checkin')
+        || (payload.source === 'office_confirmed_missing_checkin' && !sourceReferenceHash)) {
+        throw ledgerInputError('worker_availability_source_reference_invalid', 'A confirmed missed-check-in period requires its source-bound office review.');
+      }
+      const fingerprintSource = { workerId, periodType, title, startsAt, endsAt,
+        ...(periodType === 'standby' ? { minimumNoticeHours } : {}),
+        ...(recurrence ? { recurrence } : {}) };
+      const sourceFingerprint = sha256Json(returnUnknown
+        ? { ...fingerprintSource, returnUnknown: true, reviewAt }
+        : fingerprintSource);
+      let existing = this.db.prepare(`
         SELECT * FROM worker_availability_periods
         WHERE worker_id = ? AND source_fingerprint = ?
       `).get(workerId, sourceFingerprint);
+      if (!existing && periodType === 'standby' && minimumNoticeHours === 0) {
+        existing = this.db.prepare(`
+          SELECT * FROM worker_availability_periods
+          WHERE worker_id = ? AND period_type = 'standby' AND title = ? AND starts_at = ? AND ends_at = ?
+          ORDER BY created_at ASC
+        `).all(workerId, title, startsAt, endsAt).find(row => !Object.hasOwn(fromJson(row.data_json, {}), 'minimumNoticeHours')) || null;
+      }
       if (existing) {
         if (existing.status === 'cancelled') {
           const before = this.mapWorkerAvailabilityPeriod({ ...existing, worker_name: worker.name, worker_role: worker.role });
@@ -14037,7 +15394,10 @@ class ContractorOperatingLedger {
             actor: options.actor || payload.actor || 'dashboard', before, after: period,
             metadata: { workerId, periodType, externalCommitments: 0 }
           });
-          return { period, conflicts: this.findAssignmentConflicts({ workerId, scheduledStart: startsAt, scheduledEnd: endsAt }), replayed: false, restored: true };
+          const invalidatedCallouts = periodType === 'standby' ? [] : this.invalidateWorkerStandbyCallouts(workerId, {
+            startsAt, endsAt, returnUnknown, recurrence, actor: options.actor || payload.actor
+          });
+          return { period, conflicts: this.findAssignmentConflicts({ workerId, scheduledStart: startsAt, scheduledEnd: endsAt }), replayed: false, restored: true, invalidatedCallouts };
         }
         return {
           period: this.mapWorkerAvailabilityPeriod({ ...existing, worker_name: worker.name, worker_role: worker.role }),
@@ -14055,7 +15415,11 @@ class ContractorOperatingLedger {
         ) VALUES (?, ?, ?, ?, 'active', ?, ?, NULL, ?, ?, ?, ?)
       `).run(
         id, workerId, periodType, title, startsAt, endsAt, sourceFingerprint,
-        toJson({ operationalNotes: notes || null, source: payload.source || 'availability_control' }), timestamp, timestamp
+        toJson({ operationalNotes: notes || null, source: payload.source || 'availability_control',
+          ...(sourceReferenceHash ? { sourceReferenceHash } : {}),
+          ...(periodType === 'standby' ? { minimumNoticeHours } : {}),
+          ...(recurrence ? { recurrence } : {}),
+          ...(returnUnknown ? { returnUnknown: true, reviewAt } : {}) }), timestamp, timestamp
       );
       const period = this.getWorkerAvailabilityPeriod(id);
       const conflicts = this.findAssignmentConflicts({ workerId, scheduledStart: startsAt, scheduledEnd: endsAt });
@@ -14064,7 +15428,53 @@ class ContractorOperatingLedger {
         actor: options.actor || payload.actor || 'dashboard', after: period,
         metadata: { workerId, periodType, assignmentConflicts: conflicts.length, externalCommitments: 0 }
       });
-      return { period, conflicts, replayed: false, restored: false };
+      const invalidatedCallouts = periodType === 'standby' ? [] : this.invalidateWorkerStandbyCallouts(workerId, {
+        startsAt, endsAt, returnUnknown, recurrence, actor: options.actor || payload.actor
+      });
+      return { period, conflicts, replayed: false, restored: false, invalidatedCallouts };
+    });
+  }
+
+  confirmMissingCheckinUnavailability(jobId, assignmentId, sourceHash, options = {}) {
+    const expectedHash = normalizeText(sourceHash, '');
+    if (!/^[a-f0-9]{64}$/i.test(expectedHash)) {
+      throw ledgerInputError('missing_checkin_source_invalid', 'A current missing-check-in review source is required.');
+    }
+    return this.transaction(() => {
+      const assignment = this.db.prepare(`SELECT id, job_id, worker_id, scheduled_start, scheduled_end
+        FROM assignments WHERE id = ? AND job_id = ?`).get(assignmentId, jobId);
+      if (!assignment || !assignment.scheduled_start || !assignment.scheduled_end) {
+        throw ledgerInputError('missing_checkin_assignment_not_found', 'The scheduled worker assignment is no longer available.', { assignmentId }, 404);
+      }
+      const availabilityRows = this.db.prepare(`SELECT * FROM worker_availability_periods
+        WHERE worker_id = ? AND period_type = 'unavailable' AND starts_at = ? AND ends_at = ?
+        ORDER BY created_at, id`).all(assignment.worker_id, assignment.scheduled_start, assignment.scheduled_end);
+      const prior = availabilityRows.find(row => fromJson(row.data_json, {}).source === 'office_confirmed_missing_checkin');
+      if (prior) {
+        if (fromJson(prior.data_json, {}).sourceReferenceHash !== expectedHash) {
+          throw ledgerInputError('missing_checkin_source_stale', 'The attendance review changed; refresh before recording unavailability.', { assignmentId }, 409);
+        }
+        if (prior.status !== 'cancelled') {
+          return { period: this.mapWorkerAvailabilityPeriod(prior), conflicts: this.findAssignmentConflicts({
+            workerId: assignment.worker_id, scheduledStart: assignment.scheduled_start, scheduledEnd: assignment.scheduled_end
+          }), replayed: true, restored: false, invalidatedCallouts: [] };
+        }
+      }
+      const current = this.nextActions().find(action => action.type === 'review_daily_cycle'
+        && action.actionKind === 'worker_checkin_missing' && action.jobId === jobId
+        && action.assignmentId === assignmentId);
+      if (!current || current.sourceHash !== expectedHash || current.workerId !== assignment.worker_id) {
+        throw ledgerInputError('missing_checkin_source_stale', 'The attendance review changed; refresh before recording unavailability.', { assignmentId }, 409);
+      }
+      const result = this.createWorkerAvailabilityPeriod(assignment.worker_id, {
+        periodType: 'unavailable',
+        title: 'Confirmed unavailable for scheduled shift',
+        startsAt: assignment.scheduled_start,
+        endsAt: assignment.scheduled_end,
+        source: 'office_confirmed_missing_checkin',
+        sourceReferenceHash: expectedHash
+      }, { actor: options.actor || 'office_operator' });
+      return result;
     });
   }
 
@@ -14084,6 +15494,13 @@ class ContractorOperatingLedger {
       }
       if (row.status !== 'active') {
         throw ledgerInputError('worker_availability_state_conflict', `Availability cannot be cancelled from ${row.status}.`, { periodId }, 409);
+      }
+      if (row.period_type === 'standby') {
+        const outstandingCallout = this.db.prepare(`SELECT id FROM standby_callouts
+          WHERE standby_period_id = ? AND status IN ('offered', 'accepted', 'pending_approval') LIMIT 1`).get(periodId);
+        if (outstandingCallout) {
+          throw ledgerInputError('worker_standby_callout_open', 'Bespreek eerst de open afroep met de aannemer; de actieve oproep moet worden afgehandeld voordat standby kan eindigen.', { periodId, calloutId: outstandingCallout.id }, 409);
+        }
       }
       const reason = normalizeText(payload.reason || payload.notes, '');
       if (reason.length < 8 || reason.length > 1000) {
@@ -14185,11 +15602,366 @@ class ContractorOperatingLedger {
       FROM worker_availability_periods periods
       JOIN workers ON workers.id = periods.worker_id
       WHERE periods.worker_id = ? AND periods.status IN ('active', 'pending_cancellation')
+        AND periods.period_type <> 'standby'
       ORDER BY periods.starts_at ASC
     `).all(workerId)
       .filter(row => !excludePeriodId || String(row.id) !== String(excludePeriodId))
-      .filter(row => this.assignmentWindowsOverlap(scheduledStart, scheduledEnd, row.starts_at, row.ends_at))
-      .map(row => this.mapWorkerAvailabilityPeriod(row));
+      .map(row => this.mapWorkerAvailabilityPeriod(row))
+      .flatMap(period => expandRecurrence(period, { rangeStart: scheduledStart, rangeEnd: scheduledEnd }))
+      .filter(period => this.assignmentWindowsOverlap(scheduledStart, scheduledEnd, period.startsAt, period.endsAt));
+  }
+
+  expandWorkerAvailabilityPeriods(periods, rangeStart, rangeEnd) {
+    return periods.flatMap(period => expandRecurrence(period, { rangeStart, rangeEnd }));
+  }
+
+  workerAvailabilityPeriodOverlapsAssignment({ workerId, periodId, periodType, scheduledStart, scheduledEnd }) {
+    const conflicts = periodType === 'standby'
+      ? this.findWorkerStandbyConflicts({ workerId, scheduledStart, scheduledEnd })
+      : this.findWorkerAvailabilityConflicts({ workerId, scheduledStart, scheduledEnd });
+    return conflicts.some(period => String(period.id) === String(periodId));
+  }
+
+  findWorkerStandbyConflicts({ workerId = null, workerIds = null, scheduledStart = null, scheduledEnd = null } = {}) {
+    if ((!workerId && !Array.isArray(workerIds)) || !scheduledStart || !scheduledEnd) return [];
+    const ids = Array.isArray(workerIds) ? [...new Set(workerIds.map(id => normalizeText(id, '')).filter(Boolean))] : [];
+    if (!workerId && !ids.length) return [];
+    const workerFilter = workerId ? 'AND periods.worker_id = ?'
+      : `AND periods.worker_id IN (${ids.map(() => '?').join(', ')})`;
+    const values = workerId ? [workerId, scheduledEnd] : [...ids, scheduledEnd];
+    return this.db.prepare(`
+      SELECT periods.*, workers.name AS worker_name, workers.role AS worker_role
+      FROM worker_availability_periods periods
+      LEFT JOIN workers ON workers.id = periods.worker_id
+      WHERE periods.period_type = 'standby' ${workerFilter}
+        AND periods.status IN ('active', 'pending_cancellation')
+        AND periods.starts_at <= ?
+      ORDER BY periods.starts_at ASC
+    `).all(...values)
+      .map(row => this.mapWorkerAvailabilityPeriod(row))
+      .flatMap(period => expandRecurrence(period, { rangeStart: scheduledStart, rangeEnd: scheduledEnd }))
+      .filter(period => this.assignmentWindowsOverlap(scheduledStart, scheduledEnd, period.startsAt, period.endsAt));
+  }
+
+  workerReplacementCandidates(assignment = {}, { excludeAssignmentIds = [], allowStandbyWorkerId = null } = {}) {
+    if (!assignment.job_id || !assignment.scheduled_start || !assignment.scheduled_end) return [];
+    const jobRow = this.db.prepare('SELECT * FROM jobs WHERE id = ?').get(assignment.job_id);
+    if (!jobRow) return [];
+    const job = this.mapJob(jobRow);
+    const requiredRole = normalizeText(assignment.role, '');
+    const requiredRoleKey = this.normalizeQualificationRole(requiredRole);
+    const candidates = this.workerScheduleCandidates(
+      job,
+      assignment.scheduled_start,
+      assignment.scheduled_end,
+      assignment.job_id
+    );
+    const conditionalWorkers = new Set(this.findWorkerStandbyConflicts({
+      workerIds: candidates.map(candidate => candidate.worker.id),
+      scheduledStart: assignment.scheduled_start,
+      scheduledEnd: assignment.scheduled_end
+    }).map(period => period.workerId).filter(id => id !== allowStandbyWorkerId));
+    const activeAssignmentSql = this.activeAssignmentStatusSql('assignments');
+    return candidates
+      .filter(candidate => candidate.available && candidate.worker.id !== assignment.worker_id
+        && !conditionalWorkers.has(candidate.worker.id)
+        && workerMatchesAssignmentTradePartner(this.db, assignment, candidate.worker.id))
+      .map(candidate => {
+        const roleMatch = !requiredRole || this.normalizeQualificationRole(candidate.worker.role) === requiredRoleKey;
+        if (!roleMatch) return null;
+        const excludedAssignments = [...new Set([assignment.id, ...excludeAssignmentIds].filter(Boolean))];
+        const exclusionSql = excludedAssignments.length ? `AND id NOT IN (${excludedAssignments.map(() => '?').join(', ')})` : '';
+        const alreadyOnJob = this.db.prepare(`
+          SELECT 1 FROM assignments
+          WHERE job_id = ? AND worker_id = ? ${exclusionSql} AND ${activeAssignmentSql}
+          LIMIT 1
+        `).get(assignment.job_id, candidate.worker.id, ...excludedAssignments);
+        if (alreadyOnJob) return null;
+        const pendingRetirement = this.db.prepare(`
+          SELECT 1 FROM approvals
+          WHERE target_type = 'worker_retirement' AND target_id = ? AND status = 'pending'
+          LIMIT 1
+        `).get(candidate.worker.id);
+        if (pendingRetirement) return null;
+        const qualification = this.assessWorkerQualifications(candidate.worker.id, {
+          jobId: assignment.job_id,
+          role: requiredRole || candidate.worker.role,
+          at: assignment.scheduled_end
+        });
+        if (!qualification.ready) return null;
+        return {
+          worker: {
+            id: candidate.worker.id,
+            name: candidate.worker.name,
+            role: candidate.worker.role,
+            status: candidate.worker.status,
+            homeRegion: candidate.worker.homeRegion
+          },
+          matchedSkills: candidate.matchedSkills,
+          qualificationStatus: qualification.status,
+          qualificationWarnings: qualification.warnings.map(item => item.message)
+        };
+      })
+      .filter(Boolean)
+      .sort((left, right) => right.matchedSkills.length - left.matchedSkills.length
+        || Number(right.worker.status === 'standby') - Number(left.worker.status === 'standby')
+        || left.worker.name.localeCompare(right.worker.name))
+      .slice(0, 5);
+  }
+
+  requestAssignmentReplacement(jobId, assignmentId, payload = {}, options = {}) {
+    return this.transaction(() => {
+      this.requireJob(jobId);
+      const actor = this.approvalRequester(payload, options);
+      const reason = normalizeText(payload.reason || payload.notes, '');
+      if (reason.length < 8) throw ledgerInputError('assignment_replacement_reason_required', 'Explain the operational reason for this replacement (at least 8 characters).');
+      const assignment = this.db.prepare('SELECT assignments.*, workers.name AS worker_name FROM assignments LEFT JOIN workers ON workers.id = assignments.worker_id WHERE assignments.id = ? AND assignments.job_id = ?').get(assignmentId, jobId);
+      if (!assignment) throw ledgerInputError('assignment_not_found', 'Assignment not found.', {}, 404);
+      if (!['planned', 'scheduled', 'active', 'in_progress', 'pending_approval'].includes(normalizeStatus(assignment.status, ''))) {
+        throw ledgerInputError('assignment_replacement_not_available', 'Only an open, operational assignment can be replaced.', { assignmentId, status: assignment.status }, 409);
+      }
+      const periodId = normalizeText(payload.availabilityPeriodId || payload.availability_period_id, '');
+      const period = this.db.prepare("SELECT * FROM worker_availability_periods WHERE id = ? AND worker_id = ? AND status IN ('active', 'pending_cancellation')").get(periodId, assignment.worker_id);
+      if (!period || !this.workerAvailabilityPeriodOverlapsAssignment({ workerId: assignment.worker_id, periodId,
+        scheduledStart: assignment.scheduled_start, scheduledEnd: assignment.scheduled_end })) {
+        throw ledgerInputError('assignment_replacement_conflict_stale', 'The selected availability period no longer conflicts with this assignment.', { assignmentId, availabilityPeriodId: periodId }, 409);
+      }
+      const candidateId = normalizeText(payload.workerId || payload.worker_id, '');
+      const calloutId = normalizeText(payload.standbyCalloutId || payload.standby_callout_id, '');
+      const callout = calloutId ? this.db.prepare('SELECT * FROM standby_callouts WHERE id = ?').get(calloutId) : null;
+      if (calloutId && (!callout || callout.status !== 'accepted' || callout.assignment_id !== assignmentId || callout.job_id !== jobId
+        || callout.worker_id !== candidateId || callout.unavailability_period_id !== periodId)) {
+        throw ledgerInputError('standby_callout_not_accepted', 'The selected worker has not accepted this exact replacement call-out.', { assignmentId, workerId: candidateId, standbyCalloutId: calloutId }, 409);
+      }
+      if (callout && !this.db.prepare("SELECT id FROM work_board_accounts WHERE worker_id = ? AND status = 'admitted' LIMIT 1").get(candidateId)) {
+        throw ledgerInputError('standby_callout_worker_not_admitted', 'The worker account is no longer admitted for this company.', { assignmentId, workerId: candidateId }, 409);
+      }
+      const candidate = this.workerReplacementCandidates(assignment, { allowStandbyWorkerId: callout ? candidateId : null }).find(item => item.worker.id === candidateId);
+      if (!candidate) throw ledgerInputError('assignment_replacement_candidate_stale', 'The selected replacement is no longer available, role-matched, and qualification-ready.', { assignmentId, workerId: candidateId }, 409);
+      if (callout) {
+        const calloutData = fromJson(callout.data_json, {}), standby = this.db.prepare("SELECT * FROM worker_availability_periods WHERE id = ? AND worker_id = ? AND period_type = 'standby' AND status = 'active'").get(callout.standby_period_id, candidateId);
+        const standbyData = fromJson(standby?.data_json, {});
+        const minimumNoticeHours = Math.max(0, Math.min(168, Math.trunc(Number(standbyData.minimumNoticeHours) || 0)));
+        const emergencyRecovery = isConfirmedMissingCheckinRecovery(period, assignment);
+        if (!standby || calloutData.snapshot?.assignmentUpdatedAt !== assignment.updated_at
+          || Number(calloutData.snapshot?.minimumNoticeHours || 0) !== minimumNoticeHours
+          || (Date.parse(assignment.scheduled_start) - Date.parse(callout.created_at) < minimumNoticeHours * 3600000
+            && !(emergencyRecovery && minimumNoticeHours === 0))
+          || !this.workerAvailabilityPeriodOverlapsAssignment({ workerId: candidateId, periodId: standby.id, periodType: 'standby',
+            scheduledStart: assignment.scheduled_start, scheduledEnd: assignment.scheduled_end })) {
+          throw ledgerInputError('standby_callout_stale', 'The accepted call-out or its standby window is no longer current.', { assignmentId, standbyCalloutId: calloutId }, 409);
+        }
+      }
+      const pending = this.db.prepare("SELECT * FROM approvals WHERE target_type = 'assignment_replacement' AND status = 'pending' AND job_id = ?").all(jobId)
+        .find(row => fromJson(row.data_json, {}).originalAssignmentId === assignmentId);
+      if (pending) {
+        const data = fromJson(pending.data_json, {});
+        if (data.workerId === candidateId && data.availabilityPeriodId === periodId && data.standbyCalloutId === (calloutId || null)) {
+          return { assignment: this.mapAssignment(this.db.prepare('SELECT assignments.*, workers.name AS worker_name FROM assignments LEFT JOIN workers ON workers.id = assignments.worker_id WHERE assignments.id = ?').get(pending.target_id)), approval: this.mapApproval(pending), replayed: true };
+        }
+        throw ledgerInputError('assignment_replacement_pending', 'Resolve the existing replacement request before creating another.', { approvalId: pending.id }, 409);
+      }
+      const id = makeId('assign');
+      const timestamp = nowIso();
+      const requestedStatus = normalizeStatus(fromJson(assignment.data_json, {}).requestedStatus || assignment.status, 'planned');
+      const snapshot = {
+        id: assignment.id, workerId: assignment.worker_id, role: assignment.role,
+        status: assignment.status, scheduledStart: assignment.scheduled_start,
+        scheduledEnd: assignment.scheduled_end, updatedAt: assignment.updated_at
+      };
+      const replacementData = {
+        workerName: candidate.worker.name, requestedStatus, requestedBy: actor,
+        notes: reason, requiresApproval: true,
+        requiredTradePartnerId: assignmentTradePartnerRequirement(this.db, assignment).requiredTradePartnerId,
+        replacement: { originalAssignmentId: assignmentId, availabilityPeriodId: periodId, reason },
+        approvalReasons: [{ type: 'governed_assignment_replacement', detail: 'An existing assignment can only be exchanged after an independent approver reviews the change.' }]
+      };
+      this.db.prepare(`INSERT INTO assignments (id, job_id, worker_id, role, status, scheduled_start, scheduled_end, allocation_hours, data_json, created_at, updated_at)
+        VALUES (?, ?, ?, ?, 'pending_approval', ?, ?, ?, ?, ?, ?)`)
+        .run(id, jobId, candidateId, assignment.role, assignment.scheduled_start, assignment.scheduled_end, assignment.allocation_hours, toJson(replacementData), timestamp, timestamp);
+      const approval = this.createApproval({
+        targetType: 'assignment_replacement', targetId: id, jobId,
+        approvalType: 'worker_assignment_replacement',
+        summary: `Replace ${assignment.worker_name || assignment.worker_id} with ${candidate.worker.name} on ${this.mapJob(this.db.prepare('SELECT * FROM jobs WHERE id = ?').get(jobId)).title}`,
+        reason,
+        data: { assignmentId: id, originalAssignmentId: assignmentId, originalSnapshot: snapshot, workerId: candidateId, availabilityPeriodId: periodId, standbyCalloutId: calloutId || null, requestedStatus, reason }
+      }, { actor, audit: false });
+      this.db.prepare('UPDATE assignments SET data_json = ?, updated_at = ? WHERE id = ?')
+        .run(toJson({ ...replacementData, approvalId: approval.id }), timestamp, id);
+      if (callout) this.db.prepare("UPDATE standby_callouts SET status = 'pending_approval', approval_id = ?, updated_at = ? WHERE id = ? AND status = 'accepted'")
+        .run(approval.id, timestamp, calloutId);
+      const created = this.mapAssignment(this.db.prepare('SELECT assignments.*, workers.name AS worker_name FROM assignments LEFT JOIN workers ON workers.id = assignments.worker_id WHERE assignments.id = ?').get(id));
+      this.audit({ entityType: 'assignment', entityId: id, jobId, action: 'request_assignment_replacement', actor, after: created, metadata: { approvalId: approval.id, originalAssignmentId: assignmentId, availabilityPeriodId: periodId, externalCommitments: 0 } });
+      return { assignment: created, approval, replayed: false };
+    });
+  }
+
+  requestWorkerAvailabilityReplacementPlan(workerId, periodId, payload = {}, options = {}) {
+    return this.transaction(() => {
+      const actor = this.approvalRequester(payload, options);
+      const reason = normalizeText(payload.reason || payload.notes, '');
+      if (reason.length < 8) throw ledgerInputError('assignment_replacement_reason_required', 'Explain the operational reason for this replacement plan (at least 8 characters).');
+      const period = this.db.prepare("SELECT * FROM worker_availability_periods WHERE id = ? AND worker_id = ? AND status IN ('active', 'pending_cancellation')").get(periodId, workerId);
+      if (!period) throw ledgerInputError('worker_availability_period_not_found', 'The active availability period was not found.', { workerId, periodId }, 404);
+
+      const conflicts = this.db.prepare(`
+        SELECT assignments.*, workers.name AS worker_name, jobs.title AS job_title
+        FROM assignments
+        JOIN workers ON workers.id = assignments.worker_id
+        JOIN jobs ON jobs.id = assignments.job_id
+        WHERE assignments.worker_id = ? AND ${this.activeAssignmentStatusSql('assignments')}
+          AND ${this.operationalJobStatusSql('jobs')}
+          AND assignments.scheduled_start IS NOT NULL AND assignments.scheduled_end IS NOT NULL
+        ORDER BY assignments.scheduled_start, assignments.id
+      `).all(workerId).filter(row => this.workerAvailabilityPeriodOverlapsAssignment({ workerId, periodId: period.id,
+        scheduledStart: row.scheduled_start, scheduledEnd: row.scheduled_end }));
+      if (!conflicts.length) throw ledgerInputError('assignment_replacement_conflicts_changed', 'No active assignments conflict with this availability period.', { periodId }, 409);
+
+      const selections = Array.isArray(payload.assignments) ? payload.assignments : [];
+      const selectedById = new Map(selections.map(item => [normalizeText(item.assignmentId || item.assignment_id, ''), normalizeText(item.workerId || item.worker_id, '')]));
+      if (selectedById.size !== conflicts.length || conflicts.some(row => !selectedById.has(row.id)) || [...selectedById.keys()].some(id => !conflicts.some(row => row.id === id))) {
+        throw ledgerInputError('assignment_replacement_plan_incomplete', 'Choose one replacement for every assignment affected by this availability period.', { affectedAssignmentIds: conflicts.map(row => row.id) });
+      }
+
+      const existingPlans = this.db.prepare("SELECT * FROM approvals WHERE target_type = 'assignment_replacement_plan' AND status = 'pending'").all();
+      const pending = existingPlans.find(row => fromJson(row.data_json, {}).availabilityPeriodId === periodId);
+      const normalizedSelections = conflicts.map(row => ({ assignmentId: row.id, workerId: selectedById.get(row.id) }));
+      if (pending) {
+        const data = fromJson(pending.data_json, {});
+        const pendingSelections = (data.assignments || []).map(item => ({ assignmentId: item.originalAssignmentId, workerId: item.workerId }));
+        if (data.workerId === workerId && data.reason === reason
+          && JSON.stringify(pendingSelections) === JSON.stringify(normalizedSelections)) {
+          return { planId: pending.target_id, approval: this.mapApproval(pending), replayed: true };
+        }
+        throw ledgerInputError('assignment_replacement_plan_pending', 'Resolve the existing replacement plan for this availability period before submitting another.', { approvalId: pending.id }, 409);
+      }
+
+      const planRows = conflicts.map(original => {
+        const candidateId = selectedById.get(original.id);
+        const candidate = this.workerReplacementCandidates(original).find(item => item.worker.id === candidateId);
+        if (!candidate) throw ledgerInputError('assignment_replacement_candidate_stale', 'A selected replacement no longer passes availability, role, conflict, and qualification checks.', { assignmentId: original.id, workerId: candidateId }, 409);
+        const snapshot = {
+          id: original.id, jobId: original.job_id, workerId: original.worker_id, role: original.role,
+          status: original.status, scheduledStart: original.scheduled_start, scheduledEnd: original.scheduled_end,
+          updatedAt: original.updated_at
+        };
+        return { original, candidate, snapshot, requestedStatus: normalizeStatus(fromJson(original.data_json, {}).requestedStatus || original.status, 'planned') };
+      });
+      const byReplacementWorker = new Map();
+      for (const item of planRows) {
+        const workerIdForPlan = item.candidate.worker.id;
+        const rows = byReplacementWorker.get(workerIdForPlan) || [];
+        if (rows.some(other => this.assignmentWindowsOverlap(item.original.scheduled_start, item.original.scheduled_end, other.original.scheduled_start, other.original.scheduled_end))) {
+          throw ledgerInputError('assignment_replacement_plan_candidate_overlap', 'The same replacement worker cannot cover overlapping assignments in one plan.', { workerId: workerIdForPlan }, 409);
+        }
+        rows.push(item);
+        byReplacementWorker.set(workerIdForPlan, rows);
+      }
+
+      const timestamp = nowIso();
+      const planId = makeId('replacement_plan');
+      const proposals = planRows.map(item => {
+        const id = makeId('assign');
+        const replacementData = {
+          workerName: item.candidate.worker.name,
+          requestedStatus: item.requestedStatus,
+          requestedBy: actor,
+          notes: reason,
+          requiresApproval: true,
+          requiredTradePartnerId: assignmentTradePartnerRequirement(this.db, item.original).requiredTradePartnerId,
+          replacement: { planId, originalAssignmentId: item.original.id, availabilityPeriodId: periodId, reason }
+        };
+        this.db.prepare(`INSERT INTO assignments (id, job_id, worker_id, role, status, scheduled_start, scheduled_end, allocation_hours, data_json, created_at, updated_at)
+          VALUES (?, ?, ?, ?, 'pending_approval', ?, ?, ?, ?, ?, ?)`)
+          .run(id, item.original.job_id, item.candidate.worker.id, item.original.role, item.original.scheduled_start, item.original.scheduled_end, item.original.allocation_hours, toJson(replacementData), timestamp, timestamp);
+        return { originalAssignmentId: item.original.id, replacementAssignmentId: id, jobId: item.original.job_id, jobTitle: item.original.job_title || item.original.job_id, originalWorkerName: item.original.worker_name || item.original.worker_id, workerId: item.candidate.worker.id, workerName: item.candidate.worker.name, requestedStatus: item.requestedStatus, originalSnapshot: item.snapshot };
+      });
+      const jobNames = [...new Set(planRows.map(item => item.original.job_title || item.original.job_id))];
+      const approval = this.createApproval({
+        targetType: 'assignment_replacement_plan', targetId: planId, jobId: null,
+        approvalType: 'worker_assignment_replacement_plan',
+        summary: `Coordinate ${proposals.length} assignment replacement${proposals.length === 1 ? '' : 's'} across ${jobNames.length} job${jobNames.length === 1 ? '' : 's'}`,
+        reason,
+        data: { planId, workerId, availabilityPeriodId: periodId, periodStart: period.starts_at, periodEnd: period.ends_at, reason, assignments: proposals }
+      }, { actor, audit: false });
+      for (const proposal of proposals) {
+        const row = this.db.prepare('SELECT * FROM assignments WHERE id = ?').get(proposal.replacementAssignmentId);
+        const data = fromJson(row.data_json, {});
+        this.db.prepare('UPDATE assignments SET data_json = ?, updated_at = ? WHERE id = ?').run(toJson({ ...data, approvalId: approval.id }), timestamp, row.id);
+        this.audit({ entityType: 'assignment', entityId: row.id, jobId: proposal.jobId, action: 'request_assignment_replacement_plan', actor, after: this.mapAssignment(this.db.prepare('SELECT assignments.*, workers.name AS worker_name FROM assignments LEFT JOIN workers ON workers.id = assignments.worker_id WHERE assignments.id = ?').get(row.id)), metadata: { approvalId: approval.id, planId, originalAssignmentId: proposal.originalAssignmentId, availabilityPeriodId: periodId, externalCommitments: 0 } });
+      }
+      return { planId, approval, replayed: false };
+    });
+  }
+
+  jobDisruptionImpact(jobId, assignmentWindow = {}) {
+    const detail = this.getJobDetail(jobId, { includeAudit: false, includeCapabilities: false });
+    const startInput = detail.scheduledStart || assignmentWindow.scheduledStart || null;
+    let schedule;
+    try {
+      schedule = this.calculateJobSchedule(jobId, startInput ? { plannedStart: startInput } : {});
+    } catch (error) {
+      schedule = { ready: false, reason: error.code || 'schedule_unavailable', tasks: [], materialBlockers: [] };
+    }
+    const activeTasks = (detail.tasks || []).filter(task => !['completed', 'cancelled'].includes(normalizeStatus(task.status, 'open')));
+    const materialShortfalls = (detail.materials || []).flatMap(material => {
+      const requiredQuantity = normalizeNumber(material.quantity, 0);
+      const availableQuantity = Math.max(0, normalizeNumber(material.data?.availableQuantity, 0));
+      const shortfallQuantity = roundQuantity(Math.max(0, requiredQuantity - availableQuantity));
+      if (shortfallQuantity <= 0) return [];
+      const affectedTasks = activeTasks
+        .filter(task => normalizeList(task.data?.materialRequirementIds).includes(material.id))
+        .map(task => ({ id: task.id, title: task.title, status: task.status }));
+      return [{
+        materialRequirementId: material.id,
+        itemName: material.name,
+        unit: material.unit,
+        requiredQuantity,
+        availableQuantity,
+        shortfallQuantity,
+        expectedAvailableAt: material.data?.expectedAvailableAt || null,
+        expectedAvailableAtReference: material.data?.expectedAvailableAtReference || null,
+        affectedTasks
+      }];
+    });
+    const affectedScheduleTasks = (schedule.tasks || []).filter(task => {
+      if (!assignmentWindow.scheduledStart || !assignmentWindow.scheduledEnd || !task.plannedStart || !task.plannedEnd) return false;
+      return this.assignmentWindowsOverlap(
+        task.plannedStart, task.plannedEnd,
+        assignmentWindow.scheduledStart, assignmentWindow.scheduledEnd
+      );
+    }).map(task => ({
+      taskId: task.id,
+      title: task.title,
+      plannedStart: task.plannedStart,
+      plannedEnd: task.plannedEnd,
+      materialConstraints: (task.materialConstraints || []).map(constraint => ({
+        materialRequirementId: constraint.materialRequirementId,
+        materialName: constraint.materialName,
+        shortfall: constraint.shortfall,
+        blocker: constraint.blocker,
+        expectedAvailableAt: constraint.expectedAvailableAt
+      }))
+    }));
+    return {
+      schedule: {
+        ready: schedule.ready === true,
+        reason: schedule.reason || null,
+        plannedStart: schedule.plannedStart || null,
+        plannedEnd: schedule.plannedEnd || null,
+        materialBlockers: (schedule.materialBlockers || []).map(blocker => ({
+          taskId: blocker.taskId,
+          taskTitle: blocker.taskTitle,
+          materialRequirementId: blocker.materialRequirementId,
+          materialName: blocker.materialName,
+          shortfall: blocker.shortfall,
+          expectedAvailableAt: blocker.expectedAvailableAt,
+          reason: blocker.reason
+        }))
+      },
+      materialShortfalls,
+      affectedScheduleTasks
+    };
   }
 
   detectWorkerAvailabilityConflicts(limit = 25) {
@@ -14205,6 +15977,7 @@ class ContractorOperatingLedger {
       ORDER BY assignments.updated_at DESC
     `).all();
     const conflicts = [];
+    const impactCache = new Map();
     for (const assignment of assignments) {
       const periods = this.findWorkerAvailabilityConflicts({
         workerId: assignment.worker_id,
@@ -14212,6 +15985,13 @@ class ContractorOperatingLedger {
         scheduledEnd: assignment.scheduled_end
       });
       for (const period of periods) {
+        const impactKey = `${assignment.job_id}:${assignment.scheduled_start}:${assignment.scheduled_end}`;
+        if (!impactCache.has(impactKey)) {
+          impactCache.set(impactKey, this.jobDisruptionImpact(assignment.job_id, {
+            scheduledStart: assignment.scheduled_start,
+            scheduledEnd: assignment.scheduled_end
+          }));
+        }
         conflicts.push({
           assignmentId: assignment.id,
           jobId: assignment.job_id,
@@ -14220,7 +16000,9 @@ class ContractorOperatingLedger {
           workerName: assignment.worker_name || assignment.worker_id,
           scheduledStart: assignment.scheduled_start,
           scheduledEnd: assignment.scheduled_end,
-          period
+          period,
+          disruptionImpact: impactCache.get(impactKey),
+          replacementCandidates: this.workerReplacementCandidates(assignment)
         });
         if (conflicts.length >= limit) return conflicts;
       }
@@ -14230,8 +16012,16 @@ class ContractorOperatingLedger {
 
   listWorkerAvailabilityRegister(filters = {}) {
     const referenceAt = this.normalizeReservationDate(filters.referenceAt || filters.reference_at || nowIso(), 'referenceAt');
-    const periods = this.listWorkerAvailability({ ...filters, includeCancelled: normalizeBoolean(filters.includeCancelled ?? filters.include_cancelled, false), limit: safeLimit(filters.limit, 500, 1000) });
-    const conflicts = this.detectWorkerAvailabilityConflicts(250);
+    const periods = this.listWorkerAvailability({ ...filters, includeCancelled: normalizeBoolean(filters.includeCancelled ?? filters.include_cancelled, false), limit: safeLimit(filters.limit, 500, 1000) })
+      .map(period => period.returnUnknown
+        ? { ...period, followUpDue: Boolean(period.followUpAt && Date.parse(period.followUpAt) <= Date.parse(referenceAt)) }
+        : period);
+    const detectedConflicts = this.detectWorkerAvailabilityConflicts(251);
+    const conflictListComplete = detectedConflicts.length <= 250;
+    const conflicts = detectedConflicts.slice(0, 250);
+    const horizon = new Date(Date.parse(referenceAt) + MAX_WORKER_AVAILABILITY_RECURRENCE_DAYS * 24 * 60 * 60 * 1000).toISOString();
+    const upcomingOccurrences = periods.filter(period => ['active', 'pending_cancellation'].includes(period.status))
+      .flatMap(period => expandRecurrence(period, { rangeStart: referenceAt, rangeEnd: horizon }));
     const periodsByWorker = new Map();
     for (const period of periods) {
       const rows = periodsByWorker.get(period.workerId) || [];
@@ -14253,16 +16043,25 @@ class ContractorOperatingLedger {
       },
       catalog: this.workforceAvailabilityCatalog(),
       summary: {
-        activePeriods: periods.filter(period => ['active', 'pending_cancellation'].includes(period.status) && Date.parse(period.endsAt) >= reference).length,
-        currentUnavailable: periods.filter(period => ['active', 'pending_cancellation'].includes(period.status) && Date.parse(period.startsAt) <= reference && Date.parse(period.endsAt) >= reference).length,
-        upcoming: periods.filter(period => ['active', 'pending_cancellation'].includes(period.status) && Date.parse(period.startsAt) > reference).length,
-        past: periods.filter(period => ['active', 'pending_cancellation'].includes(period.status) && Date.parse(period.endsAt) < reference).length,
-        pendingCancellation: periods.filter(period => period.status === 'pending_cancellation').length,
-        assignmentConflicts: conflicts.length
+      activePeriods: upcomingOccurrences.filter(period => workerAvailabilityEndMs(period) >= reference).length,
+      currentUnavailable: upcomingOccurrences.filter(period => period.periodType !== 'standby' && Date.parse(period.startsAt) <= reference && workerAvailabilityEndMs(period) >= reference).length,
+      currentStandby: upcomingOccurrences.filter(period => period.periodType === 'standby' && Date.parse(period.startsAt) <= reference && workerAvailabilityEndMs(period) >= reference).length,
+      upcoming: upcomingOccurrences.filter(period => period.periodType !== 'standby' && Date.parse(period.startsAt) > reference).length,
+      upcomingStandby: upcomingOccurrences.filter(period => period.periodType === 'standby' && Date.parse(period.startsAt) > reference).length,
+      past: periods.filter(period => period.periodType !== 'standby' && ['active', 'pending_cancellation'].includes(period.status)
+        && (period.recurrence
+          ? Date.parse(`${period.recurrence.until}T23:59:59.999Z`) < reference
+          : workerAvailabilityEndMs(period) < reference)).length,
+      pendingCancellation: periods.filter(period => period.status === 'pending_cancellation').length,
+      unknownReturn: periods.filter(period => ['active', 'pending_cancellation'].includes(period.status) && period.returnUnknown).length,
+      followUpDue: periods.filter(period => ['active', 'pending_cancellation'].includes(period.status) && period.returnUnknown && period.followUpAt && Date.parse(period.followUpAt) <= reference).length,
+        assignmentConflicts: conflicts.length,
+        assignmentConflictListComplete: conflictListComplete
       },
       workers,
       periods,
-      conflicts
+      conflicts,
+      conflictListComplete
     };
   }
 
@@ -14506,6 +16305,14 @@ class ContractorOperatingLedger {
     }
     const timestamp = nowIso();
     const existingData = fromJson(before?.data_json, {});
+    if (existingData.fieldSafetyHold?.status === 'open' && status === 'available') {
+      throw ledgerInputError(
+        'tool_field_safety_hold_open',
+        'Equipment with an open field safety hold can only be released through a passed inspection or completed maintenance record.',
+        { toolId: id, fieldSafetyHoldId: existingData.fieldSafetyHold.id },
+        409
+      );
+    }
     const incomingData = payload.data && typeof payload.data === 'object' && !Array.isArray(payload.data)
       ? payload.data
       : {};
@@ -14701,9 +16508,14 @@ class ContractorOperatingLedger {
       let status = normalizeStatus(before.status, 'available');
       if (result === 'failed') status = 'maintenance';
       else if (result === 'limited') status = 'inspection_due';
-      else if (status === 'inspection_due') status = 'available';
+      else if (status === 'inspection_due' || data.fieldSafetyHold?.status === 'open') status = 'available';
+      const fieldSafetyHold = data.fieldSafetyHold?.status === 'open' && result === 'passed'
+        ? { ...data.fieldSafetyHold, status: 'resolved', resolutionType: 'passed_inspection', resolutionId: inspection.id,
+          resolvedAt: timestamp, resolvedBy: actor, resolutionReference: inspection.reference || inspection.notes || 'Passed inspection' }
+        : data.fieldSafetyHold;
       const nextData = {
         ...data,
+        ...(fieldSafetyHold ? { fieldSafetyHold } : {}),
         inspectionRequired,
         inspectionDueAt: result === 'passed' ? nextDueAt : (data.inspectionDueAt || inspectedAt),
         inspectionHistory: [...history, inspection],
@@ -14846,8 +16658,13 @@ class ContractorOperatingLedger {
       } else if (['maintenance', 'inspection_due'].includes(status)) {
         status = 'available';
       }
+      const fieldSafetyHold = data.fieldSafetyHold?.status === 'open' && outcome === 'completed' && status === 'available'
+        ? { ...data.fieldSafetyHold, status: 'resolved', resolutionType: 'completed_maintenance', resolutionId: maintenance.id,
+          resolvedAt: timestamp, resolvedBy: actor, resolutionReference: maintenance.reference || notes }
+        : data.fieldSafetyHold;
       const nextData = {
         ...data,
+        ...(fieldSafetyHold ? { fieldSafetyHold } : {}),
         maintenanceHistory: [...history, maintenance],
         lastMaintenanceId: maintenance.id,
         lastMaintainedAt: performedAt,
@@ -15299,11 +17116,14 @@ class ContractorOperatingLedger {
 
   defaultTasksForJob(job) {
     const due = job.targetCompletion || job.scheduledStart || null;
+    const coordination = { source: 'job_intake_default', data: {
+      workCategory: 'coordination', workforcePositionEligible: false, excludeFromResourcePlan: true
+    } };
     return [
-      { title: 'Validate scope and site constraints', status: 'open', priority: job.priority, dueAt: due, durationHours: 1.5 },
-      { title: 'Prepare quote and approval package', status: 'open', priority: job.priority, dueAt: due, durationHours: 2 },
-      { title: 'Reserve crew, tools, and materials', status: 'open', priority: job.priority, dueAt: due, durationHours: 2 },
-      { title: 'Create client update draft', status: 'open', priority: 'medium', dueAt: due, durationHours: 1 }
+      { ...coordination, title: 'Validate scope and site constraints', status: 'open', priority: job.priority, dueAt: due, durationHours: 1.5 },
+      { ...coordination, title: 'Prepare quote and approval package', status: 'open', priority: job.priority, dueAt: due, durationHours: 2 },
+      { ...coordination, title: 'Reserve crew, tools, and materials', status: 'open', priority: job.priority, dueAt: due, durationHours: 2 },
+      { ...coordination, title: 'Create client update draft', status: 'open', priority: 'medium', dueAt: due, durationHours: 1 }
     ];
   }
 
@@ -15515,6 +17335,7 @@ class ContractorOperatingLedger {
         status: 'draft',
         riskLevel: detail.riskLevel || 'medium',
         dueAt: plannedStart,
+        linkedTaskIds: (detail.tasks || []).filter(task => !['cancelled', 'canceled', 'deleted', 'completed'].includes(normalizeStatus(task.status, ''))).map(task => task.id),
         hazards: playbook.hazards,
         controls: playbook.controls,
         ppe: ['Safety shoes', 'Gloves', 'Eye protection'],
@@ -16215,6 +18036,9 @@ class ContractorOperatingLedger {
       const row = this.db.prepare('SELECT * FROM takeoff_items WHERE id = ? AND takeoff_id = ?').get(itemId, takeoffId);
       if (!row) throw ledgerInputError('takeoff_item_not_found', 'Takeoff measurement was not found.', null, 404);
       const before = this.mapTakeoffItem(row);
+      if (this.db.prepare('SELECT id FROM work_package_quantities WHERE item_id = ?').get(itemId)) {
+        throw ledgerInputError('takeoff_item_in_work_package', 'Remove the work-package link before removing this measurement.', null, 409);
+      }
       this.db.prepare('DELETE FROM takeoff_items WHERE id = ? AND takeoff_id = ?').run(itemId, takeoffId);
       this.refreshTakeoffTotals(takeoffId);
       const takeoff = this.getTakeoff(jobId, takeoffId);
@@ -16385,12 +18209,21 @@ class ContractorOperatingLedger {
       .sort((left, right) => String(left.sheetNumber).localeCompare(String(right.sheetNumber)));
     const clientSelections = this.db.prepare(`
       SELECT * FROM client_selections
-      WHERE job_id = ? AND status = 'approved'
+      WHERE job_id = ?
+        AND (
+          status = 'approved'
+          OR (status IN ('accepted', 'client_confirmed', 'locked', 'selected', 'ordered')
+            AND approval_id IS NOT NULL
+            AND EXISTS (SELECT 1 FROM approvals WHERE approvals.id = client_selections.approval_id AND approvals.status = 'approved'))
+        )
       ORDER BY id
     `).all(jobId).map(row => this.mapClientSelection(row)).map(selection => ({
       id: selection.id,
       title: selection.title,
+      category: selection.category,
+      status: selection.status,
       selectedOption: selection.selectedOption || selection.data?.selectedOption || null,
+      decidedAt: selection.decidedAt,
       updatedAt: selection.updatedAt
     }));
     return {
@@ -18134,7 +19967,13 @@ class ContractorOperatingLedger {
         formalControl: changeOrder.formalControl,
         contractSourceHash: changeOrder.sourceHash,
         formalSnapshotHash: changeOrder.snapshotHash
-      } : {})
+      } : {}),
+      ...(changeOrder.snapshot?.conversationOrigin?.evidenceKind === 'message_finding'
+        ? { conversationOrigin: changeOrder.snapshot.conversationOrigin }
+        : {}),
+      ...(changeOrder.snapshot?.revisionOrigin?.evidenceKind === 'client_variation_response'
+        ? { revisionOrigin: changeOrder.snapshot.revisionOrigin }
+        : {})
     };
   }
 
@@ -18425,6 +20264,12 @@ class ContractorOperatingLedger {
     const scheduleImpact = Number(changeOrder.scheduleDeltaDays || 0);
     const formalControl = changeOrder.formalControl || {};
     const scopeList = values => `<ul>${(Array.isArray(values) ? values : []).map(value => `<li>${escapeHtml(value)}</li>`).join('')}</ul>`;
+    const customerRequest = changeOrder.conversationOrigin?.evidenceKind === 'message_finding'
+      ? `<section class="notice customer-request"><strong>Customer request reference</strong><blockquote>${escapeHtml(changeOrder.conversationOrigin.quote)}</blockquote></section>`
+      : '';
+    const customerRevision = changeOrder.revisionOrigin?.evidenceKind === 'client_variation_response'
+      ? `<section class="notice customer-request"><strong>${changeOrder.revisionOrigin.decision === 'rejected' ? 'Customer rejection reason' : 'Customer revision request'} - response to ${escapeHtml(changeOrder.revisionOrigin.variationNumber)} / R${escapeHtml(changeOrder.revisionOrigin.revisionNumber)}</strong><blockquote>${escapeHtml(changeOrder.revisionOrigin.note)}</blockquote></section>`
+      : '';
     return `<!doctype html>
 <html lang="en">
 <head>
@@ -18453,6 +20298,7 @@ class ContractorOperatingLedger {
     .totals div { display: flex; justify-content: space-between; padding: 7px 0; border-bottom: 1px solid #e3e9e6; }
     .totals .grand { padding-top: 12px; color: #174d40; font-size: 18px; font-weight: 700; border-bottom: 0; }
     .notice { margin-top: 28px; padding: 17px; background: #f4f7f6; border-left: 4px solid #176b57; }
+    .customer-request blockquote { margin: 10px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
     footer { margin-top: 38px; padding-top: 16px; color: #6c7975; border-top: 1px solid #dce5e1; font-size: 10px; overflow-wrap: anywhere; }
     @media print { body { max-width: none; padding: 18mm; } }
     @media (max-width: 650px) { body { padding: 22px; } header, .parties, .impact { display: grid; grid-template-columns: 1fr; } .reference { text-align: left; } }
@@ -18466,6 +20312,8 @@ class ContractorOperatingLedger {
   <section class="impact"><div><span>Schedule impact</span><strong>${escapeHtml(scheduleImpact)} day${Math.abs(scheduleImpact) === 1 ? '' : 's'}</strong><p>${escapeHtml(formalControl.scheduleImpactNarrative || '')}</p></div><div><span>Contract source</span><strong>${escapeHtml(formalControl.contractReference || changeOrder.quoteId || 'Current retained contract')}</strong><p>${escapeHtml(formalControl.noticeReference ? `Notice ${formalControl.noticeReference}` : formalControl.noticeNotApplicableReason || '')}</p></div></section>
   <h2>Variation basis</h2>
   <section class="impact"><div><span>Cause and initiator</span><strong>${escapeHtml(String(formalControl.variationType || 'other').replace(/_/g, ' '))} / ${escapeHtml(String(formalControl.initiatedBy || 'contractor').replace(/_/g, ' '))}</strong><p>${escapeHtml(formalControl.cause || '')}</p></div><div><span>Justification</span><strong>${escapeHtml(formalControl.riskImpact || 'medium')} risk impact</strong><p>${escapeHtml(formalControl.justification || '')}</p><p>${escapeHtml(formalControl.riskImpactStatement || '')}</p></div></section>
+  ${customerRequest}
+  ${customerRevision}
   <section class="parties"><div class="party"><span>Assumptions</span>${scopeList(formalControl.assumptions)}</div><div class="party"><span>Exclusions</span>${scopeList(formalControl.exclusions)}</div></section>
   ${formalControl.evidenceReferences?.length ? `<h2>Evidence references</h2>${scopeList(formalControl.evidenceReferences)}` : ''}
   <h2>Price change</h2>
@@ -18830,6 +20678,79 @@ class ContractorOperatingLedger {
       warnings,
       currentPackageId: currentPackage?.id || null,
       counts: Object.fromEntries(Object.entries(source.evidence).map(([key, records]) => [key, records.length]))
+    };
+  }
+
+  assessOperationalCompletionReadiness(jobId, options = {}) {
+    const detail = options.detail || this.getJobDetail(jobId, { includeAudit: false, includeCapabilities: false });
+    const terminalTaskStatuses = new Set(['completed', 'cancelled', 'canceled', 'rejected', 'void']);
+    const openTasks = (detail.tasks || []).filter(task => !terminalTaskStatuses.has(normalizeStatus(task.status, 'open')));
+    const schedule = this.calculateJobSchedule(jobId, { plannedStart: detail.scheduledStart || null });
+    const openTaskIds = new Set(openTasks.map(task => task.id));
+    const materialBlockers = (schedule.materialBlockers || []).filter(blocker => openTaskIds.has(blocker.taskId));
+    const handover = this.assessHandoverReadiness(jobId, { detail });
+    const recovery = new (require('./operational-recovery').OperationalRecovery)(this).list(jobId);
+    const unresolvedRecoveryCases = recovery.cases.filter(item => ['open', 'monitoring'].includes(normalizeStatus(item.status, 'open')));
+    const blockers = [...handover.blockers];
+    if (openTasks.length) blockers.unshift({
+      code: 'work_tasks_open',
+      label: `${openTasks.length} execution task(s) remain incomplete`,
+      recordIds: openTasks.map(task => task.id)
+    });
+    if (materialBlockers.length) blockers.push({
+      code: 'work_material_shortfall',
+      label: `${materialBlockers.length} linked task material requirement(s) remain uncovered`,
+      recordIds: [...new Set(materialBlockers.map(blocker => blocker.materialRequirementId).filter(Boolean))],
+      taskIds: [...new Set(materialBlockers.map(blocker => blocker.taskId))]
+    });
+    if (unresolvedRecoveryCases.length) blockers.push({
+      code: 'operational_recovery_open',
+      label: `${unresolvedRecoveryCases.length} disruption recovery case(s) remain unresolved`,
+      recordIds: unresolvedRecoveryCases.map(item => item.id)
+    });
+    const snapshot = {
+      jobId: detail.id,
+      tasks: (detail.tasks || []).map(task => ({ id: task.id, status: normalizeStatus(task.status, 'open') })),
+      blockers: blockers.map(blocker => ({
+        code: blocker.code,
+        recordIds: [...(blocker.recordIds || [])].sort(),
+        taskIds: [...(blocker.taskIds || [])].sort()
+      })).sort((left, right) => left.code.localeCompare(right.code)),
+      materialBlockers: materialBlockers.map(blocker => ({
+        taskId: blocker.taskId,
+        materialRequirementId: blocker.materialRequirementId || null,
+        reason: blocker.reason || null,
+        shortfall: blocker.shortfall ?? null,
+        expectedAvailableAt: blocker.expectedAvailableAt || null
+      })).sort((left, right) => `${left.taskId}:${left.materialRequirementId || ''}`.localeCompare(`${right.taskId}:${right.materialRequirementId || ''}`)),
+      recoveryCases: unresolvedRecoveryCases.map(item => ({
+        id: item.id,
+        status: item.status,
+        sourceHash: item.sourceHash,
+        caseHash: item.caseHash,
+        sourceCurrent: item.sourceCurrent
+      })).sort((left, right) => left.id.localeCompare(right.id))
+    };
+    const warnings = handover.missing.filter(item => item.code !== 'job_completion_required');
+    const openClientSelections = (detail.clientSelections || []).filter(item => !['accepted', 'approved', 'selected', 'locked', 'cancelled', 'canceled', 'rejected', 'closed'].includes(normalizeStatus(item.status, 'pending_client')));
+    const pendingVariations = (detail.changeOrders || []).filter(item => !['accepted', 'approved', 'superseded', 'rejected', 'cancelled', 'canceled', 'closed'].includes(normalizeStatus(item.status, 'pending_approval')));
+    const unpaidInvoices = (detail.invoices || []).filter(item => normalizeNumber(item.balanceDue ?? item.total ?? item.amount, 0) > 0
+      && !['void', 'cancelled', 'canceled', 'rejected', 'paid', 'settled', 'closed'].includes(normalizeStatus(item.status, 'draft')));
+    if (openClientSelections.length) warnings.push({ code: 'client_decisions_open', label: `${openClientSelections.length} client decision(s) remain open`, recordIds: openClientSelections.map(item => item.id) });
+    if (pendingVariations.length) warnings.push({ code: 'commercial_changes_open', label: `${pendingVariations.length} variation(s) remain undecided`, recordIds: pendingVariations.map(item => item.id) });
+    if (unpaidInvoices.length) warnings.push({ code: 'receivables_open', label: `${unpaidInvoices.length} invoice(s) retain an unpaid balance`, recordIds: unpaidInvoices.map(item => item.id) });
+    return {
+      jobId: detail.id,
+      ready: blockers.length === 0,
+      status: blockers.length ? 'blocked' : 'ready',
+      sourceHash: sha256Json(snapshot),
+      blockers,
+      warnings,
+      separation: {
+        clientAcceptanceRequiredForOperationalCompletion: false,
+        paymentRequiredForOperationalCompletion: false,
+        handoverPackageRequiredForOperationalCompletion: false
+      }
     };
   }
 
@@ -21850,6 +23771,8 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       this.requireJob(jobId);
       const actor = options.actor || 'Contractor.AI';
       const timestamp = nowIso();
+      let conversationOrigin = options.conversationOrigin || null;
+      let revisionOrigin = null;
       const id = makeId('change');
       const lineItems = normalizeCommercialLineItems(payload.lineItems, {
         fallbackDescription: normalizeText(payload.title || payload.scopeDelta || payload.scope_delta, 'Scope change'),
@@ -21895,6 +23818,7 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
           throw ledgerInputError('variation_superseded_record_missing', 'The variation revision source does not belong to this job.', { jobId, supersedesChangeOrderId }, 404);
         }
         superseded = this.mapChangeOrder(supersededRow);
+        this.assertFormalVariationCurrent(superseded);
         if (!['changes_requested', 'rejected_by_client', 'rejected', 'cancelled'].includes(superseded.status)) {
           throw ledgerInputError(
             'variation_revision_state_invalid',
@@ -21905,6 +23829,69 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
         }
         if (!superseded.variationNumber || !Number.isInteger(superseded.revisionNumber)) {
           throw ledgerInputError('variation_revision_source_invalid', 'The superseded record is not a retained formal variation revision.', { supersedesChangeOrderId }, 409);
+        }
+        const latestRevision = this.db.prepare(`
+          SELECT MAX(revision_number) AS revision_number
+          FROM change_orders
+          WHERE job_id = ? AND variation_number = ?
+        `).get(jobId, superseded.variationNumber);
+        if (Number(latestRevision?.revision_number) !== superseded.revisionNumber) {
+          throw ledgerInputError('variation_revision_source_not_latest', 'Prepare a new revision from the latest retained variation state.', { supersedesChangeOrderId, latestRevision: latestRevision?.revision_number ?? null }, 409);
+        }
+        if (!conversationOrigin && superseded.snapshot?.conversationOrigin?.evidenceKind === 'message_finding') {
+          conversationOrigin = superseded.snapshot.conversationOrigin;
+        }
+        if (superseded.snapshot?.revisionOrigin?.evidenceKind === 'client_variation_response') {
+          revisionOrigin = superseded.snapshot.revisionOrigin;
+        }
+        const clientResponse = superseded.data?.clientResponse;
+        if (['changes_requested', 'rejected'].includes(clientResponse?.decision)) {
+          const responseApprovalRow = this.db.prepare(`
+            SELECT * FROM approvals
+            WHERE id = ? AND job_id = ? AND target_type = 'change_order_client_response' AND status = 'approved'
+          `).get(clientResponse.approvalId, jobId);
+          const responseApprovalData = fromJson(responseApprovalRow?.data_json, {});
+          const issueData = superseded.data?.issuePackage || {};
+          const responseChecks = {
+            approval: Boolean(responseApprovalRow && responseApprovalRow.status === 'approved'),
+            changeOrder: responseApprovalData.changeOrderId === superseded.id,
+            responseId: responseApprovalData.responseId === clientResponse.responseId,
+            decision: responseApprovalData.decision === clientResponse.decision,
+            note: responseApprovalData.note === clientResponse.note,
+            issueReference: responseApprovalData.issueReference === clientResponse.issueReference && issueData.issueReference === responseApprovalData.issueReference,
+            packageHash: responseApprovalData.packageHash === clientResponse.packageHash && issueData.packageHash === responseApprovalData.packageHash,
+            issueSourceBasisHash: issueData.sourceBasisHash === responseApprovalData.sourceBasisHash,
+            formalSourceHash: responseApprovalData.formalSourceHash === clientResponse.formalSourceHash,
+            formalSnapshotHash: responseApprovalData.formalSnapshotHash === clientResponse.formalSnapshotHash,
+            documentId: issueData.documentId === responseApprovalData.documentId,
+            deliveryCommunicationId: issueData.communicationId === responseApprovalData.deliveryCommunicationId
+          };
+          const responseMismatches = Object.keys(responseChecks).filter(key => !responseChecks[key]);
+          if (responseMismatches.length) {
+            throw ledgerInputError('variation_revision_response_invalid', 'The approved customer response no longer matches the exact issued variation package.', { supersedesChangeOrderId, mismatches: responseMismatches }, 409);
+          }
+          const issuedPackage = this.getChangeOrderIssuePackage(issueData.documentId, { audit: false });
+          if (issuedPackage.packageHash !== clientResponse.packageHash
+            || issuedPackage.document.data?.sourceRecordId !== superseded.id) {
+            throw ledgerInputError('variation_revision_package_invalid', 'The original customer response is not backed by the exact retained issue package.', { supersedesChangeOrderId }, 409);
+          }
+          revisionOrigin = {
+            evidenceKind: 'client_variation_response',
+            changeOrderId: superseded.id,
+            variationNumber: superseded.variationNumber,
+            revisionNumber: superseded.revisionNumber,
+            approvalId: clientResponse.approvalId,
+            responseId: clientResponse.responseId,
+            decision: clientResponse.decision,
+            note: clientResponse.note,
+            submittedAt: clientResponse.submittedAt,
+            portalAccessId: clientResponse.portalAccessId,
+            issueReference: clientResponse.issueReference,
+            packageHash: clientResponse.packageHash,
+            sourceBasisHash: responseApprovalData.sourceBasisHash,
+            formalSourceHash: clientResponse.formalSourceHash,
+            formalSnapshotHash: clientResponse.formalSnapshotHash
+          };
         }
       }
       const riskRow = this.db.prepare(`
@@ -21950,6 +23937,8 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
         notes: normalizeText(payload.notes, '') || null,
         source,
         formalControl,
+        ...(conversationOrigin ? { conversationOrigin } : {}),
+        ...(revisionOrigin ? { revisionOrigin } : {}),
         requestedStatus,
         requiresApproval
       });
@@ -21987,6 +23976,8 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
         source,
         sourceHash,
         formalControl,
+        conversationOrigin,
+        revisionOrigin,
         entryKey,
         entryFingerprint,
         retainedAt: timestamp,
@@ -22033,6 +24024,8 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
           notes: payload.notes || null,
           source: payload.source || null,
           formalControl,
+          conversationOrigin,
+          revisionOrigin,
           contractSource: source,
           formalSnapshotHash: snapshotHash,
           requestedStatus,
@@ -22067,6 +24060,8 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
             requestedStatus,
             lineItems,
             formalControl,
+            conversationOrigin,
+            revisionOrigin,
             sourceHash,
             snapshotHash,
             entryKey,
@@ -22219,6 +24214,13 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
           requestedStatus,
           requiresApproval,
           discipline: payload.discipline || null,
+          conversationOrigin: payload.conversationOrigin || null,
+          fieldTaskIds: Array.isArray(payload.fieldTaskIds) ? [...new Set(payload.fieldTaskIds)] : [],
+          fieldShareEnabled: payload.fieldShareEnabled === true,
+          workerId: payload.workerId || null,
+          workerName: payload.workerName || null,
+          sourceReportId: payload.sourceReportId || null,
+          workPackEntryKey: payload.workPackEntryKey || null,
           jobTitle: job.title
         }),
         timestamp,
@@ -22260,6 +24262,19 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
     });
   }
 
+  submittalAttachmentManifest(jobId, attachmentIds) {
+    const documents = this.db.prepare('SELECT * FROM documents WHERE job_id = ?').all(jobId).map(row => this.mapDocument(row));
+    return submittalAttachmentManifest(documents, jobId, attachmentIds);
+  }
+
+  isSubmittalAttachment(jobId, documentId) {
+    return this.db.prepare('SELECT attachments_json FROM submittal_records WHERE job_id = ?').all(jobId)
+      .some(row => {
+        const attachments = fromJson(row.attachments_json, []);
+        return Array.isArray(attachments) && attachments.map(String).includes(String(documentId));
+      });
+  }
+
   createSubmittalRecord(jobId, payload = {}, options = {}) {
     return this.transaction(() => {
       const job = this.requireJob(jobId);
@@ -22269,6 +24284,17 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       const requestedStatus = normalizeStatus(payload.status, 'draft');
       const approvalStatuses = ['approved', 'accepted', 'issued', 'sent', 'closed', 'client_visible'];
       const attachments = normalizeList(payload.attachments || payload.documents || payload.files);
+      const taskIds = [...new Set(normalizeList(payload.taskIds || payload.task_ids))];
+      if (taskIds.length > 50) {
+        throw ledgerInputError('submittal_task_limit_exceeded', 'A submittal can be linked to at most 50 job tasks.', { limit: 50 }, 400);
+      }
+      if (taskIds.length) {
+        const jobTaskIds = new Set(this.db.prepare('SELECT id FROM job_tasks WHERE job_id = ?').all(jobId).map(task => task.id));
+        const invalidTaskIds = taskIds.filter(taskId => !jobTaskIds.has(taskId));
+        if (invalidTaskIds.length) {
+          throw ledgerInputError('submittal_task_not_in_job', 'Every linked submittal task must belong to the same job.', { taskIds: invalidTaskIds }, 400);
+        }
+      }
       const requiresApproval = normalizeBoolean(payload.requiresApproval, approvalStatuses.includes(requestedStatus) || normalizeBoolean(payload.clientVisible, false));
       const status = requiresApproval && approvalStatuses.includes(requestedStatus) ? 'pending_approval' : requestedStatus;
 
@@ -22294,6 +24320,7 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
           material: payload.material || null,
           specification: payload.specification || payload.spec || null,
           clientVisible: normalizeBoolean(payload.clientVisible, false),
+          taskIds,
           source: payload.source || null,
           jobTitle: job.title
         }),
@@ -22310,7 +24337,7 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
           approvalType: 'submittal_approval',
           summary: `Approve submittal ${normalizeText(payload.title, 'material package')}`,
           reason: 'Approved or issued submittals can drive procurement, installation, and client-visible commitments. Approval is required before reliance.',
-          data: { requestedStatus, attachments, packageName: payload.packageName || payload.package_name || payload.package || null }
+          data: { requestedStatus, attachments, attachmentManifest: this.submittalAttachmentManifest(jobId, attachments), packageName: payload.packageName || payload.package_name || payload.package || null, taskIds }
         }, { actor, audit: false });
         this.db.prepare('UPDATE submittal_records SET approval_id = ?, updated_at = ? WHERE id = ?').run(approval.id, nowIso(), id);
       }
@@ -22334,7 +24361,9 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       const optionsList = Array.isArray(payload.options) ? payload.options : normalizeList(payload.options);
       const value = normalizeNumber(payload.value || payload.amount, 0);
       const requiresApproval = normalizeBoolean(payload.requiresApproval, approvalStatuses.includes(requestedStatus) || value >= 1000);
-      const status = requiresApproval && approvalStatuses.includes(requestedStatus) ? 'pending_approval' : requestedStatus;
+      const conversationOrigin = options.conversationOrigin && typeof options.conversationOrigin === 'object' ? options.conversationOrigin : null;
+      const publishAfterApproval = Boolean(conversationOrigin && payload.clientVisible === false && requiresApproval);
+      const status = requiresApproval && (approvalStatuses.includes(requestedStatus) || publishAfterApproval) ? 'pending_approval' : requestedStatus;
 
       this.db.prepare(`
         INSERT INTO client_selections (id, job_id, title, category, status, client_name, currency, value, due_at, decided_at, approval_id, options_json, data_json, created_at, updated_at)
@@ -22357,6 +24386,7 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
           selectedOption: payload.selectedOption || payload.selected_option || null,
           notes: payload.notes || payload.note || null,
           clientVisible: normalizeBoolean(payload.clientVisible, true),
+          ...(conversationOrigin ? { conversationOrigin, publishAfterApproval } : {}),
           source: payload.source || null,
           jobTitle: job.title
         }),
@@ -22373,7 +24403,8 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
           approvalType: 'client_selection_approval',
           summary: `Approve client selection ${normalizeText(payload.title, 'decision')}`,
           reason: 'Client selections can affect scope, procurement, price, and commitments. Approval is required before locking or ordering.',
-          data: { requestedStatus, value, selectedOption: payload.selectedOption || payload.selected_option || null }
+          data: { requestedStatus, value, selectedOption: payload.selectedOption || payload.selected_option || null,
+            ...(publishAfterApproval ? { publishAfterApproval, conversationOrigin } : {}) }
         }, { actor, audit: false });
         this.db.prepare('UPDATE client_selections SET approval_id = ?, updated_at = ? WHERE id = ?').run(approval.id, nowIso(), id);
       }
@@ -22463,6 +24494,85 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
     const id = normalizeText(options.id || payload.id, '') || makeId('task');
     const timestamp = nowIso();
     const schedule = normalizeTaskSchedule(payload);
+    const materialRequirementIds = [...new Set(normalizeList(payload.materialRequirementIds || payload.material_requirement_ids || payload.data?.materialRequirementIds)
+      .map(value => normalizeText(value, '')).filter(Boolean))];
+    const inputCrewRequirements = payload.requiredCrewRequirements ?? payload.required_crew_requirements ?? payload.data?.requiredCrewRequirements;
+    let requiredCrewRequirements = [];
+    if (inputCrewRequirements !== undefined) {
+      if (!Array.isArray(inputCrewRequirements) || inputCrewRequirements.length < 1 || inputCrewRequirements.length > 8) {
+        throw ledgerInputError('task_crew_requirements_invalid', 'Record between one and eight explicit trade requirements for the task.');
+      }
+      const seenCrewRoles = new Set();
+      requiredCrewRequirements = inputCrewRequirements.map(item => {
+        const role = normalizeText(item?.role || item?.trade || '', '');
+        const count = Number(item?.count ?? item?.workers ?? 1);
+        const key = role.normalize('NFKC').trim().toLocaleLowerCase('nl-NL').replace(/[^\p{L}\p{N}]+/gu, ' ');
+        if (!role || role.length > 80 || !Number.isInteger(count) || count < 1 || count > 12 || seenCrewRoles.has(key)) {
+          throw ledgerInputError('task_crew_requirements_invalid', 'Each crew requirement needs a unique trade role and a whole-number crew size from 1 to 12.');
+        }
+        seenCrewRoles.add(key);
+        return { role, count };
+      });
+      if (requiredCrewRequirements.reduce((total, item) => total + item.count, 0) > 12) {
+        throw ledgerInputError('task_required_crew_size_invalid', 'The combined task crew cannot exceed 12 workers.');
+      }
+    }
+    const requiredTrade = normalizeText(requiredCrewRequirements[0]?.role || payload.requiredTrade || payload.required_trade || payload.data?.requiredTrade || '', '');
+    if (requiredTrade.length > 80) throw ledgerInputError('task_required_trade_too_long', 'Required trade must be 80 characters or fewer.');
+    const requiredCrewSize = requiredCrewRequirements.length
+      ? requiredCrewRequirements.reduce((total, item) => total + item.count, 0)
+      : Number(payload.requiredCrewSize ?? payload.data?.requiredCrewSize ?? 1);
+    if (!Number.isInteger(requiredCrewSize) || requiredCrewSize < 1 || requiredCrewSize > 12) {
+      throw ledgerInputError('task_required_crew_size_invalid', 'Required crew size must be a whole number from 1 to 12.');
+    }
+    const supervisorRatioInput = payload.supervisionRatio ?? payload.data?.supervisionRatio ?? null;
+    const supervisorWorkerIds = [...new Set([
+      normalizeText(payload.supervisorWorkerId || payload.data?.supervisorWorkerId || '', ''),
+      ...normalizeList(payload.supervisorWorkerIds || payload.data?.supervisorWorkerIds).map(value => normalizeText(value, ''))
+    ].filter(Boolean))];
+    if (supervisorWorkerIds.length > 12) throw ledgerInputError('task_supervisor_count_invalid', 'A task cannot name more than twelve supervisors.');
+    const supervisorWorkerId = supervisorWorkerIds[0] || '';
+    let supervisorTrade = '';
+    if (supervisorWorkerIds.length) {
+      const supervisors = supervisorWorkerIds.map(workerId => {
+        const supervisor = this.db.prepare(`
+        SELECT workers.role AS worker_role, assignments.role AS assignment_role
+        FROM assignments JOIN workers ON workers.id = assignments.worker_id
+        WHERE assignments.job_id = ? AND assignments.worker_id = ?
+          AND ${this.activeAssignmentStatusSql('assignments')}
+        ORDER BY assignments.created_at ASC LIMIT 1
+        `).get(jobId, workerId);
+        if (!supervisor) throw ledgerInputError('task_supervisor_assignment_required', 'Supervised work requires each named supervisor to have an active assignment to this job.', { jobId, workerId }, 409);
+        return { workerId, ...supervisor };
+      });
+      supervisorTrade = normalizeText(payload.supervisorTrade || payload.data?.supervisorTrade || supervisors[0].assignment_role || supervisors[0].worker_role || '', '');
+      const roleKey = value => normalizeText(value, '').normalize('NFKC').trim().toLocaleLowerCase('nl-NL').replace(/[^\p{L}\p{N}]+/gu, ' ');
+      if (supervisorTrade.length > 80 || supervisors.some(supervisor => roleKey(supervisor.assignment_role || supervisor.worker_role) !== roleKey(supervisorTrade))) {
+        throw ledgerInputError('task_supervisor_trade_mismatch', 'The supervision role must match every named supervisor\'s active job assignment.', { supervisorWorkerIds }, 409);
+      }
+      const assigneeId = normalizeText(payload.assigneeId || payload.assignee_id || '', '');
+      if (assigneeId && supervisorWorkerIds.includes(assigneeId)) {
+        throw ledgerInputError('task_supervisor_must_be_distinct', 'The assigned worker cannot supervise their own task.', { supervisorWorkerIds });
+      }
+    }
+    let supervisionRatio = null;
+    if (supervisorRatioInput !== null && supervisorRatioInput !== undefined && supervisorRatioInput !== '') {
+      const workersPerSupervisor = Number(supervisorRatioInput.workersPerSupervisor ?? supervisorRatioInput.workers_per_supervisor);
+      if (!Number.isInteger(workersPerSupervisor) || workersPerSupervisor < 1 || workersPerSupervisor > 12 || !supervisorWorkerIds.length) {
+        throw ledgerInputError('task_supervision_ratio_invalid', 'A supervision ratio requires one to twelve workers per supervisor and named supervisors.');
+      }
+      const requiredSupervisorCount = Math.ceil(requiredCrewSize / workersPerSupervisor);
+      if (supervisorWorkerIds.length < requiredSupervisorCount) {
+        throw ledgerInputError('task_supervisor_count_insufficient', `The crew size and selected ratio require at least ${requiredSupervisorCount} named supervisors.`, { requiredSupervisorCount });
+      }
+      supervisionRatio = { workersPerSupervisor, requiredSupervisorCount };
+    }
+    const materialRows = materialRequirementIds.length
+      ? this.db.prepare(`SELECT id FROM material_requirements WHERE job_id = ? AND id IN (${materialRequirementIds.map(() => '?').join(', ')})`).all(jobId, ...materialRequirementIds)
+      : [];
+    if (materialRows.length !== materialRequirementIds.length) {
+      throw ledgerInputError('task_material_requirement_job_mismatch', 'Every linked material requirement must belong to this job.', { materialRequirementIds });
+    }
     this.db.prepare(`
       INSERT INTO job_tasks (
         id, job_id, title, description, status, priority, assignee_id, due_at, completed_at,
@@ -22483,7 +24593,17 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       schedule.plannedEnd,
       schedule.durationHours,
       toJson({
-        ...(payload.data && typeof payload.data === 'object' && !Array.isArray(payload.data) ? payload.data : {}),
+        ...(payload.data && typeof payload.data === 'object' && !Array.isArray(payload.data)
+          ? Object.fromEntries(Object.entries(payload.data).filter(([key]) => key !== 'jhaApplicability'))
+          : {}),
+        materialRequirementIds,
+        requiredTrade: requiredTrade || null,
+        requiredCrewSize,
+        requiredCrewRequirements,
+        supervisorWorkerId: supervisorWorkerId || null,
+        supervisorWorkerIds,
+        supervisorTrade: supervisorTrade || null,
+        supervisionRatio,
         source: payload.source || payload.data?.source || null
       }),
       timestamp,
@@ -22494,6 +24614,72 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       this.audit({ entityType: 'task', entityId: id, jobId, action: 'create_task', actor: options.actor || 'Contractor.AI', after: task });
     }
     return task;
+  }
+
+  resolveReplacementScheduleReview(jobId, task, schedule, data, actor, timestamp, approvalId = null) {
+    const review = data?.replacementScheduleReviewRequired;
+    if (!review || !schedule?.plannedStart || !schedule?.plannedEnd) return data;
+    const start = Date.parse(schedule.plannedStart);
+    const end = Date.parse(schedule.plannedEnd);
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return data;
+    const memberships = new Map();
+    const addMembership = (workerId, role) => {
+      if (!workerId) return;
+      const roles = memberships.get(workerId) || new Set();
+      roles.add(normalizeText(role, ''));
+      memberships.set(workerId, roles);
+    };
+    const crewAssignments = Array.isArray(data.crewWorkerAssignments) ? data.crewWorkerAssignments : [];
+    for (const member of crewAssignments) {
+      addMembership(member?.workerId, member?.role || data.requiredTrade);
+    }
+    if (!crewAssignments.some(member => member?.workerId === task.assigneeId)) {
+      addMembership(task.assigneeId, data.requiredTrade);
+    }
+    if (!Array.isArray(data.crewWorkerAssignments)) {
+      for (const workerId of Array.isArray(data.crewWorkerIds) ? data.crewWorkerIds : []) addMembership(workerId, data.requiredTrade);
+    }
+    for (const workerId of Array.isArray(data.supervisorWorkerIds) ? data.supervisorWorkerIds : []) {
+      addMembership(workerId, data.supervisorTrade);
+    }
+    addMembership(data.supervisorWorkerId, data.supervisorTrade);
+    if (!memberships.size) return data;
+
+    const roleKey = value => normalizeText(value, '').normalize('NFKC').trim().toLocaleLowerCase('nl-NL').replace(/[^\p{L}\p{N}]+/gu, ' ');
+    for (const [workerId, roles] of memberships) {
+      const assignments = this.db.prepare(`
+        SELECT assignments.*, workers.status AS worker_status
+        FROM assignments JOIN workers ON workers.id = assignments.worker_id
+        WHERE assignments.job_id = ? AND assignments.worker_id = ?
+          AND ${this.activeAssignmentStatusSql('assignments')}
+      `).all(jobId, workerId).filter(assignment => {
+        const assignmentData = fromJson(assignment.data_json, {});
+        return assignment.status !== 'pending_approval' && assignmentData.requiresApproval !== true
+          && Date.parse(assignment.scheduled_start || '') <= start
+          && Date.parse(assignment.scheduled_end || '') >= end
+          && !['offline', 'inactive', 'retired'].includes(normalizeStatus(assignment.worker_status, 'available'));
+      });
+      for (const role of roles) {
+        const matchingAssignment = assignments.find(assignment => !role || roleKey(assignment.role) === roleKey(role));
+        if (!matchingAssignment || !this.assessWorkerQualifications(workerId, {
+          jobId, role: role || matchingAssignment.role, at: schedule.plannedEnd
+        }).ready) return data;
+      }
+    }
+
+    const { replacementScheduleReviewRequired: _pendingReview, ...retainedData } = data;
+    return {
+      ...retainedData,
+      replacementScheduleReview: {
+        ...review,
+        status: 'resolved',
+        resolvedBy: actor,
+        resolvedAt: timestamp,
+        resolutionApprovalId: approvalId,
+        scheduledStart: schedule.plannedStart,
+        scheduledEnd: schedule.plannedEnd
+      }
+    };
   }
 
   updateTaskSchedule(jobId, taskId, payload = {}, options = {}) {
@@ -22515,11 +24701,14 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       const before = this.mapTask(row);
       const schedule = normalizeTaskSchedule(payload, row);
       const timestamp = nowIso();
+      const data = this.resolveReplacementScheduleReview(jobId, {
+        ...before, plannedStart: schedule.plannedStart, plannedEnd: schedule.plannedEnd
+      }, schedule, before.data || {}, actor, timestamp);
       this.db.prepare(`
         UPDATE job_tasks
-        SET planned_start = ?, planned_end = ?, duration_hours = ?, updated_at = ?
+        SET planned_start = ?, planned_end = ?, duration_hours = ?, data_json = ?, updated_at = ?
         WHERE id = ? AND job_id = ?
-      `).run(schedule.plannedStart, schedule.plannedEnd, schedule.durationHours, timestamp, taskId, jobId);
+      `).run(schedule.plannedStart, schedule.plannedEnd, schedule.durationHours, toJson(data), timestamp, taskId, jobId);
       const task = this.mapTask(this.db.prepare('SELECT * FROM job_tasks WHERE id = ?').get(taskId));
       this.audit({
         entityType: 'task',
@@ -22681,7 +24870,7 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
     });
   }
 
-  calculateJobSchedule(jobId, payload = {}) {
+  calculateJobSchedule(jobId, payload = {}, taskOverrides = []) {
     const job = this.mapJob(this.requireJob(jobId, { allowInactive: true }));
     const taskRows = this.db.prepare('SELECT * FROM job_tasks WHERE job_id = ? ORDER BY created_at ASC').all(jobId);
     const tasks = taskRows.map(row => this.mapTask(row)).filter(task => (
@@ -22689,6 +24878,12 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       && task.data?.excludeFromWorkPlan !== true
     ));
     const activeTaskIds = new Set(tasks.map(task => task.id));
+    for (const override of taskOverrides) {
+      if (!activeTaskIds.has(override.id) || !Number.isFinite(override.durationHours) || override.durationHours <= 0 || override.durationHours > 100000) {
+        throw Object.assign(new Error('Schedule scenario requires an active task in this dossier and a valid duration.'), { statusCode: 400 });
+      }
+      tasks.find(task => task.id === override.id).durationHours = override.durationHours;
+    }
     const dependencies = this.listTaskDependencies(jobId).filter(dependency => (
       activeTaskIds.has(dependency.predecessorTaskId) && activeTaskIds.has(dependency.successorTaskId)
     ));
@@ -22702,6 +24897,96 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
     const unscheduledTasks = tasks
       .filter(task => !(normalizeNumber(task.durationHours, 0) > 0))
       .map(task => ({ id: task.id, title: task.title, reason: 'duration_required' }));
+
+    const materialRows = this.db.prepare("SELECT * FROM material_requirements WHERE job_id = ? AND status <> 'cancelled'").all(jobId);
+    const materialById = new Map(materialRows.map(row => [row.id, this.mapMaterialRequirement(row)]));
+    const materialConstraints = [];
+    const materialReadyAtByTask = new Map();
+    const sharedStockByRequirement = new Map();
+    const getSharedStockPosition = material => {
+      if (!material.materialId) return null;
+      if (sharedStockByRequirement.has(material.id)) return sharedStockByRequirement.get(material.id);
+      const row = this.db.prepare(`
+        SELECT m.stock_quantity,
+          COALESCE((SELECT SUM(a.quantity-a.consumed_quantity) FROM shared_material_allocations a
+            WHERE a.material_id=m.id AND a.status='reserved'),0) AS reserved_quantity,
+          COALESCE((SELECT SUM(a.quantity-a.consumed_quantity) FROM shared_material_allocations a
+            WHERE a.material_id=m.id AND a.status='reserved' AND a.material_requirement_id=?),0) AS reserved_for_requirement,
+          (SELECT a.id FROM shared_material_allocations a
+            WHERE a.material_id=m.id AND a.status='reserved' AND a.material_requirement_id=? LIMIT 1) AS active_allocation_id,
+          COALESCE((SELECT SUM(i.quantity-i.received_quantity) FROM shared_material_site_issues i
+            WHERE i.material_requirement_id=? AND i.received_quantity<i.quantity),0) AS in_transit_quantity,
+          (SELECT MAX(i.expected_arrival_at) FROM shared_material_site_issues i
+            WHERE i.material_requirement_id=? AND i.received_quantity<i.quantity) AS in_transit_expected_at
+        FROM materials m WHERE m.id=?
+      `).get(material.id, material.id, material.id, material.id, material.materialId);
+      if (!row) {
+        sharedStockByRequirement.set(material.id, null);
+        return null;
+      }
+      const stockQuantity = Math.max(0, normalizeNumber(row.stock_quantity, 0));
+      const reservedQuantity = Math.max(0, normalizeNumber(row.reserved_quantity, 0));
+      const reservedForRequirement = Math.max(0, normalizeNumber(row.reserved_for_requirement, 0));
+      const position = {
+        warehouseStockQuantity: stockQuantity,
+        warehouseReservedQuantity: reservedQuantity,
+        warehouseReservedForRequirement: reservedForRequirement,
+        warehouseAllocationId: row.active_allocation_id || null,
+        warehouseReservedForOtherJobs: Math.max(0, reservedQuantity - reservedForRequirement),
+        warehouseAvailableQuantity: Math.max(0, stockQuantity - reservedQuantity),
+        inTransitQuantity: Math.max(0, normalizeNumber(row.in_transit_quantity, 0)),
+        inTransitExpectedAt: row.in_transit_expected_at || null
+      };
+      sharedStockByRequirement.set(material.id, position);
+      return position;
+    };
+    for (const task of tasks) {
+      const linkedIds = normalizeList(task.data?.materialRequirementIds).map(value => normalizeText(value, '')).filter(Boolean);
+      for (const materialId of linkedIds) {
+        const material = materialById.get(materialId);
+        if (!material) {
+          materialConstraints.push({ taskId: task.id, taskTitle: task.title, materialRequirementId: materialId, materialName: 'Missing material requirement', requiredQuantity: null, availableQuantity: 0, shortfall: null, expectedAvailableAt: null, blocker: true, reason: 'material_requirement_missing' });
+          continue;
+        }
+        const requiredQuantity = normalizeNumber(material.quantity, 0);
+        const availableQuantity = Math.max(0, normalizeNumber(material.data?.availableQuantity, 0));
+        const shortfall = roundQuantity(Math.max(0, requiredQuantity - availableQuantity));
+        if (shortfall <= 0) continue;
+        const sharedStock = getSharedStockPosition(material);
+        const inTransitCoversShortfall = sharedStock && sharedStock.inTransitQuantity + 0.000001 >= shortfall;
+        const insufficientTransit = Boolean(sharedStock?.inTransitQuantity > 0 && !inTransitCoversShortfall);
+        const expectedInput = insufficientTransit ? null
+          : (sharedStock?.inTransitQuantity > 0
+            ? (sharedStock.inTransitExpectedAt || material.data?.expectedAvailableAt || null)
+            : material.data?.expectedAvailableAt || null);
+        const expectedTimestamp = expectedInput ? Date.parse(expectedInput) : NaN;
+        const etaValid = Number.isFinite(expectedTimestamp);
+        const etaPassed = etaValid && expectedTimestamp < Date.now();
+        const blocker = insufficientTransit || !etaValid || etaPassed;
+        const constraint = {
+          taskId: task.id,
+          taskTitle: task.title,
+          materialRequirementId: material.id,
+          materialName: material.name,
+          unit: material.unit,
+          requiredQuantity,
+          availableQuantity,
+          shortfall,
+          expectedAvailableAt: etaValid ? new Date(expectedTimestamp).toISOString() : null,
+          expectedAvailableAtReference: material.data?.expectedAvailableAtReference || null,
+          ...(sharedStock || {}),
+          blocker,
+          reason: insufficientTransit ? 'in_transit_quantity_insufficient'
+            : (!etaValid ? 'expected_availability_unknown' : (etaPassed ? 'expected_availability_date_passed' : 'expected_availability_estimated'))
+        };
+        materialConstraints.push(constraint);
+        if (!blocker) {
+          const current = materialReadyAtByTask.get(task.id) || 0;
+          materialReadyAtByTask.set(task.id, Math.max(current, expectedTimestamp));
+        }
+      }
+    }
+    const materialBlockers = materialConstraints.filter(item => item.blocker);
 
     const graph = new Graph({ directed: true });
     for (const task of tasks) graph.setNode(task.id, task);
@@ -22723,8 +25008,16 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       tasks: tasks.map(task => ({
         id: task.id,
         status: task.status,
-        durationHours: roundScheduleHours(task.durationHours)
+        durationHours: roundScheduleHours(task.durationHours),
+        materialRequirementIds: normalizeList(task.data?.materialRequirementIds).map(value => normalizeText(value, '')).filter(Boolean).sort()
       })).sort((left, right) => left.id.localeCompare(right.id)),
+      materialConstraints: materialConstraints.map(({ taskId, materialRequirementId, requiredQuantity, availableQuantity, expectedAvailableAt, expectedAvailableAtReference,
+        warehouseStockQuantity, warehouseReservedQuantity, warehouseReservedForRequirement, warehouseReservedForOtherJobs, warehouseAvailableQuantity,
+        warehouseAllocationId, inTransitQuantity, inTransitExpectedAt, blocker, reason }) => ({
+        taskId, materialRequirementId, requiredQuantity, availableQuantity, expectedAvailableAt, expectedAvailableAtReference,
+        warehouseStockQuantity, warehouseReservedQuantity, warehouseReservedForRequirement, warehouseReservedForOtherJobs,
+        warehouseAvailableQuantity, warehouseAllocationId, inTransitQuantity, inTransitExpectedAt, blocker, reason
+      })).sort((left, right) => `${left.taskId}:${left.materialRequirementId}`.localeCompare(`${right.taskId}:${right.materialRequirementId}`)),
       dependencies: dependencies.map(dependency => ({
         id: dependency.id,
         predecessorTaskId: dependency.predecessorTaskId,
@@ -22734,12 +25027,15 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       })).sort((left, right) => left.id.localeCompare(right.id))
     };
     const planningHash = sha256Text(toJson(basis));
-    if (!tasks.length || !plannedStart || unscheduledTasks.length) {
+    if (!tasks.length || !plannedStart || unscheduledTasks.length || materialBlockers.length) {
+      const reason = !tasks.length ? 'no_active_tasks'
+        : (!plannedStart ? 'planned_start_required'
+          : (unscheduledTasks.length ? 'task_durations_required' : 'material_availability_unresolved'));
       return {
         generatedAt: nowIso(),
         calculationMode: basis.calculationMode,
         ready: false,
-        reason: !tasks.length ? 'no_active_tasks' : (!plannedStart ? 'planned_start_required' : 'task_durations_required'),
+        reason,
         plannedStart,
         plannedEnd: null,
         projectDurationHours: 0,
@@ -22747,6 +25043,8 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
         tasks,
         dependencies,
         unscheduledTasks,
+        materialConstraints,
+        materialBlockers,
         criticalPathTaskIds: [],
         lookAhead: []
       };
@@ -22763,8 +25061,10 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
         const dependency = graph.edge(edge);
         return Math.max(latest, predecessor.earliestFinishMs + normalizeNumber(dependency.lagHours, 0) * SCHEDULE_HOUR_MS);
       }, anchorMs);
-      const earliestFinishMs = earliestStartMs + normalizeNumber(task.durationHours, 0) * SCHEDULE_HOUR_MS;
-      forward.set(taskId, { earliestStartMs, earliestFinishMs });
+      const materialReleaseAt = materialReadyAtByTask.get(taskId) || 0;
+      const materialConstrainedStartMs = Math.max(earliestStartMs, materialReleaseAt);
+      const earliestFinishMs = materialConstrainedStartMs + normalizeNumber(task.durationHours, 0) * SCHEDULE_HOUR_MS;
+      forward.set(taskId, { earliestStartMs: materialConstrainedStartMs, earliestFinishMs });
     }
     const projectEndMs = Math.max(...[...forward.values()].map(item => item.earliestFinishMs));
     const backward = new Map();
@@ -22794,7 +25094,8 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
         latestStart: new Date(late.latestStartMs).toISOString(),
         latestEnd: new Date(late.latestFinishMs).toISOString(),
         totalFloatHours,
-        critical: Math.abs(totalFloatHours) < 0.01
+        critical: Math.abs(totalFloatHours) < 0.01,
+        materialConstraints: materialConstraints.filter(item => item.taskId === task.id)
       };
     });
     const criticalPathTaskIds = scheduledTasks.filter(task => task.critical).map(task => task.id);
@@ -22822,6 +25123,8 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       unscheduledTasks: [],
       criticalPathTaskIds,
       lookAhead,
+      materialConstraints,
+      materialBlockers: [],
       horizonDays,
       referenceAt
     };
@@ -23156,8 +25459,10 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
           'schedule_baseline_not_ready',
           plan.reason === 'planned_start_required'
             ? 'A work-plan start is required before requesting baseline approval.'
-            : 'Every active task needs a positive duration before requesting baseline approval.',
-          { reason: plan.reason, unscheduledTasks: plan.unscheduledTasks }
+            : (plan.reason === 'material_availability_unresolved'
+              ? 'Resolve linked material availability or record a referenced expected availability date before requesting baseline approval.'
+              : 'Every active task needs a positive duration before requesting baseline approval.'),
+          { reason: plan.reason, unscheduledTasks: plan.unscheduledTasks, materialBlockers: plan.materialBlockers || [] }
         );
         error.statusCode = 409;
         throw error;
@@ -23301,6 +25606,61 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
     return { dailyHours, weeklyHours };
   }
 
+  normalizeCrewCapacityWorkingWindows(supplied, dailyHours) {
+    if (supplied === undefined || supplied === null) return {};
+    if (typeof supplied !== 'object' || Array.isArray(supplied)) {
+      throw ledgerInputError('crew_capacity_working_windows_invalid', 'Working-time windows must be provided per weekday.');
+    }
+    const windows = {};
+    const intervalFormat = Object.values(supplied).some(Array.isArray);
+    for (const day of CREW_CAPACITY_DAY_KEYS) {
+      const value = supplied[day];
+      const intervals = Array.isArray(value)
+        ? value
+        : value && !(value.start === '' && value.end === '') ? [value] : [];
+      if (intervals.length === 0) {
+        if (dailyHours[day] > 0) {
+          throw ledgerInputError('crew_capacity_working_window_required', `Add a start and end time for ${day}, or use an existing day-only profile without submitting working-time windows.`, { day });
+        }
+        continue;
+      }
+      if (dailyHours[day] <= 0) {
+        throw ledgerInputError('crew_capacity_working_window_without_hours', `Remove the working-time window for ${day} because its retained capacity is zero.`, { day });
+      }
+      const validTime = time => /^(?:[01]\d|2[0-3]):(?:00|30)$/.test(time);
+      if (intervals.length > 4) {
+        throw ledgerInputError('crew_capacity_working_windows_limit', `No more than four work intervals can be recorded for ${day}.`, { day });
+      }
+      const toMinutes = time => Number(time.slice(0, 2)) * 60 + Number(time.slice(3));
+      const normalized = intervals.map((interval, index) => {
+        const start = String(interval?.start || '');
+        const end = String(interval?.end || '');
+        if (!validTime(start) || !validTime(end)) {
+          throw ledgerInputError('crew_capacity_working_window_time_invalid', `Working times for ${day} must use 30-minute increments in 24-hour HH:mm format.`, { day, index });
+        }
+        const startMinutes = toMinutes(start);
+        const endMinutes = toMinutes(end);
+        if (endMinutes <= startMinutes) {
+          throw ledgerInputError('crew_capacity_working_window_duration_invalid', `Each working interval for ${day} must end after it starts.`, { day, index });
+        }
+        return { start, end, startMinutes, endMinutes };
+      });
+      for (let index = 1; index < normalized.length; index += 1) {
+        if (normalized[index].startMinutes < normalized[index - 1].endMinutes) {
+          throw ledgerInputError('crew_capacity_working_windows_overlap', `Working intervals for ${day} must be ordered and cannot overlap.`, { day, index });
+        }
+      }
+      const durationMinutes = normalized.reduce((sum, interval) => sum + interval.endMinutes - interval.startMinutes, 0);
+      if (dailyHours[day] * 60 > durationMinutes) {
+        throw ledgerInputError('crew_capacity_working_window_duration_invalid', `The working intervals for ${day} must contain at least the retained daily hours.`, { day });
+      }
+      windows[day] = intervalFormat
+        ? normalized.map(({ start, end }) => ({ start, end }))
+        : { start: normalized[0].start, end: normalized[0].end };
+    }
+    return windows;
+  }
+
   setCrewCapacityProfile(workerId, payload = {}, options = {}) {
     return this.transaction(() => {
       const workerRow = this.db.prepare('SELECT * FROM workers WHERE id = ?').get(workerId);
@@ -23310,6 +25670,17 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       }
       const actor = options.actor || payload.actor || 'Contractor.AI';
       const { dailyHours, weeklyHours } = this.normalizeCrewCapacityDailyHours(payload);
+      const active = this.db.prepare("SELECT * FROM crew_capacity_profiles WHERE worker_id = ? AND status = 'active'").get(workerId);
+      const existingProfile = active ? this.mapCrewCapacityProfile(active) : null;
+      const windowsInput = Object.hasOwn(payload, 'workingWindows')
+        ? payload.workingWindows
+        : Object.hasOwn(payload, 'working_windows')
+          ? payload.working_windows
+          : existingProfile?.hasWorkingTimeWindows
+            ? existingProfile.workingWindows
+            : undefined;
+      const workingWindows = this.normalizeCrewCapacityWorkingWindows(windowsInput, dailyHours);
+      const intervalFormat = Object.values(windowsInput || {}).some(Array.isArray);
       const effectiveFrom = normalizeRetainedDate(payload.effectiveFrom || payload.effective_from || nowIso().slice(0, 10), {
         required: true,
         label: 'Capacity effective date',
@@ -23322,13 +25693,16 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
         throw ledgerInputError('crew_capacity_timezone_invalid', 'Crew capacity timezone must be a valid IANA timezone.');
       }
       const source = {
-        format: CREW_CAPACITY_PROFILE_FORMAT,
+        format: Object.keys(workingWindows).length
+          ? intervalFormat ? CREW_CAPACITY_PROFILE_FORMAT_V3 : CREW_CAPACITY_PROFILE_FORMAT_V2
+          : CREW_CAPACITY_PROFILE_FORMAT_V1,
         workerId,
         effectiveFrom,
         timezone,
         dailyHours,
         weeklyHours
       };
+      if ([CREW_CAPACITY_PROFILE_FORMAT_V2, CREW_CAPACITY_PROFILE_FORMAT_V3].includes(source.format)) source.workingWindows = workingWindows;
       const sourceHash = sha256Json(source);
       const entryKey = normalizeText(payload.entryKey || payload.entry_key, '')
         || `crew-capacity:${workerId}:${effectiveFrom}:${sourceHash.slice(0, 16)}`;
@@ -23343,7 +25717,6 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
         }
         return { profile: this.mapCrewCapacityProfile(replay), replayed: true, unchanged: replay.status === 'active' };
       }
-      const active = this.db.prepare("SELECT * FROM crew_capacity_profiles WHERE worker_id = ? AND status = 'active'").get(workerId);
       if (active?.source_hash === sourceHash) {
         return { profile: this.mapCrewCapacityProfile(active), replayed: true, unchanged: true };
       }
@@ -23384,7 +25757,7 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
         snapshotJson,
         entryKey,
         entryFingerprint,
-        toJson({ notes: normalizeText(payload.notes, '') || null, externalCommitments: 0 }),
+        toJson({ notes: normalizeText(payload.notes, '') || null, workingWindows, externalCommitments: 0 }),
         timestamp,
         timestamp
       );
@@ -23675,14 +26048,17 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       allocationsByWorkerDate.get(key).push(allocation);
     }
     const availabilityByWorker = new Map();
-    for (const period of availability) {
+    const expandedAvailability = this.expandWorkerAvailabilityPeriods(
+      availability,
+      `${range.windowStart}T00:00:00.000Z`,
+      `${range.windowEnd}T23:59:59.999Z`
+    );
+    for (const period of expandedAvailability) {
       if (!availabilityByWorker.has(String(period.workerId))) availabilityByWorker.set(String(period.workerId), []);
       availabilityByWorker.get(String(period.workerId)).push(period);
     }
     const dayOverlapsPeriod = (date, period) => {
-      const dayStart = Date.parse(`${date}T00:00:00.000Z`);
-      const dayEnd = Date.parse(`${date}T23:59:59.999Z`);
-      return Date.parse(period.endsAt) >= dayStart && Date.parse(period.startsAt) <= dayEnd;
+      return workerAvailabilityOverlapsDate(period, date);
     };
     const workers = workerRows.map(row => {
       const worker = this.mapWorker(row);
@@ -23690,7 +26066,8 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       const periods = availabilityByWorker.get(String(worker.id)) || [];
       const days = range.dates.map(date => {
         const dayKey = CREW_CAPACITY_DAY_KEYS[new Date(`${date}T00:00:00.000Z`).getUTCDay()];
-        const absences = periods.filter(period => dayOverlapsPeriod(date, period));
+        const absences = periods.filter(period => period.periodType !== 'standby' && dayOverlapsPeriod(date, period));
+        const standbyWindows = periods.filter(period => period.periodType === 'standby' && dayOverlapsPeriod(date, period));
         const planned = allocationsByWorkerDate.get(`${worker.id}:${date}`) || [];
         const plannedHours = roundScheduleHours(planned.reduce((sum, allocation) => sum + allocation.plannedHours, 0));
         const profileHours = profile && date >= profile.effectiveFrom
@@ -23709,6 +26086,7 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
           overload: plannedHours > availableHours,
           unavailableConflict: absences.length > 0 && plannedHours > 0,
           absences,
+          standbyWindows,
           allocations: planned
         };
       });
@@ -23817,7 +26195,8 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       workers: workers.map(worker => ({ id: worker.id, status: worker.status, updatedAt: worker.updatedAt })).sort((left, right) => left.id.localeCompare(right.id)),
       assignments: assignments.map(assignment => ({ id: assignment.id, jobId: assignment.jobId, workerId: assignment.workerId, status: assignment.status, scheduledStart: assignment.scheduledStart, scheduledEnd: assignment.scheduledEnd, allocationHours: assignment.allocationHours, updatedAt: assignment.updatedAt })).sort((left, right) => left.id.localeCompare(right.id)),
       allocations: allocations.map(allocation => ({ id: allocation.id, workerId: allocation.workerId, assignmentId: allocation.assignmentId, jobId: allocation.jobId, taskId: allocation.taskId, workDate: allocation.workDate, plannedHours: allocation.plannedHours, entryFingerprint: allocation.entryFingerprint, status: allocation.status })).sort((left, right) => left.id.localeCompare(right.id)),
-      availability: availability.map(period => ({ id: period.id, workerId: period.workerId, startsAt: period.startsAt, endsAt: period.endsAt, status: period.status, sourceFingerprint: period.sourceFingerprint })).sort((left, right) => left.id.localeCompare(right.id)),
+      availability: availability.map(period => ({ id: period.id, workerId: period.workerId, periodType: period.periodType, startsAt: period.startsAt, endsAt: period.endsAt, status: period.status, sourceFingerprint: period.sourceFingerprint,
+        ...(period.returnUnknown ? { returnUnknown: true, followUpAt: period.followUpAt } : {}) })).sort((left, right) => left.id.localeCompare(right.id)),
       tasks: taskCoverage.map(task => ({ taskId: task.taskId, jobId: task.jobId, plannedStart: task.plannedStart, plannedEnd: task.plannedEnd, requiredHours: task.requiredHours })).sort((left, right) => left.taskId.localeCompare(right.taskId)),
       jobBaselines: planningJobs.map(job => ({ jobId: job.jobId, scheduleStatus: job.scheduleStatus, baselineId: job.baseline?.id || null, versionNumber: job.baseline?.versionNumber || null, current: job.baseline?.current === true })).sort((left, right) => left.jobId.localeCompare(right.jobId))
     };
@@ -24130,6 +26509,19 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
         requiresApproval,
         approvalReasons
       };
+      if (payload.startReleaseRequired === true) assignmentData.startReleaseRequired = true;
+      if (payload.startReleaseRequired === true || payload.workBoardPositionId) {
+        assignmentData.workBoardPositionId = normalizeText(payload.workBoardPositionId, '', 150) || null;
+        assignmentData.workBoardTermsRevision = normalizeText(payload.workBoardTermsRevision, '', 64) || null;
+        assignmentData.workBoardTaskIds = [...new Set((Array.isArray(payload.workBoardTaskIds) ? payload.workBoardTaskIds : [])
+          .filter(value => typeof value === 'string').slice(0, 50).map(value => value.slice(0, 150)))];
+        if (assignmentData.workBoardPositionId) {
+          const requirement = assignmentTradePartnerRequirement(this.db, { job_id: job.id,
+            data: { workBoardPositionId: assignmentData.workBoardPositionId } });
+          if (!requirement.valid) throw ledgerInputError('work_board_position_scope_invalid', 'The linked work-board position could not be verified.', { positionId: assignmentData.workBoardPositionId }, 409);
+          assignmentData.requiredTradePartnerId = requirement.requiredTradePartnerId;
+        }
+      }
       this.db.prepare(`
         INSERT INTO assignments (id, job_id, worker_id, role, status, scheduled_start, scheduled_end, allocation_hours, data_json, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -24698,10 +27090,54 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
     return reasons;
   }
 
+  reportFieldToolSafetyHold(jobId, reservationId, workerId, payload = {}, options = {}) {
+    return this.transaction(() => {
+      const reservationRow = this.db.prepare('SELECT * FROM tool_reservations WHERE id = ? AND job_id = ?').get(reservationId, jobId);
+      if (!reservationRow?.tool_id) throw ledgerInputError('field_tool_reservation_invalid', 'The equipment reservation is not available in this task.', { reservationId }, 404);
+      const reservation = this.mapToolReservation(reservationRow);
+      const taskId = normalizeText(payload.taskId, '');
+      if (!taskId || reservation.data?.taskId !== taskId) throw ledgerInputError('field_tool_task_mismatch', 'The equipment is not reserved for this reported task.', { reservationId, taskId }, 409);
+      if (!this.activeToolReservationStatus(reservation.status)) throw ledgerInputError('field_tool_reservation_closed', 'This equipment reservation is no longer active.', { reservationId }, 409);
+      const custody = this.db.prepare(`SELECT * FROM equipment_custody_sessions
+        WHERE reservation_id = ? AND tool_id = ? AND job_id = ? AND worker_id = ? AND status = 'checked_out'
+        ORDER BY checked_out_at DESC LIMIT 1`).get(reservationId, reservation.toolId, jobId, workerId);
+      if (!custody) throw ledgerInputError('field_tool_custody_required', 'Only the worker currently holding this equipment can report its condition.', { reservationId }, 403);
+      const issueType = normalizeStatus(payload.issueType, '');
+      if (!['malfunction', 'damaged', 'unsafe'].includes(issueType)) throw ledgerInputError('field_tool_issue_type_invalid', 'Choose malfunction, damage, or unsafe condition.');
+      const note = normalizeText(payload.note, '');
+      if (note.length < 8 || note.length > 2000) throw ledgerInputError('field_tool_issue_note_required', 'Describe the equipment condition in at least eight characters.');
+      const beforeRow = this.db.prepare('SELECT * FROM tools WHERE id = ?').get(reservation.toolId);
+      if (!beforeRow) throw ledgerInputError('field_tool_not_found', 'The reserved equipment record no longer exists.', { toolId: reservation.toolId }, 404);
+      const before = this.mapTool(beforeRow);
+      const data = fromJson(beforeRow.data_json, {});
+      if (data.fieldSafetyHold?.status === 'open') throw ledgerInputError('field_tool_hold_already_open', 'This equipment already has an open safety hold. The office must review it.', { toolId: before.id }, 409);
+      if (!['available', 'in_use'].includes(normalizeStatus(before.status, ''))) throw ledgerInputError('field_tool_not_reportable', 'This equipment is already held from use; contact the office.', { toolId: before.id, status: before.status }, 409);
+      const timestamp = nowIso();
+      const hold = { id: `fieldhold_${sha256Json({ jobId, reservationId, workerId, entryKey: payload.entryKey }).slice(0, 32)}`,
+        status: 'open', issueType, note, jobId, reservationId, taskId, workerId,
+        custodySessionId: custody.id, reportedAt: timestamp, reportedBy: options.actor || workerId,
+        sourceEntryKey: payload.entryKey, externalCommitments: 0 };
+      const nextData = { ...data, fieldSafetyHold: hold };
+      this.db.prepare("UPDATE tools SET status = 'maintenance', data_json = ?, updated_at = ? WHERE id = ?")
+        .run(toJson(nextData), timestamp, before.id);
+      const after = this.mapTool(this.db.prepare('SELECT * FROM tools WHERE id = ?').get(before.id));
+      this.audit({ entityType: 'tool', entityId: before.id, jobId, action: 'report_field_tool_safety_hold',
+        actor: options.actor || workerId, before, after, metadata: { holdId: hold.id, reservationId, taskId, workerId, issueType, externalCommitments: 0 } });
+      return { tool: after, hold, externalCommitments: 0 };
+    });
+  }
+
   reserveTool(jobId, payload = {}, options = {}) {
     return this.transaction(() => {
       const job = this.requireJob(jobId);
       const actor = options.actor || payload.actor || 'Contractor.AI';
+      const taskId = normalizeText(payload.taskId ?? payload.task_id, '');
+      if (taskId) {
+        const task = this.db.prepare('SELECT id, status FROM job_tasks WHERE id = ? AND job_id = ?').get(taskId, jobId);
+        if (!task || ['completed', 'cancelled', 'canceled', 'rejected', 'void'].includes(normalizeStatus(task.status, ''))) {
+          throw ledgerInputError('tool_reservation_task_invalid', 'Equipment can only be linked to an active task on this job.', { taskId, jobId }, 409);
+        }
+      }
       const toolName = normalizeText(payload.toolName || payload.name, 'Tool');
       let tool = null;
       if (payload.toolId) {
@@ -24786,6 +27222,7 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
         requestedCategory: payload.category || tool?.category || null,
         requestedStatus: approvedStatus,
         requestedBy: actor,
+        taskId: taskId || null,
         notes: payload.notes || payload.reason || null,
         conflicts,
         conflictCount: conflicts.length,
@@ -25147,7 +27584,8 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       );
       const toolRow = this.db.prepare('SELECT * FROM tools WHERE id = ?').get(row.tool_id);
       const toolData = fromJson(toolRow?.data_json, {});
-      const toolStatus = condition === 'lost' ? 'lost' : exceptional ? 'maintenance' : 'available';
+      const fieldSafetyHoldOpen = toolData.fieldSafetyHold?.status === 'open';
+      const toolStatus = condition === 'lost' ? 'lost' : exceptional || fieldSafetyHoldOpen ? 'maintenance' : 'available';
       this.db.prepare('UPDATE tools SET status = ?, current_location = ?, data_json = ?, updated_at = ? WHERE id = ?')
         .run(toolStatus, location || toolRow?.home_location || toolRow?.current_location, toJson({
           ...toolData,
@@ -25269,7 +27707,7 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
     if (!material) {
       material = this.db.prepare('SELECT * FROM materials WHERE lower(name) = lower(?) LIMIT 1').get(name);
     }
-    const id = makeId('matreq');
+    const id = normalizeText(options.id || payload.id, '') || makeId('matreq');
     const timestamp = nowIso();
     this.db.prepare(`
       INSERT INTO material_requirements (id, job_id, material_id, name, quantity, unit, status, supplier, cost, needed_by, data_json, created_at, updated_at)
@@ -25282,10 +27720,13 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       normalizeNumber(payload.quantity, 1),
       normalizeText(payload.unit || material?.unit, 'unit'),
       normalizeStatus(payload.status, 'needed'),
-      payload.supplier || material?.supplier || null,
+      payload.supplier === null ? null : (payload.supplier || material?.supplier || null),
       normalizeNumber(payload.cost || payload.amount, 0),
       payload.neededBy || payload.needed_by || null,
-      toJson({ sku: payload.sku || material?.sku || null }),
+      toJson({
+        ...(payload.data && typeof payload.data === 'object' && !Array.isArray(payload.data) ? payload.data : {}),
+        sku: payload.sku || material?.sku || null
+      }),
       timestamp,
       timestamp
     );
@@ -25335,6 +27776,13 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       error.statusCode = 400;
       throw error;
     }
+    const hasExpectedAvailableAt = payload.expectedAvailableAt !== undefined || payload.expected_available_at !== undefined;
+    const expectedAvailableInput = payload.expectedAvailableAt ?? payload.expected_available_at;
+    if (hasExpectedAvailableAt && expectedAvailableInput !== null && expectedAvailableInput !== '' && !verificationReference) {
+      const error = new Error('An evidence or order reference is required for an expected availability date');
+      error.statusCode = 400;
+      throw error;
+    }
     if (Number.isFinite(availableQuantity) && availableQuantity < 0) {
       const error = new Error('Available material quantity cannot be negative');
       error.statusCode = 400;
@@ -25353,6 +27801,12 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       const before = this.mapMaterialRequirement(row);
       const timestamp = nowIso();
       const existingData = fromJson(row.data_json, {});
+      let expectedAvailableAt = existingData.expectedAvailableAt || null;
+      if (hasExpectedAvailableAt) {
+        expectedAvailableAt = expectedAvailableInput === null || expectedAvailableInput === ''
+          ? null
+          : this.normalizeReservationDate(expectedAvailableInput, 'expectedAvailableAt');
+      }
       const effectiveQuantity = Number.isFinite(availableQuantity)
         ? availableQuantity
         : normalizeNumber(row.quantity, 0);
@@ -25368,6 +27822,7 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
         availableQuantity: effectiveQuantity,
         location: normalizeText(payload.location || existingData.location, '') || null,
         verificationReference: verificationReference || null,
+        expectedAvailableAt,
         notes,
         recordedBy: options.actor || payload.actor || 'dashboard',
         recordedAt: timestamp,
@@ -25376,6 +27831,8 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       const data = {
         ...existingData,
         availableQuantity: effectiveQuantity,
+        expectedAvailableAt,
+        expectedAvailableAtReference: expectedAvailableAt ? (verificationReference || existingData.expectedAvailableAtReference || null) : null,
         location: transition.location,
         verificationReference: transition.verificationReference,
         notes,
@@ -25405,6 +27862,122 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
         });
       }
       return after;
+    });
+  }
+
+  setMaterialSdsRequirement(jobId, materialRequirementId, payload = {}, options = {}) {
+    return this.transaction(() => {
+      this.requireJob(jobId);
+      const row = this.db.prepare('SELECT * FROM material_requirements WHERE id = ? AND job_id = ?')
+        .get(materialRequirementId, jobId);
+      if (!row || row.status === 'cancelled') {
+        throw ledgerInputError('material_sds_requirement_not_found', 'Active job material requirement was not found.', { materialRequirementId }, 404);
+      }
+      const status = normalizeStatus(payload.status || payload.sdsRequirementStatus, '');
+      if (!['unreviewed', 'required', 'not_required'].includes(status)) {
+        throw ledgerInputError('material_sds_requirement_status_invalid', 'Choose whether an SDS is required, not required, or still unreviewed.');
+      }
+      if (status === 'not_required' && !['owner', 'approver'].includes(options.role)) {
+        throw ledgerInputError('material_sds_requirement_approver_required', 'Only an owner or approver may record that an SDS is not required.', {}, 403);
+      }
+      const reason = normalizeText(payload.reason || payload.rationale, '');
+      if (reason.length < 10 || reason.length > 500) {
+        throw ledgerInputError('material_sds_requirement_reason_invalid', 'Retain a reason of 10 to 500 characters for this SDS applicability decision.');
+      }
+      const entryKey = normalizeText(payload.entryKey || payload.entry_key, '');
+      if (!/^[A-Za-z0-9._:-]{8,200}$/.test(entryKey)) {
+        throw ledgerInputError('material_sds_requirement_entry_key_invalid', 'SDS applicability changes need a stable replay key.');
+      }
+      const data = fromJson(row.data_json, {});
+      const history = Array.isArray(data.sdsRequirementHistory) ? data.sdsRequirementHistory : [];
+      const fingerprint = sha256Json({ jobId, materialRequirementId, status, reason });
+      const replay = history.find(event => event.entryKey === entryKey);
+      if (replay) {
+        if (replay.fingerprint !== fingerprint) {
+          throw ledgerInputError('material_sds_requirement_entry_key_conflict', 'This SDS applicability replay key is already bound to different content.', { entryKey }, 409);
+        }
+        return { ...this.mapMaterialRequirement(row), replayed: true };
+      }
+      if (status === 'not_required') {
+        const retainedSheet = this.listSdsSheets({ jobId }).find(sheet => (
+          sheet.linkedMaterialIds.includes(materialRequirementId)
+          && (sheet.status === 'pending_approval' || sheet.current)
+        ));
+        if (retainedSheet) {
+          throw ledgerInputError('material_sds_requirement_conflicts_with_sheet', 'A pending or current approved SDS is linked to this material. Revise that product link before recording that no SDS is required.', { sdsSheetId: retainedSheet.id }, 409);
+        }
+      }
+      const timestamp = nowIso();
+      const event = { entryKey, fingerprint, status, reason, actor: options.actor || 'Contractor.AI', recordedAt: timestamp };
+      const nextData = {
+        ...data,
+        sdsRequirementStatus: status,
+        sdsRequirementReason: reason,
+        sdsRequirementReviewedBy: event.actor,
+        sdsRequirementReviewedAt: timestamp,
+        sdsRequirementEntryKey: entryKey,
+        sdsRequirementHistory: [...history.slice(-99), event]
+      };
+      this.db.prepare('UPDATE material_requirements SET data_json = ?, updated_at = ? WHERE id = ? AND job_id = ?')
+        .run(toJson(nextData), timestamp, materialRequirementId, jobId);
+      const after = this.mapMaterialRequirement(this.db.prepare('SELECT * FROM material_requirements WHERE id = ?').get(materialRequirementId));
+      this.audit({ entityType: 'material_requirement', entityId: materialRequirementId, jobId,
+        action: 'set_material_sds_requirement', actor: event.actor, before: this.mapMaterialRequirement(row), after,
+        metadata: { status, reason, entryKey, externalCommitments: 0 } });
+      return { ...after, replayed: false };
+    });
+  }
+
+  setTaskJhaApplicability(jobId, taskId, payload = {}, options = {}) {
+    return this.transaction(() => {
+      this.requireJob(jobId);
+      const row = this.db.prepare('SELECT * FROM job_tasks WHERE id = ? AND job_id = ?').get(taskId, jobId);
+      if (!row || ['cancelled', 'canceled', 'deleted', 'completed'].includes(normalizeStatus(row.status, ''))) {
+        throw ledgerInputError('task_jha_applicability_not_found', 'Active job task was not found.', { taskId }, 404);
+      }
+      const task = this.mapTask(row);
+      const status = normalizeStatus(payload.status, '');
+      if (!['required', 'not_required'].includes(status)) {
+        throw ledgerInputError('task_jha_applicability_status_invalid', 'Choose whether a JHA is required for this task or reviewed as not required.');
+      }
+      if (status === 'not_required' && !['owner', 'approver'].includes(options.role)) {
+        throw ledgerInputError('task_jha_applicability_approver_required', 'Only an owner or approver may record that a task does not require a JHA.', {}, 403);
+      }
+      const reason = normalizeText(payload.reason || payload.rationale, '');
+      if (reason.length < 10 || reason.length > 500) {
+        throw ledgerInputError('task_jha_applicability_reason_invalid', 'Retain a reason of 10 to 500 characters for this task JHA review.');
+      }
+      const entryKey = normalizeText(payload.entryKey || payload.entry_key, '');
+      if (!/^[A-Za-z0-9._:-]{8,200}$/.test(entryKey)) {
+        throw ledgerInputError('task_jha_applicability_entry_key_invalid', 'Task JHA reviews need a stable replay key.');
+      }
+      const sourceHash = taskJhaDefinitionHash(task);
+      const data = task.data || {};
+      const retained = data.jhaApplicability && typeof data.jhaApplicability === 'object' ? data.jhaApplicability : {};
+      const history = Array.isArray(retained.history) ? retained.history : [];
+      const fingerprint = sha256Json({ jobId, taskId, status, reason, sourceHash });
+      const replay = history.find(event => event.entryKey === entryKey);
+      if (replay) {
+        if (replay.fingerprint !== fingerprint) {
+          throw ledgerInputError('task_jha_applicability_entry_key_conflict', 'This task JHA replay key is already bound to different content.', { entryKey }, 409);
+        }
+        return { ...this.mapTask(row), replayed: true };
+      }
+      const timestamp = nowIso();
+      const event = { entryKey, fingerprint, status, reason, sourceHash, actor: options.actor || 'Contractor.AI', recordedAt: timestamp };
+      const nextData = {
+        ...data,
+        jhaApplicability: {
+          status, reason, sourceHash, reviewedBy: event.actor, reviewedAt: timestamp,
+          entryKey, history: [...history.slice(-99), event]
+        }
+      };
+      this.db.prepare('UPDATE job_tasks SET data_json = ?, updated_at = ? WHERE id = ? AND job_id = ?')
+        .run(toJson(nextData), timestamp, taskId, jobId);
+      const after = this.mapTask(this.db.prepare('SELECT * FROM job_tasks WHERE id = ?').get(taskId));
+      this.audit({ entityType: 'task', entityId: taskId, jobId, action: 'set_task_jha_applicability', actor: event.actor,
+        before: task, after, metadata: { status, reason, sourceHash, entryKey, externalCommitments: 0 } });
+      return { ...after, replayed: false };
     });
   }
 
@@ -25519,9 +28092,28 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
         || acceptedQuantity + damagedQuantity > receivedQuantity + 0.000001) {
         throw ledgerInputError('material_receipt_quantity_breakdown_invalid', 'Accepted and damaged quantities must be non-negative and cannot exceed the received quantity.');
       }
+      let stockMaterialId = null;
+      if (payload.stockDestination === 'company_warehouse' && acceptedQuantity > 0) {
+        const linkedMaterial = requirement?.material_id
+          ? this.db.prepare('SELECT * FROM materials WHERE id = ?').get(requirement.material_id)
+          : null;
+        const matchingMaterials = linkedMaterial ? [linkedMaterial] : this.db.prepare(`
+          SELECT * FROM materials WHERE lower(name) = lower(?) AND lower(unit) = lower(?) ORDER BY id LIMIT 2
+        `).all(itemName, unit);
+        if (matchingMaterials.length !== 1) {
+          throw ledgerInputError('material_receipt_stock_catalog_link_required', matchingMaterials.length
+            ? `Warehouse receipt item ${itemName} matches more than one stock item; link its requirement to one catalogue item first.`
+            : `Warehouse receipt item ${itemName} must be linked to an existing shared stock item first.`, { itemName, unit }, 409);
+        }
+        if (String(matchingMaterials[0].unit).trim().toLowerCase() !== unit.trim().toLowerCase()) {
+          throw ledgerInputError('material_receipt_stock_unit_mismatch', `Warehouse receipt unit ${unit} does not match the shared stock unit ${matchingMaterials[0].unit}.`, { itemName, unit }, 409);
+        }
+        stockMaterialId = matchingMaterials[0].id;
+      }
       return {
         lineKey,
         materialRequirementId: requirement?.id || null,
+        stockMaterialId,
         itemName,
         unit,
         orderedQuantity: roundQuantity(planned?.orderedQuantity || requirement?.quantity || 0),
@@ -25575,6 +28167,10 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       const evidenceReference = normalizeText(payload.evidenceReference || payload.evidence_reference, '');
       const receivedBy = normalizeText(payload.receivedBy || payload.received_by, '');
       const location = normalizeText(payload.location, '');
+      const stockDestination = normalizeStatus(payload.stockDestination || payload.stock_destination, 'job_site');
+      if (!['job_site', 'company_warehouse'].includes(stockDestination)) {
+        throw ledgerInputError('material_receipt_destination_invalid', 'Receipt destination must be job_site or company_warehouse.');
+      }
       if (receiptReference.length < 3 || receiptReference.length > 160) {
         throw ledgerInputError('material_receipt_reference_invalid', 'Supplier delivery-note reference must be between 3 and 160 characters.');
       }
@@ -25585,6 +28181,9 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
         throw ledgerInputError('material_receipt_receiver_invalid', 'The receiver name must be between 2 and 160 characters.');
       }
       if (location.length > 240) throw ledgerInputError('material_receipt_location_invalid', 'Delivery location cannot exceed 240 characters.');
+      if (stockDestination === 'company_warehouse' && location.length < 2) {
+        throw ledgerInputError('material_receipt_warehouse_location_required', 'Enter the named company warehouse or storage location for a warehouse receipt.');
+      }
       const deliveredAt = this.normalizeReservationDate(payload.deliveredAt || payload.delivered_at || nowIso(), 'deliveredAt');
       if (Date.parse(deliveredAt) > Date.now() + 5 * 60 * 1000) {
         throw ledgerInputError('material_receipt_delivery_time_invalid', 'Delivery time cannot be in the future.');
@@ -25594,7 +28193,7 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
         throw ledgerInputError('material_receipt_evidence_document_not_found', 'The selected delivery evidence document was not found for this job.');
       }
       const finalDelivery = normalizeBoolean(payload.finalDelivery ?? payload.final_delivery, false);
-      const lines = this.normalizeMaterialReceiptLines(jobId, purchaseOrder, payload);
+      const lines = this.normalizeMaterialReceiptLines(jobId, purchaseOrder, { ...payload, stockDestination });
       const exceptions = this.materialReceiptExceptions({ purchaseOrder, lines, finalDelivery });
       const status = exceptions.length ? 'discrepancy' : 'received';
       const entryKey = normalizeText(payload.entryKey || payload.entry_key, `receipt:${purchaseOrderId || 'unplanned'}:${receiptReference.toLowerCase()}`);
@@ -25602,10 +28201,10 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
         throw ledgerInputError('material_receipt_entry_key_invalid', 'Material receipt entry key must be between 3 and 240 characters.');
       }
       const fingerprint = sha256Json({
-        jobId, purchaseOrderId, receiptReference, deliveredAt, receivedBy, location: location || null,
+        jobId, purchaseOrderId, receiptReference, deliveredAt, receivedBy, location: location || null, stockDestination,
         evidenceReference, evidenceDocumentId, finalDelivery,
         lines: lines.map(line => ({
-          lineKey: line.lineKey, materialRequirementId: line.materialRequirementId, itemName: line.itemName,
+          lineKey: line.lineKey, materialRequirementId: line.materialRequirementId, stockMaterialId: line.stockMaterialId, itemName: line.itemName,
           unit: line.unit, receivedQuantity: line.receivedQuantity, acceptedQuantity: line.acceptedQuantity,
           damagedQuantity: line.damagedQuantity, notes: line.notes
         }))
@@ -25631,7 +28230,7 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       `).run(
         id, jobId, purchaseOrderId, tradePartnerId, receiptReference, status, deliveredAt,
         receivedBy, location || null, evidenceReference, evidenceDocumentId, entryKey, fingerprint,
-        toJson({ finalDelivery, exceptions, notes: normalizeText(payload.notes || payload.note, '').slice(0, 2000) || null, externalCommitments: 0 }),
+        toJson({ finalDelivery, exceptions, stockDestination, notes: normalizeText(payload.notes || payload.note, '').slice(0, 2000) || null, externalCommitments: 0 }),
         timestamp, timestamp
       );
       for (const line of lines) {
@@ -25643,16 +28242,19 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
         `).run(
           makeId('material_receipt_line'), id, line.lineKey, line.materialRequirementId, line.itemName, line.unit,
           line.orderedQuantity, line.receivedQuantity, line.acceptedQuantity, line.damagedQuantity,
-          toJson({ notes: line.notes, planned: line.planned, rejectedQuantity: line.rejectedQuantity }), timestamp, timestamp
+          toJson({ notes: line.notes, planned: line.planned, rejectedQuantity: line.rejectedQuantity, stockMaterialId: line.stockMaterialId }), timestamp, timestamp
         );
       }
       for (const materialRequirementId of [...new Set(lines.map(line => line.materialRequirementId).filter(Boolean))]) {
         this.synchronizeMaterialRequirementReceiptStatus(materialRequirementId, { actor, receiptId: id });
       }
       const receipt = this.getMaterialReceipt(id);
+      const stockReceipt = new (require('./shared-material-stock').SharedMaterialStock)(this)
+        .receiveCompanyWarehouseReceipt(receipt, { actor });
       this.audit({
         entityType: 'material_receipt', entityId: id, jobId, action: 'create_material_receipt', actor, after: receipt,
-        metadata: { purchaseOrderId, lineCount: lines.length, status, exceptionCount: exceptions.length, entryKey, externalCommitments: 0 }
+        metadata: { purchaseOrderId, lineCount: lines.length, status, exceptionCount: exceptions.length, entryKey,
+          stockDestination, warehouseMovementCount: stockReceipt.movements.length, externalCommitments: 0 }
       });
       return { receipt, replayed: false };
     });
@@ -25662,16 +28264,21 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
     const row = this.db.prepare('SELECT * FROM material_requirements WHERE id = ?').get(materialRequirementId);
     if (!row) return null;
     const before = this.mapMaterialRequirement(row);
-    const totals = this.db.prepare(`
-      SELECT COALESCE(SUM(lines.accepted_quantity), 0) AS accepted_quantity,
-        COUNT(DISTINCT receipts.id) AS receipt_count,
-        MAX(receipts.delivered_at) AS last_delivered_at
+    const receiptRows = this.db.prepare(`
+      SELECT lines.accepted_quantity,receipts.id AS receipt_id,receipts.delivered_at,receipts.data_json
       FROM material_receipt_lines lines
       JOIN material_receipts receipts ON receipts.id = lines.receipt_id
       WHERE lines.material_requirement_id = ?
         AND receipts.status IN ('received', 'discrepancy', 'pending_reversal')
-    `).get(materialRequirementId);
-    const acceptedQuantity = roundQuantity(totals.accepted_quantity || 0);
+    `).all(materialRequirementId).filter(receipt => fromJson(receipt.data_json, {}).stockDestination !== 'company_warehouse');
+    const siteIssueReceipts = this.db.prepare(`SELECT receipt.id,receipt.accepted_quantity,receipt.created_at,
+        COALESCE(reviews.accepted_quantity,0) AS reviewed_accepted_quantity
+      FROM shared_material_site_issue_receipts receipt JOIN shared_material_site_issues issue ON issue.id=receipt.issue_id
+      LEFT JOIN (SELECT receipt_id,SUM(accepted_quantity) AS accepted_quantity
+        FROM shared_material_site_issue_receipt_reviews GROUP BY receipt_id) reviews ON reviews.receipt_id=receipt.id
+      WHERE issue.material_requirement_id=?`).all(materialRequirementId);
+    const acceptedQuantity = roundQuantity(receiptRows.reduce((total, receipt) => total + Number(receipt.accepted_quantity || 0), 0)
+      + siteIssueReceipts.reduce((total, receipt) => total + Number(receipt.accepted_quantity || 0) + Number(receipt.reviewed_accepted_quantity || 0), 0));
     const existingData = fromJson(row.data_json, {});
     const priorControl = existingData.receiptControl || {};
     const previousStatus = priorControl.previousStatus || normalizeStatus(row.status, 'needed');
@@ -25679,22 +28286,32 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       ? previousStatus
       : acceptedQuantity >= normalizeNumber(row.quantity, 0) - 0.000001 ? 'available' : 'received';
     const timestamp = nowIso();
+    const allIssues = this.db.prepare('SELECT expected_arrival_at,dispatch_reference,received_quantity,quantity FROM shared_material_site_issues WHERE material_requirement_id=?').all(materialRequirementId);
+    const pendingIssues = allIssues.filter(issue => Number(issue.received_quantity) < Number(issue.quantity) - 0.000001)
+      .sort((left, right) => String(left.expected_arrival_at).localeCompare(String(right.expected_arrival_at)));
+    const existingIssueReference = allIssues.some(issue => issue.dispatch_reference === existingData.expectedAvailableAtReference);
+    const expectedAvailableAt = pendingIssues.length ? pendingIssues.at(-1).expected_arrival_at
+      : existingIssueReference ? null : existingData.expectedAvailableAt || null;
+    const expectedAvailableAtReference = pendingIssues.length ? pendingIssues.at(-1).dispatch_reference
+      : existingIssueReference ? null : existingData.expectedAvailableAtReference || null;
     const receiptControl = {
       previousStatus,
       acceptedQuantity,
-      receiptCount: Number(totals.receipt_count || 0),
-      lastDeliveredAt: totals.last_delivered_at || null,
+      receiptCount: new Set([...receiptRows.map(receipt => receipt.receipt_id), ...siteIssueReceipts.map(receipt => receipt.id)]).size,
+      lastDeliveredAt: [...receiptRows.map(receipt => receipt.delivered_at), ...siteIssueReceipts.map(receipt => receipt.created_at)].sort().at(-1) || null,
       updatedAt: timestamp,
       source: 'material_receipts'
     };
     this.db.prepare('UPDATE material_requirements SET status = ?, data_json = ?, updated_at = ? WHERE id = ?')
-      .run(status, toJson({ ...existingData, availableQuantity: acceptedQuantity, receiptControl }), timestamp, materialRequirementId);
+      .run(status, toJson({ ...existingData, availableQuantity: acceptedQuantity, expectedAvailableAt, expectedAvailableAtReference, receiptControl }), timestamp, materialRequirementId);
     const after = this.mapMaterialRequirement(this.db.prepare('SELECT * FROM material_requirements WHERE id = ?').get(materialRequirementId));
-    if (before.status !== after.status || normalizeNumber(before.data?.availableQuantity, 0) !== acceptedQuantity) {
+    if (before.status !== after.status || normalizeNumber(before.data?.availableQuantity, 0) !== acceptedQuantity
+      || before.data?.expectedAvailableAt !== expectedAvailableAt || before.data?.expectedAvailableAtReference !== expectedAvailableAtReference) {
       this.audit({
         entityType: 'material_requirement', entityId: materialRequirementId, jobId: row.job_id,
         action: 'synchronize_material_receipt_status', actor: options.actor || 'material_receiving', before, after,
-        metadata: { receiptId: options.receiptId || null, acceptedQuantity, receiptCount: receiptControl.receiptCount, externalCommitments: 0 }
+        metadata: { receiptId: options.receiptId || null, siteIssueReceiptId: options.siteIssueReceiptId || null,
+          acceptedQuantity, receiptCount: receiptControl.receiptCount, externalCommitments: 0 }
       });
     }
     return after;
@@ -25804,15 +28421,17 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       );
     }
     const before = this.getMaterialReceipt(receiptId);
+    const stockReversal = new (require('./shared-material-stock').SharedMaterialStock)(this)
+      .reverseCompanyWarehouseReceipt(receiptId, { actor: approval.resolved_by || 'approval' });
     this.db.prepare("UPDATE material_receipts SET status = 'reversed', data_json = ?, updated_at = ? WHERE id = ? AND status = 'pending_reversal'")
-      .run(toJson({ ...fromJson(row.data_json, {}), reversedAt: timestamp, reversedBy: approval.resolved_by || 'approval' }), timestamp, receiptId);
+      .run(toJson({ ...fromJson(row.data_json, {}), reversedAt: timestamp, reversedBy: approval.resolved_by || 'approval', warehouseStockReversalCount: stockReversal.movements.length }), timestamp, receiptId);
     const requirementIds = this.db.prepare('SELECT DISTINCT material_requirement_id FROM material_receipt_lines WHERE receipt_id = ? AND material_requirement_id IS NOT NULL').all(receiptId);
     for (const requirement of requirementIds) this.synchronizeMaterialRequirementReceiptStatus(requirement.material_requirement_id, { actor: approval.resolved_by || 'approval', receiptId });
     const after = this.getMaterialReceipt(receiptId);
     this.audit({
       entityType: 'material_receipt', entityId: receiptId, jobId: row.job_id, action: 'reverse_material_receipt',
       actor: approval.resolved_by || 'approval', before, after,
-      metadata: { approvalId: approval.id, purchaseOrderId: row.purchase_order_id, externalCommitments: 0 }
+      metadata: { approvalId: approval.id, purchaseOrderId: row.purchase_order_id, warehouseStockReversalCount: stockReversal.movements.length, externalCommitments: 0 }
     });
     return after;
   }
@@ -25835,18 +28454,94 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
     return after;
   }
 
+  materialReceiptOperationalImpact(receipt) {
+    const job = this.getJobDetail(receipt.jobId);
+    const requirementsById = new Map(job.materials.map(material => [material.id, material]));
+    const linkedTasks = this.db.prepare("SELECT * FROM job_tasks WHERE job_id = ? AND status NOT IN ('completed', 'cancelled') ORDER BY created_at ASC")
+      .all(receipt.jobId).map(row => this.mapTask(row));
+    const schedule = (() => {
+      try {
+        return this.calculateJobSchedule(receipt.jobId);
+      } catch (error) {
+        return { ready: false, reason: error.code || 'schedule_unavailable', tasks: [], materialConstraints: [] };
+      }
+    })();
+    const scheduleTasks = new Map((schedule.tasks || []).map(task => [task.id, task]));
+    const materialLines = receipt.lines.map(line => {
+      const requirement = line.materialRequirementId
+        ? requirementsById.get(line.materialRequirementId)
+        : null;
+      const orderedLine = receipt.purchaseOrderId
+        ? this.materialReceiptPurchaseOrderPlan(receipt.purchaseOrderId).lines.find(item => item.lineKey === line.lineKey)
+        : null;
+      const acceptedToDate = requirement
+        ? roundQuantity(normalizeNumber(requirement.data?.availableQuantity, 0))
+        : roundQuantity(orderedLine?.acceptedQuantity || line.acceptedQuantity);
+      const requiredQuantity = requirement
+        ? normalizeNumber(requirement.quantity, 0)
+        : normalizeNumber(orderedLine?.orderedQuantity || line.orderedQuantity, 0);
+      const affectedTasks = linkedTasks
+        .filter(task => normalizeList(task.data?.materialRequirementIds).includes(line.materialRequirementId))
+        .map(task => {
+          const planned = scheduleTasks.get(task.id);
+          return {
+            taskId: task.id,
+            title: task.title,
+            status: task.status,
+            plannedStart: planned?.plannedStart || task.plannedStart || null,
+            plannedFinish: planned?.plannedFinish || task.plannedFinish || null,
+            scheduleStatus: planned?.status || null
+          };
+        });
+      return {
+        materialRequirementId: line.materialRequirementId,
+        itemName: line.itemName,
+        unit: line.unit,
+        acceptedThisDelivery: line.acceptedQuantity,
+        acceptedToDate,
+        requiredQuantity,
+        shortfallQuantity: roundQuantity(Math.max(0, requiredQuantity - acceptedToDate)),
+        undeliveredOrderQuantity: roundQuantity(orderedLine?.remainingQuantity || 0),
+        affectedTasks
+      };
+    });
+    return {
+      materialLines,
+      affectedTaskCount: new Set(materialLines.flatMap(line => line.affectedTasks.map(task => task.taskId))).size,
+      schedule: {
+        status: schedule.ready ? 'ready' : (schedule.reason ? 'blocked' : 'unavailable'),
+        reason: schedule.reason || null,
+        blockers: (schedule.materialBlockers || []).map(blocker => ({
+          taskId: blocker.taskId,
+          materialRequirementId: blocker.materialRequirementId,
+          shortfallQuantity: blocker.shortfall,
+          expectedAvailableAt: blocker.expectedAvailableAt,
+          reason: blocker.reason
+        })),
+        tasks: (schedule.tasks || []).map(task => ({
+          taskId: task.id,
+          plannedStart: task.plannedStart || null,
+          plannedFinish: task.plannedFinish || null
+        }))
+      }
+    };
+  }
+
   detectMaterialReceivingActions(limit = 50) {
     const actions = [];
     const discrepancyRows = this.listMaterialReceipts({ status: 'discrepancy', limit });
     for (const receipt of discrepancyRows) {
       const taskId = `task_${sha256Text(`material-receipt-discrepancy:${receipt.id}:${receipt.entryFingerprint}`).slice(0, 24)}`;
       const existing = this.db.prepare("SELECT id FROM job_tasks WHERE id = ? AND status NOT IN ('completed', 'cancelled')").get(taskId);
-      if (!existing) actions.push({
-        type: 'review_material_receipt', reason: 'discrepancy', jobId: receipt.jobId, jobTitle: receipt.jobTitle,
-        materialReceiptId: receipt.id, receiptReference: receipt.receiptReference, taskId,
-        sourceHash: receipt.entryFingerprint, severity: 'high',
-        message: `Material receipt ${receipt.receiptReference} has ${receipt.exceptions.length} retained delivery discrepancy record(s).`
-      });
+      if (!existing) {
+        const operationalImpact = this.materialReceiptOperationalImpact(receipt);
+        actions.push({
+          type: 'review_material_receipt', reason: 'discrepancy', jobId: receipt.jobId, jobTitle: receipt.jobTitle,
+          materialReceiptId: receipt.id, receiptReference: receipt.receiptReference, taskId,
+          sourceHash: receipt.entryFingerprint, severity: 'high', operationalImpact,
+          message: `Material receipt ${receipt.receiptReference} has ${receipt.exceptions.length} retained delivery discrepancy record(s); ${operationalImpact.affectedTaskCount} active work step(s) and ${operationalImpact.materialLines.filter(line => line.shortfallQuantity > 0).length} material shortfall(s) are linked.`
+        });
+      }
       if (actions.length >= limit) return actions;
     }
     const overdueOrders = this.db.prepare(`
@@ -25881,6 +28576,16 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       .filter(order => ['approved', 'ready_to_order', 'ordered', 'sent', 'submitted', 'issued', 'received'].includes(normalizeStatus(order.status, '')))
       .map(order => this.materialReceiptPurchaseOrderPlan(order.id));
     const actions = this.detectMaterialReceivingActions(250);
+    const impactByReceiptId = new Map(actions
+      .filter(action => action.materialReceiptId && action.operationalImpact)
+      .map(action => [action.materialReceiptId, action.operationalImpact]));
+    const receiptsWithImpact = receipts.map(receipt => {
+      if (!['discrepancy', 'pending_reversal'].includes(receipt.status)) return receipt;
+      return {
+        ...receipt,
+        operationalImpact: impactByReceiptId.get(receipt.id) || this.materialReceiptOperationalImpact(receipt)
+      };
+    });
     return {
       generatedAt: nowIso(),
       policy: {
@@ -25890,15 +28595,15 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
         externalCommitments: 0
       },
       summary: {
-        total: receipts.length,
-        received: receipts.filter(receipt => receipt.status === 'received').length,
-        discrepancies: receipts.filter(receipt => receipt.status === 'discrepancy').length,
-        pendingReversal: receipts.filter(receipt => receipt.status === 'pending_reversal').length,
-        acceptedQuantity: roundQuantity(receipts.reduce((sum, receipt) => sum + receipt.summary.acceptedQuantity, 0)),
+        total: receiptsWithImpact.length,
+        received: receiptsWithImpact.filter(receipt => receipt.status === 'received').length,
+        discrepancies: receiptsWithImpact.filter(receipt => receipt.status === 'discrepancy').length,
+        pendingReversal: receiptsWithImpact.filter(receipt => receipt.status === 'pending_reversal').length,
+        acceptedQuantity: roundQuantity(receiptsWithImpact.reduce((sum, receipt) => sum + receipt.summary.acceptedQuantity, 0)),
         openOrders: purchaseOrders.filter(plan => !plan.summary.complete).length,
         overdueActions: actions.filter(action => action.reason === 'overdue').length
       },
-      receipts,
+      receipts: receiptsWithImpact,
       purchaseOrders,
       actions
     };
@@ -26693,6 +29398,7 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
             riskLevel: detail.riskLevel || 'medium',
             assignee: actor,
             dueAt: plannedStart,
+            linkedTaskIds: (detail.tasks || []).filter(task => !['cancelled', 'canceled', 'deleted', 'completed'].includes(normalizeStatus(task.status, ''))).map(task => task.id),
             hazards: ['Site access constraints', 'Manual handling', 'Tool and material handling'],
             controls: ['Confirm method before work', 'Brief crew before start', 'Stop work on changed conditions'],
             notes: 'Internal JHA draft. Approval is required before field reliance.'
@@ -26927,6 +29633,13 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       const weather = normalizeText(payload.weather, '');
       const blockers = normalizeList(payload.blockers);
       const photos = normalizeList(payload.photos);
+      const taskId = normalizeText(payload.taskId || payload.task_id, '') || null;
+      if (taskId) {
+        const task = this.db.prepare('SELECT status FROM job_tasks WHERE id = ? AND job_id = ?').get(taskId, jobId);
+        if (!task || !SCHEDULE_TASK_STATUSES.has(normalizeStatus(task.status, 'open'))) {
+          throw ledgerInputError('progress_task_invalid', 'Task progress must reference an open task in this job.', { taskId, jobId }, 409);
+        }
+      }
       const entryKey = normalizeText(payload.entryKey || payload.entry_key, '');
       if (entryKey && !/^[A-Za-z0-9._:-]{8,200}$/.test(entryKey)) {
         const error = new Error('Progress entry key must contain 8 to 200 safe characters');
@@ -26934,8 +29647,9 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
         error.code = 'progress_entry_key_invalid';
         throw error;
       }
+      const replayBasis = { status, progressPercent, note, weather, blockers, photos, ...(taskId ? { taskId } : {}) };
       const entryFingerprint = entryKey
-        ? crypto.createHash('sha256').update(JSON.stringify({ status, progressPercent, note, weather, blockers, photos })).digest('hex')
+        ? crypto.createHash('sha256').update(JSON.stringify(replayBasis)).digest('hex')
         : null;
 
       if (entryKey) {
@@ -26971,13 +29685,18 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
         toJson({
           source: payload.source || 'manual',
           entryKey: entryKey || null,
-          entryFingerprint
+          entryFingerprint,
+          ...(taskId ? { taskId } : {})
         }),
         timestamp
       );
-      const nextJobStatus = ['intake', 'planned', 'scheduled', 'in_progress', 'blocked', 'completed'].includes(status) ? status : before.status;
-      this.db.prepare('UPDATE jobs SET status = ?, phase = ?, progress_percent = ?, updated_at = ? WHERE id = ?')
-        .run(nextJobStatus, nextJobStatus === 'completed' ? 'closeout' : nextJobStatus, progressPercent, timestamp, jobId);
+      const nextJobStatus = taskId ? before.status
+        : ['intake', 'planned', 'scheduled', 'in_progress', 'blocked', 'completed'].includes(status) ? status : before.status;
+      const nextJobProgress = taskId ? before.progress_percent : progressPercent;
+      if (nextJobStatus !== before.status || nextJobProgress !== before.progress_percent) {
+        this.db.prepare('UPDATE jobs SET status = ?, phase = ?, progress_percent = ?, updated_at = ? WHERE id = ?')
+          .run(nextJobStatus, nextJobStatus === 'completed' ? 'closeout' : (taskId ? before.phase : nextJobStatus), nextJobProgress, timestamp, jobId);
+      }
       const update = this.mapProgress(this.db.prepare('SELECT * FROM progress_updates WHERE id = ?').get(id));
       if (options.audit !== false) {
         const after = this.getJobRow(jobId);
@@ -26993,6 +29712,181 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
         });
       }
       return { ...update, replayed: false };
+    });
+  }
+
+  setJobSiteAccessCalendar(jobId, payload = {}, options = {}) {
+    return this.transaction(() => {
+      const before = this.requireJob(jobId, { allowInactive: true });
+      const fail = (message, code = 'site_access_calendar_invalid') => {
+        const error = new Error(message);
+        error.statusCode = 400;
+        error.code = code;
+        throw error;
+      };
+      const timeZone = normalizeText(payload.timeZone, '');
+      if (timeZone.length > 80) fail('Use a valid IANA time zone for site access.');
+      try { new Intl.DateTimeFormat('en', { timeZone }).format(new Date()); }
+      catch { fail('Use a valid IANA time zone for site access.'); }
+
+      const sourceType = normalizeText(payload.sourceType, '');
+      if (!['customer_confirmed', 'site_document', 'contractor_verified'].includes(sourceType)) {
+        fail('Select how the site access hours were verified.');
+      }
+      const note = normalizeText(payload.note, '');
+      if (note.length < 8 || note.length > 1000) fail('Add an 8 to 1000 character source or confirmation note.');
+
+      const weekdays = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+      const weeklyWindows = payload.weeklyWindows;
+      if (!weeklyWindows || typeof weeklyWindows !== 'object' || Array.isArray(weeklyWindows)
+        || Object.keys(weeklyWindows).some(day => !weekdays.includes(day))) {
+        fail('Provide an explicit access schedule for all seven weekdays.');
+      }
+      const timePattern = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
+      const normalizedWindows = {};
+      for (const day of weekdays) {
+        const windows = weeklyWindows[day];
+        if (!Array.isArray(windows) || windows.length > 3) fail(`Provide zero to three access intervals for ${day}.`);
+        const normalized = windows.map(window => {
+          if (!window || typeof window !== 'object' || !timePattern.test(String(window.start || '')) || !timePattern.test(String(window.end || ''))) {
+            fail(`Use 24-hour start and end times for ${day}.`);
+          }
+          const startMinute = Number(window.start.slice(0, 2)) * 60 + Number(window.start.slice(3));
+          const endMinute = Number(window.end.slice(0, 2)) * 60 + Number(window.end.slice(3));
+          if (endMinute <= startMinute) fail(`Each ${day} access interval must end after it starts on the same day.`);
+          return { start: window.start, end: window.end, startMinute, endMinute };
+        }).sort((left, right) => left.startMinute - right.startMinute);
+        if (normalized.some((window, index) => index > 0 && normalized[index - 1].endMinute > window.startMinute)) {
+          fail(`Access intervals cannot overlap on ${day}.`);
+        }
+        normalizedWindows[day] = normalized.map(({ start, end }) => ({ start, end }));
+      }
+      if (!weekdays.some(day => normalizedWindows[day].length)) fail('Set at least one site access interval.');
+
+      const current = fromJson(before.data_json);
+      const previous = current.siteAccessCalendar || null;
+      const proposed = {
+        version: 1,
+        timeZone,
+        weeklyWindows: normalizedWindows,
+        sourceType,
+        note
+      };
+      if (previous && JSON.stringify({
+        version: previous.version,
+        timeZone: previous.timeZone,
+        weeklyWindows: previous.weeklyWindows,
+        sourceType: previous.sourceType,
+        note: previous.note
+      }) === JSON.stringify(proposed)) {
+        return { changed: false, calendar: previous, job: this.getJobDetail(jobId, { includeAudit: false }) };
+      }
+
+      const calendar = { ...proposed, revision: Number(previous?.revision || 0) + 1, updatedAt: nowIso() };
+      const actor = options.actor || 'Contractor.AI';
+      this.updateJob(jobId, { data: { siteAccessCalendar: calendar } }, { actor, audit: false });
+      this.audit({
+        entityType: 'site_access_calendar',
+        entityId: jobId,
+        jobId,
+        action: previous ? 'revise_site_access_calendar' : 'record_site_access_calendar',
+        actor,
+        before: previous,
+        after: calendar,
+        metadata: { revision: calendar.revision, sourceType }
+      });
+      return { changed: true, calendar, job: this.getJobDetail(jobId, { includeAudit: false }) };
+    });
+  }
+
+  setJobTravelRoute(jobId, payload = {}, options = {}) {
+    return this.transaction(() => {
+      const from = this.getJobDetail(jobId, { includeAudit: false });
+      if (typeof payload.externalJobId !== 'string' || !payload.externalJobId.trim()) {
+        const error = new Error('Select the other job before recording a route.');
+        error.statusCode = 400;
+        error.code = 'job_travel_route_external_job_required';
+        throw error;
+      }
+      const to = this.getJobDetail(payload.externalJobId, { includeAudit: false });
+      const fail = (message, code = 'job_travel_route_invalid', statusCode = 400) => {
+        const error = new Error(message);
+        error.statusCode = statusCode;
+        error.code = code;
+        throw error;
+      };
+      if (from.id === to.id) fail('A route must connect two different jobs.');
+      const siteSnapshot = job => ({
+        address: normalizeText(job.address || '', '').normalize('NFKC').toLocaleLowerCase('nl-NL'),
+        city: normalizeText(job.city || '', '').normalize('NFKC').toLocaleLowerCase('nl-NL'),
+        region: normalizeText(job.region || '', '').normalize('NFKC').toLocaleLowerCase('nl-NL'),
+        country: normalizeText(job.country || '', '').normalize('NFKC').toLocaleLowerCase('nl-NL')
+      });
+      const fromSite = siteSnapshot(from);
+      const toSite = siteSnapshot(to);
+      if (!fromSite.address || !toSite.address) fail('Both jobs need a recorded street address before their travel time can be retained.', 'job_travel_route_site_address_required', 409);
+      const sameSite = JSON.stringify(fromSite) === JSON.stringify(toSite);
+      const minutesToExternal = Number(payload.minutesToExternal);
+      const minutesFromExternal = Number(payload.minutesFromExternal);
+      if (!Number.isInteger(minutesToExternal) || minutesToExternal < 0 || minutesToExternal > 480
+        || !Number.isInteger(minutesFromExternal) || minutesFromExternal < 0 || minutesFromExternal > 480) {
+        fail('Enter whole-minute travel durations from 0 to 480 minutes in both directions.');
+      }
+      const sourceType = normalizeText(payload.sourceType, '');
+      if (!['map_reference', 'contractor_verified', 'same_site'].includes(sourceType)) fail('Select a supported route source.');
+      if (sourceType === 'same_site' && (!sameSite || minutesToExternal !== 0 || minutesFromExternal !== 0)) {
+        fail('A zero-minute route is allowed only when both recorded job addresses match exactly.');
+      }
+      if (sourceType !== 'same_site' && (!minutesToExternal || !minutesFromExternal)) {
+        fail('Record a positive route duration in both directions, or verify that both jobs are at the same site.');
+      }
+      const note = normalizeText(payload.note, '');
+      if (note.length < 8 || note.length > 1000) fail('Add an 8 to 1000 character route source or verification note.');
+
+      const currentData = fromJson(this.getJobRow(jobId).data_json);
+      const routes = Array.isArray(currentData.travelRoutes) ? currentData.travelRoutes : [];
+      const previous = routes.find(route => route.externalJobId === to.id) || null;
+      const next = {
+        version: 1,
+        externalJobId: to.id,
+        externalJobTitle: to.title,
+        minutesToExternal,
+        minutesFromExternal,
+        sourceType,
+        note,
+        fromSite,
+        toSite,
+        revision: Number(previous?.revision || 0) + 1,
+        updatedAt: nowIso()
+      };
+      const canonical = route => route && ({
+        version: route.version,
+        externalJobId: route.externalJobId,
+        minutesToExternal: route.minutesToExternal,
+        minutesFromExternal: route.minutesFromExternal,
+        sourceType: route.sourceType,
+        note: route.note,
+        fromSite: route.fromSite,
+        toSite: route.toSite
+      });
+      if (previous && JSON.stringify(canonical(previous)) === JSON.stringify(canonical(next))) {
+        return { changed: false, route: previous, job: from };
+      }
+
+      const actor = options.actor || 'Contractor.AI';
+      const nextRoutes = [...routes.filter(route => route.externalJobId !== to.id), next];
+      this.updateJob(jobId, { data: { travelRoutes: nextRoutes } }, { actor, audit: false });
+      this.audit({
+        entityType: 'job_travel_route',
+        entityId: `${jobId}:${to.id}`,
+        jobId,
+        action: previous ? 'revise_job_travel_route' : 'record_job_travel_route',
+        actor,
+        before: previous,
+        after: next,
+        metadata: { externalJobId: to.id, revision: next.revision, sourceType }
+      });
+      return { changed: true, route: next, job: this.getJobDetail(jobId, { includeAudit: false }) };
     });
   }
 
@@ -27220,6 +30114,13 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
         };
       }
 
+      const requestsOperationalCompletion = requestedStatus === 'completed'
+        || (Object.prototype.hasOwnProperty.call(patch, 'progressPercent')
+          && normalizeNumber(patch.progressPercent, before.progress_percent) >= 100);
+      const completionReadiness = requestsOperationalCompletion
+        ? this.assessOperationalCompletionReadiness(jobId)
+        : null;
+
       const approvalId = makeId('approval');
       const approval = this.createApproval({
         id: approvalId,
@@ -27234,6 +30135,7 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
           patch,
           reasons,
           before: this.mapJob(before),
+          ...(completionReadiness ? { completionReadiness } : {}),
           requestedBy: actor,
           requestedReason: payload.reason || payload.notes || null
         }
@@ -28329,15 +31231,41 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
         throw ledgerInputError('drawing_sheet_mismatch', 'A revision must retain the same drawing sheet number as the source revision.', { supersedesDrawingId }, 409);
       }
 
+      const previousRevisionData = supersedesRow ? fromJson(supersedesRow.data_json, {}) : {};
+      const hasLinkedTaskSelection = Object.hasOwn(payload, 'linkedTaskIds') || Object.hasOwn(payload, 'linked_task_ids');
+      const requestedTaskIds = hasLinkedTaskSelection
+        ? (payload.linkedTaskIds ?? payload.linked_task_ids)
+        : previousRevisionData.linkedTaskIds;
+      if (requestedTaskIds !== undefined && !Array.isArray(requestedTaskIds)) {
+        throw ledgerInputError('drawing_linked_tasks_invalid', 'Linked drawing tasks must be provided as a list of task IDs.');
+      }
+      const linkedTaskIds = [...new Set((requestedTaskIds || []).map(value => normalizeText(value, '')).filter(Boolean))].sort();
+      if (linkedTaskIds.length > 50) {
+        throw ledgerInputError('drawing_linked_tasks_limit', 'A drawing revision can be linked to at most 50 tasks.');
+      }
+      if (linkedTaskIds.length) {
+        const placeholders = linkedTaskIds.map(() => '?').join(',');
+        const linkedTasks = this.db.prepare(`SELECT id FROM job_tasks WHERE job_id = ? AND id IN (${placeholders})`).all(jobId, ...linkedTaskIds);
+        if (linkedTasks.length !== linkedTaskIds.length) {
+          throw ledgerInputError('drawing_linked_task_not_in_job', 'Every linked drawing task must belong to the same job.', { linkedTaskIds }, 409);
+        }
+      }
+
       const existing = this.db.prepare("SELECT * FROM documents WHERE job_id = ? AND type = 'drawing_revision' AND entry_key = ?")
         .get(jobId, entryKey);
       const fingerprintBasis = {
         jobId, sheetNumber, revision, title, discipline, purpose, issueDate, scale, zone,
-        sourceDocumentId, sourceDocumentChecksum, supersedesDrawingId, revisionReason, reviewNotes: reviewNotes || null
+        sourceDocumentId, sourceDocumentChecksum, supersedesDrawingId, linkedTaskIds, revisionReason, reviewNotes: reviewNotes || null
       };
       const entryFingerprint = sha256Json(fingerprintBasis);
       if (existing) {
-        if (existing.entry_fingerprint !== entryFingerprint) {
+        const legacyFingerprint = linkedTaskIds.length === 0
+          ? sha256Json({
+              jobId, sheetNumber, revision, title, discipline, purpose, issueDate, scale, zone,
+              sourceDocumentId, sourceDocumentChecksum, supersedesDrawingId, revisionReason, reviewNotes: reviewNotes || null
+            })
+          : null;
+        if (existing.entry_fingerprint !== entryFingerprint && existing.entry_fingerprint !== legacyFingerprint) {
           throw ledgerInputError('drawing_revision_entry_key_conflict', 'This drawing replay key is already bound to different revision evidence.', { entryKey }, 409);
         }
         const approvalRow = existing.approval_id ? this.db.prepare('SELECT * FROM approvals WHERE id = ?').get(existing.approval_id) : null;
@@ -28387,6 +31315,7 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
         sourceDocumentReference,
         sourceDocumentChecksum,
         revisionReason,
+        linkedTaskIds,
         reviewNotes: reviewNotes || null,
         createdBy: actor,
         externalCommitments: 0
@@ -29906,7 +32835,9 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
           workerName: worker.name,
           role: worker.role,
           assignmentId: assignment?.id || null,
-          assignmentStatus: assignment?.status || null
+          assignmentStatus: assignment?.status || null,
+          scheduledStart: assignment?.scheduled_start || null,
+          scheduledEnd: assignment?.scheduled_end || null
         };
       });
       const explicitBlockingIssues = normalizeList(payload.blockingIssues || payload.blocking_issues).map(item => normalizeText(item, '')).filter(Boolean);
@@ -29958,7 +32889,12 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       const id = makeId('daily_cycle');
       const timestamp = nowIso();
       const status = stopWorkRequired || blockingIssues.length ? 'blocked' : 'released';
-      const sourceBasis = { format: DAILY_OPERATING_CYCLE_FORMAT, cycleId: id, ...normalized };
+      const crewSchedule = crew.map(member => ({ workerId: member.workerId, assignmentId: member.assignmentId,
+        scheduledStart: member.scheduledStart, scheduledEnd: member.scheduledEnd }));
+      const publicCrew = crew.map(member => Object.fromEntries(Object.entries(member)
+        .filter(([key]) => key !== 'scheduledStart' && key !== 'scheduledEnd')));
+      const sourceBasis = { format: DAILY_OPERATING_CYCLE_FORMAT, cycleId: id,
+        ...normalized, crew: publicCrew, crewSchedule };
       const sourceHash = sha256Json(sourceBasis);
       const snapshot = {
         ...sourceBasis,
@@ -29988,7 +32924,7 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
           created_at, updated_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
-        id, jobId, workDate, shiftLabel, status, facilitator, normalized.leadWorkerId, toJson(crew, []),
+        id, jobId, workDate, shiftLabel, status, facilitator, normalized.leadWorkerId, toJson(publicCrew, []),
         plannedWork, productionTarget, normalized.weather, normalized.siteConditions, safetyFocus,
         toJson(qualityHoldPoints, []), toJson(constraints, []), toJson(blockingIssues, []), stopWorkRequired ? 1 : 0,
         evidenceReference, toJson(planningSource, {}), sourceHash, snapshotHash, snapshotJson,
@@ -36007,7 +38943,7 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
     return after;
   }
 
-  normalizeProductionPlanLines(lines = []) {
+  normalizeProductionPlanLines(lines = [], jobId = null) {
     if (!Array.isArray(lines) || lines.length < 1 || lines.length > 200) {
       throw ledgerInputError('production_baseline_lines_required', 'A production baseline requires between 1 and 200 plan lines.');
     }
@@ -36020,6 +38956,7 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
         .replace(/[^a-z0-9._:-]+/g, '-')
         .replace(/^-+|-+$/g, '');
       const unit = normalizeText(line?.unit, 'unit').toLowerCase();
+      const taskId = normalizeText(line?.taskId || line?.task_id, '') || null;
       const plannedQuantity = roundQuantity(normalizeNumber(line?.plannedQuantity ?? line?.planned_quantity ?? line?.quantity, 0));
       const plannedLaborHours = roundQuantity(normalizeNumber(line?.plannedLaborHours ?? line?.planned_labor_hours ?? line?.laborHours, 0));
       if (description.length < 2 || description.length > 300) {
@@ -36040,10 +38977,14 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       if (!(plannedLaborHours > 0 && plannedLaborHours <= 1_000_000)) {
         throw ledgerInputError('production_line_hours_invalid', 'Planned labor hours must be greater than zero.', { index });
       }
+      if (taskId && !this.db.prepare('SELECT id FROM job_tasks WHERE id = ? AND job_id = ?').get(taskId, jobId)) {
+        throw ledgerInputError('production_line_task_invalid', 'A production line can only link to a task on the same job.', { index, taskId, jobId }, 409);
+      }
       retainedKeys.add(lineKey);
       return {
         sequenceNumber: index + 1,
         lineKey,
+        taskId,
         costCode,
         description,
         unit,
@@ -36095,40 +39036,31 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
     return this.mapProductionBaseline(row);
   }
 
+  validateProductionLineHistory(jobId, lines) {
+    const nextByKey = new Map(lines.map(line => [line.lineKey, line]));
+    const retained = this.db.prepare("SELECT DISTINCT baseline_id,line_key FROM production_entries WHERE job_id = ? AND status <> 'reversed'").all(jobId);
+    for (const entry of retained) {
+      const oldLine = this.getProductionBaseline(entry.baseline_id).snapshot.lines.find(line => line.lineKey === entry.line_key);
+      if (!nextByKey.has(entry.line_key)) throw ledgerInputError('production_baseline_line_history_required',
+        'A revised baseline cannot remove a line that has retained production output.', { lineKey: entry.line_key }, 409);
+      if (!oldLine || oldLine.unit !== nextByKey.get(entry.line_key).unit) throw ledgerInputError('production_baseline_unit_conflict',
+        'A revised baseline cannot change the unit of a line that has retained production output.',
+        { lineKey: entry.line_key, priorUnit: oldLine?.unit, requestedUnit: nextByKey.get(entry.line_key).unit }, 409);
+      if ((oldLine.taskId || null) !== (nextByKey.get(entry.line_key).taskId || null)) throw ledgerInputError('production_baseline_task_conflict',
+        'A revised baseline cannot change the task link of a line that has retained production output.',
+        { lineKey: entry.line_key, priorTaskId: oldLine.taskId || null, requestedTaskId: nextByKey.get(entry.line_key).taskId || null }, 409);
+    }
+  }
+
   requestProductionBaseline(jobId, payload = {}, options = {}) {
     return this.transaction(() => {
+      new (require('./work-context').WorkContext)(this).lock(jobId);
       const job = this.mapJob(this.requireJob(jobId));
       const actor = options.actor || payload.actor || 'Contractor.AI';
-      const lines = this.normalizeProductionPlanLines(payload.lines);
+      const lines = this.normalizeProductionPlanLines(payload.lines, jobId);
       const planHash = sha256Json({ format: PRODUCTION_BASELINE_FORMAT, jobId, lines });
       const existing = this.listProductionBaselines(jobId);
-      const active = existing.find(item => item.status === 'approved') || null;
-      if (active) {
-        const nextByKey = new Map(lines.map(line => [line.lineKey, line]));
-        const activeByKey = new Map((active.snapshot?.lines || []).map(line => [line.lineKey, line]));
-        const retainedEntryKeys = new Set(this.db.prepare(`
-          SELECT DISTINCT line_key FROM production_entries
-          WHERE job_id = ? AND status <> 'reversed'
-        `).all(jobId).map(row => row.line_key));
-        for (const lineKey of retainedEntryKeys) {
-          if (!nextByKey.has(lineKey)) {
-            throw ledgerInputError(
-              'production_baseline_line_history_required',
-              'A revised baseline cannot remove a line that has retained production output.',
-              { lineKey },
-              409
-            );
-          }
-          if (activeByKey.get(lineKey)?.unit && activeByKey.get(lineKey).unit !== nextByKey.get(lineKey).unit) {
-            throw ledgerInputError(
-              'production_baseline_unit_conflict',
-              'A revised baseline cannot change the unit of a line that has retained production output.',
-              { lineKey, priorUnit: activeByKey.get(lineKey).unit, requestedUnit: nextByKey.get(lineKey).unit },
-              409
-            );
-          }
-        }
-      }
+      this.validateProductionLineHistory(jobId, lines);
       const matching = existing.find(item => ['approved', 'pending_approval'].includes(item.status) && item.snapshot?.planHash === planHash);
       if (matching) {
         return {
@@ -36217,7 +39149,8 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
     if (row.status !== 'pending_approval') {
       throw ledgerInputError('production_baseline_state_conflict', `Production baseline cannot be approved from ${row.status}.`, { baselineId, status: row.status }, 409);
     }
-    this.getProductionBaseline(baselineId);
+    const verifiedBaseline = this.getProductionBaseline(baselineId);
+    this.validateProductionLineHistory(row.job_id, verifiedBaseline.snapshot.lines);
     const approval = row.approval_id ? this.db.prepare('SELECT * FROM approvals WHERE id = ?').get(row.approval_id) : null;
     const actor = approval?.resolved_by || approval?.requested_by || 'approval';
     const timestamp = nowIso();
@@ -36249,6 +39182,7 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
 
   recordProductionEntry(jobId, payload = {}, options = {}) {
     return this.transaction(() => {
+      new (require('./work-context').WorkContext)(this).lock(jobId);
       this.requireJob(jobId);
       const actor = options.actor || payload.actor || 'Contractor.AI';
       const baselineRow = this.db.prepare(`
@@ -36343,6 +39277,7 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
 
   requestProductionEntryReversal(jobId, entryId, payload = {}, options = {}) {
     return this.transaction(() => {
+      new (require('./work-context').WorkContext)(this).lock(jobId);
       this.requireJob(jobId);
       const row = this.db.prepare('SELECT * FROM production_entries WHERE id = ? AND job_id = ?').get(entryId, jobId);
       if (!row) throw ledgerInputError('production_entry_not_found', 'Production entry not found for this job.', { entryId }, 404);
@@ -39996,6 +42931,11 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       const incidentType = normalizeStatus(payload.incidentType || payload.incident_type, 'near_miss');
       const title = normalizeText(payload.title, 'Safety incident');
       const reportedBy = normalizeText(payload.reportedBy || payload.reported_by, actor);
+      const reporterWorkerId = normalizeText(payload.reporterWorkerId || payload.reporter_worker_id, '') || null;
+      const taskId = normalizeText(payload.taskId || payload.task_id, '') || null;
+      if (taskId && !this.db.prepare('SELECT id FROM job_tasks WHERE id = ? AND job_id = ?').get(taskId, jobId)) {
+        throw ledgerInputError('incident_task_not_in_job', 'Incident task must belong to the same job.');
+      }
       const entryKey = normalizeText(payload.entryKey || payload.entry_key, '');
       if (entryKey && !/^[A-Za-z0-9._:-]{8,200}$/.test(entryKey)) {
         throw ledgerInputError('incident_entry_key_invalid', 'Incident retry key must contain 8 to 200 safe characters.');
@@ -40009,6 +42949,8 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       const description = normalizeText(payload.description || payload.notes, '') || null;
       const immediateAction = normalizeText(payload.immediateAction || payload.immediate_action, '') || null;
       const correctiveAction = normalizeText(payload.correctiveAction || payload.corrective_action, '') || null;
+      const responsible = normalizeText(payload.responsible || payload.owner || payload.assignee, '') || null;
+      const dueAt = normalizeText(payload.dueAt || payload.due_at, '') || null;
       const witnesses = normalizeList(payload.witnesses);
       const photos = normalizeList(payload.photos);
       const evidenceDocumentIds = [...new Set(normalizeList(payload.evidenceDocumentIds || payload.evidence_document_ids).map(String))];
@@ -40025,7 +42967,7 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       const status = needsApproval && ['closed', 'resolved', 'approved', 'reportable', 'escalated'].includes(requestedStatus)
         ? 'pending_approval'
         : requestedStatus;
-      const requestHash = entryKey ? sha256Json({
+      const requestBasis = {
         requestedStatus,
         status,
         severity,
@@ -40037,12 +42979,17 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
         description,
         immediateAction,
         correctiveAction,
+        responsible,
+        dueAt,
         witnesses,
         photos,
         evidenceDocumentIds,
         reportable,
         needsApproval
-      }) : null;
+      };
+      if (reporterWorkerId) requestBasis.reporterWorkerId = reporterWorkerId;
+      if (taskId) requestBasis.taskId = taskId;
+      const requestHash = entryKey ? sha256Json(requestBasis) : null;
       if (existingRow) {
         const existingData = fromJson(existingRow.data_json, {});
         if (existingRow.job_id !== jobId || existingData.entryKey !== entryKey || existingData.requestHash !== requestHash) {
@@ -40077,10 +43024,14 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
           description,
           immediateAction,
           correctiveAction,
+          responsible,
+          dueAt,
           witnesses,
           photos,
           evidenceDocumentIds,
           reportable,
+          ...(reporterWorkerId ? { reporterWorkerId } : {}),
+          ...(taskId ? { taskId } : {}),
           entryKey: entryKey || null,
           requestHash
         }),
@@ -40649,7 +43600,9 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
     const basis = {
       jha: jha ? {
         id: jha.id, status: jha.status, riskLevel: jha.riskLevel, title: jha.title,
-        hazards: jha.hazards, controls: jha.controls, approvalId: jha.approvalId, updatedAt: jha.updatedAt
+        hazards: jha.hazards, controls: jha.controls,
+        ...(options.includeTaskLinks === true ? { linkedTaskIds: [...new Set(jha.data?.linkedTaskIds || jha.linkedTaskIds || [])].map(String).sort() } : {}),
+        approvalId: jha.approvalId, updatedAt: jha.updatedAt
       } : null,
       workPermit: permit ? {
         id: permit.id, status: permit.status, sourceHash: permit.sourceHash,
@@ -40673,8 +43626,8 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
     const rows = attendeeRows || this.db.prepare(`
       SELECT * FROM pre_task_plan_attendees WHERE plan_id = ? ORDER BY attendee_key, created_at
     `).all(planRow.id);
-    return {
-      format: PRE_TASK_PLAN_FORMAT,
+    const basis = {
+      format: data.format || PRE_TASK_PLAN_FORMAT,
       planId: planRow.id,
       jobId: planRow.job_id,
       planNumber: planRow.plan_number,
@@ -40703,6 +43656,10 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
         company: row.company || null
       }))
     };
+    if (basis.format === PRE_TASK_PLAN_FORMAT_SCOPED) {
+      basis.linkedTaskIds = [...new Set(normalizeList(data.linkedTaskIds).map(String))].sort();
+    }
+    return basis;
   }
 
   preTaskPlanAttendeeEvidenceBasis(record = {}) {
@@ -40766,7 +43723,7 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
     const snapshot = fromJson(row.snapshot_json, null);
     const sourceCurrentHash = sha256Json(this.preTaskPlanDefinitionBasis(row, attendeeRows));
     const definitionIntegrityValid = Boolean(
-      snapshot && snapshot.format === PRE_TASK_PLAN_FORMAT && row.source_hash && row.snapshot_hash
+      snapshot && [PRE_TASK_PLAN_FORMAT, PRE_TASK_PLAN_FORMAT_SCOPED].includes(snapshot.format) && row.source_hash && row.snapshot_hash
       && snapshot.sourceHash === row.source_hash && sha256Json(snapshot) === row.snapshot_hash
       && sourceCurrentHash === row.source_hash
     );
@@ -40775,7 +43732,7 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       jhaId: row.jha_id,
       workPermitId: row.work_permit_id,
       sdsSheetIds: fromJson(row.sds_sheet_ids_json, [])
-    });
+    }, { includeTaskLinks: data.format === PRE_TASK_PLAN_FORMAT_SCOPED });
     const prerequisitesCurrent = linked.ready && linked.hash === data.linkedSourcesHash;
     const attendanceSummary = attendees.reduce((summary, attendee) => {
       summary.total += 1;
@@ -40866,14 +43823,30 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       if (shiftLabel.length < 2 || shiftLabel.length > 120) throw ledgerInputError('pre_task_plan_shift_invalid', 'Pre-task plan shift must contain two to 120 characters.');
       if (evidenceReference.length < 3 || evidenceReference.length > 240) throw ledgerInputError('pre_task_plan_evidence_invalid', 'Pre-task plan source evidence must contain three to 240 characters.');
       const steps = this.normalizePreTaskPlanSteps(payload.steps);
-      const entryKey = normalizeText(payload.entryKey || payload.entry_key, '');
-      if (!/^[A-Za-z0-9._:-]{8,200}$/.test(entryKey)) {
-        throw ledgerInputError('pre_task_plan_entry_key_invalid', 'Pre-task plan replay key must contain 8 to 200 safe characters.');
-      }
       const jhaId = normalizeText(payload.jhaId || payload.jha_id, '');
       if (!jhaId) throw ledgerInputError('pre_task_plan_jha_required', 'Pre-task plan approval requires a linked approved JHA.');
       const workPermitId = normalizeText(payload.workPermitId || payload.work_permit_id, '') || null;
       const sdsSheetIds = [...new Set(normalizeList(payload.sdsSheetIds || payload.sds_sheet_ids).map(String))].sort();
+      const linked = this.preTaskPlanLinkedSources(jobId, { jhaId, workPermitId, sdsSheetIds }, { validate: true, includeTaskLinks: true });
+      const jhaLinkedTaskIds = linked.jha?.data?.linkedTaskIds || linked.jha?.linkedTaskIds || [];
+      const linkedTaskIds = Object.hasOwn(payload, 'linkedTaskIds') || Object.hasOwn(payload, 'linked_task_ids')
+        ? [...new Set(normalizeList(payload.linkedTaskIds ?? payload.linked_task_ids).map(String))].sort()
+        : [...new Set(jhaLinkedTaskIds)].map(String).sort();
+      const jhaTaskIds = new Set(jhaLinkedTaskIds.map(String));
+      if (linkedTaskIds.length > 50 || linkedTaskIds.some(taskId => !jhaTaskIds.has(taskId))) {
+        throw ledgerInputError('pre_task_plan_task_scope_invalid', 'A pre-task plan can cover only tasks explicitly linked to its approved JHA.', { linkedTaskIds }, 409);
+      }
+      if (linkedTaskIds.length) {
+        const placeholders = linkedTaskIds.map(() => '?').join(',');
+        const taskRows = this.db.prepare(`SELECT id FROM job_tasks WHERE job_id = ? AND id IN (${placeholders}) AND lower(status) NOT IN ('completed', 'cancelled', 'canceled', 'deleted')`).all(jobId, ...linkedTaskIds);
+        if (taskRows.length !== linkedTaskIds.length) {
+          throw ledgerInputError('pre_task_plan_task_scope_invalid', 'Every pre-task plan task must be active and belong to this job.', { linkedTaskIds }, 409);
+        }
+      }
+      const entryKey = normalizeText(payload.entryKey || payload.entry_key, '');
+      if (!/^[A-Za-z0-9._:-]{8,200}$/.test(entryKey)) {
+        throw ledgerInputError('pre_task_plan_entry_key_invalid', 'Pre-task plan replay key must contain 8 to 200 safe characters.');
+      }
       const assignmentIds = normalizeList(payload.assignmentIds || payload.assignment_ids).map(String).sort();
       const workerIds = normalizeList(payload.workerIds || payload.worker_ids).map(String).sort();
       const responsibleWorkerId = normalizeText(payload.responsibleWorkerId || payload.responsible_worker_id, '') || null;
@@ -40883,7 +43856,7 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       const notes = normalizeText(payload.notes || payload.note, '') || null;
       const entryFingerprint = sha256Json({
         jobId, workDate, shiftLabel, title, location, preparedBy, responsibleWorkerId,
-        jhaId, workPermitId, sdsSheetIds, steps, evidenceReference, assignmentIds, workerIds,
+        jhaId, linkedTaskIds, workPermitId, sdsSheetIds, steps, evidenceReference, assignmentIds, workerIds,
         supersedesPlanId, emergencyArrangements, stopWorkTriggers, notes
       });
       const replay = this.db.prepare('SELECT * FROM pre_task_plans WHERE job_id = ? AND entry_key = ?').get(jobId, entryKey);
@@ -40894,7 +43867,6 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
         const approval = replay.approval_id ? this.db.prepare('SELECT * FROM approvals WHERE id = ?').get(replay.approval_id) : null;
         return { plan: this.getPreTaskPlan(replay.id, { jobId }), approval: approval ? this.mapApproval(approval) : null, replayed: true, externalCommitments: 0 };
       }
-      const linked = this.preTaskPlanLinkedSources(jobId, { jhaId, workPermitId, sdsSheetIds }, { validate: true });
       const superseded = supersedesPlanId
         ? this.db.prepare('SELECT * FROM pre_task_plans WHERE id = ? AND job_id = ?').get(supersedesPlanId, jobId)
         : null;
@@ -40919,7 +43891,7 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
         preparedBy, responsibleWorkerId, jhaId, workPermitId, toJson(sdsSheetIds), toJson(steps),
         evidenceReference, entryKey, entryFingerprint,
         toJson({
-          format: PRE_TASK_PLAN_FORMAT, linkedSources: linked.basis, linkedSourcesHash: linked.hash,
+          format: PRE_TASK_PLAN_FORMAT_SCOPED, linkedTaskIds, linkedSources: linked.basis, linkedSourcesHash: linked.hash,
           emergencyArrangements: emergencyArrangements || null, stopWorkTriggers, notes,
           requestedStatus: 'approved_waiting_acknowledgement', externalCommitments: 0
         }), timestamp, timestamp
@@ -41517,8 +44489,25 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       acknowledgedAt: record.acknowledgedAt || record.acknowledged_at || null,
       acknowledgedBy: record.acknowledgedBy || record.acknowledged_by || null,
       evidenceReference: record.evidenceReference || record.evidence_reference || null,
-      attestation: record.attestation || fromJson(record.data_json, {}).attestation || null
+      attestation: record.attestation || fromJson(record.data_json, {}).attestation || null,
+      ...(record.briefingContentHash || fromJson(record.data_json, {}).briefingContentHash
+        ? { briefingContentHash: record.briefingContentHash || fromJson(record.data_json, {}).briefingContentHash }
+        : {})
     };
+  }
+
+  safetyBriefingContentHash(meetingRow) {
+    return sha256Json({
+      format: `${SAFETY_BRIEFING_FORMAT}/content`,
+      meetingId: meetingRow.id,
+      jobId: meetingRow.job_id,
+      meetingType: meetingRow.meeting_type,
+      title: meetingRow.title,
+      facilitator: meetingRow.facilitator,
+      scheduledAt: meetingRow.scheduled_at,
+      evidenceReference: meetingRow.evidence_reference || null,
+      topics: normalizeList(fromJson(meetingRow.topics_json, []))
+    });
   }
 
   safetyMeetingSourceBasis(meetingRow, attendeeRows = null) {
@@ -41631,6 +44620,7 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
     return {
       ...this.mapSafetyMeeting(row),
       jobTitle: row.job_title || null,
+      briefingContentHash: this.safetyBriefingContentHash(row),
       attendees: attendeeRecords.length ? attendeeRecords.map(attendee => attendee.attendeeName) : fromJson(row.attendees_json, []),
       attendeeRecords,
       attendanceSummary: {
@@ -41676,6 +44666,10 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       if (!['scheduled', 'in_progress'].includes(meetingRow.status)) {
         throw ledgerInputError('safety_briefing_locked', 'Attendance cannot change after safety briefing signoff begins.', {}, 409);
       }
+      const briefingContentHash = this.safetyBriefingContentHash(meetingRow);
+      if (options.legacy !== true && normalizeText(payload.briefingContentHash || payload.briefing_content_hash, '') !== briefingContentHash) {
+        throw ledgerInputError('safety_briefing_source_changed', 'The safety briefing changed after it was opened. Refresh it and review the current topics before acknowledging.', { meetingId }, 409);
+      }
       if (!normalizeBoolean(payload.acknowledged ?? payload.attestationAccepted ?? payload.attestation_accepted, false)) {
         throw ledgerInputError('safety_briefing_attestation_required', 'The attendee must explicitly acknowledge the retained briefing topics.');
       }
@@ -41715,7 +44709,7 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
         meetingId, jobId, assignmentId: assignment?.id || payload.assignmentId || payload.assignment_id || null,
         workerId, attendeeName, company, status: 'acknowledged', acknowledgedAt,
         acknowledgedBy: normalizeText(payload.acknowledgedBy || payload.acknowledged_by, attendeeName),
-        evidenceReference, attestation
+        evidenceReference, attestation, briefingContentHash
       };
       const entryFingerprint = sha256Json(basis);
       if (replay) {
@@ -41743,7 +44737,7 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
         `).run(
           id, meetingId, jobId, basis.assignmentId, workerId, attendeeKey, attendeeName, company,
           acknowledgedAt, basis.acknowledgedBy, evidenceReference, entryKey, entryFingerprint,
-          toJson({ attestation, source: payload.source || 'safety_briefing_acknowledgement' }), timestamp, timestamp
+          toJson({ attestation, briefingContentHash, source: payload.source || 'safety_briefing_acknowledgement' }), timestamp, timestamp
         );
         attendeeRow = this.db.prepare('SELECT * FROM safety_meeting_attendees WHERE id = ?').get(id);
       } else {
@@ -41756,7 +44750,7 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
         `).run(
           basis.assignmentId, workerId, attendeeName, company, acknowledgedAt, basis.acknowledgedBy,
           evidenceReference, entryKey, entryFingerprint,
-          toJson({ ...fromJson(attendeeRow.data_json, {}), attestation, source: payload.source || 'safety_briefing_acknowledgement' }),
+          toJson({ ...fromJson(attendeeRow.data_json, {}), attestation, briefingContentHash, source: payload.source || 'safety_briefing_acknowledgement' }),
           timestamp, attendeeRow.id
         );
         attendeeRow = this.db.prepare('SELECT * FROM safety_meeting_attendees WHERE id = ?').get(attendeeRow.id);
@@ -42077,6 +45071,14 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       const riskLevel = normalizePriority(payload.riskLevel || payload.risk_level || payload.severity);
       const hazards = normalizeList(payload.hazards);
       const controls = normalizeList(payload.controls || payload.mitigations);
+      const linkedTaskIds = normalizeJhaLinkedTaskIds(payload.linkedTaskIds ?? payload.linked_task_ids);
+      if (linkedTaskIds.length) {
+        const placeholders = linkedTaskIds.map(() => '?').join(',');
+        const linkedTasks = this.db.prepare(`SELECT id FROM job_tasks WHERE job_id = ? AND id IN (${placeholders})`).all(jobId, ...linkedTaskIds);
+        if (linkedTasks.length !== linkedTaskIds.length) {
+          throw ledgerInputError('jha_linked_task_not_in_job', 'Every linked JHA task must belong to the same job.', { linkedTaskIds }, 409);
+        }
+      }
       const approvalStatuses = ['approved', 'issued', 'accepted', 'completed', 'signed_off', 'client_visible'];
       const needsApproval = normalizeBoolean(
         payload.requiresApproval,
@@ -42086,6 +45088,23 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
         ? 'pending_approval'
         : requestedStatus;
 
+      const data = {
+        requestedStatus,
+        workMethod: payload.workMethod || payload.work_method || null,
+        ppe: normalizeList(payload.ppe),
+        notes: payload.notes || payload.note || null,
+        stopWorkTriggers: normalizeList(payload.stopWorkTriggers || payload.stop_work_triggers),
+        linkedTaskIds
+      };
+      const safetyDefinitionHash = jhaSafetyDefinitionHash({
+        jobId,
+        title: normalizeText(payload.title, 'Job hazard analysis'),
+        riskLevel,
+        hazards,
+        controls,
+        data
+      });
+      data.safetyDefinitionHash = safetyDefinitionHash;
       this.db.prepare(`
         INSERT INTO jha_records (id, job_id, title, status, risk_level, assignee, due_at, approved_at, hazards_json, controls_json, approval_id, data_json, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -42101,13 +45120,7 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
         toJson(hazards, []),
         toJson(controls, []),
         null,
-        toJson({
-          requestedStatus,
-          workMethod: payload.workMethod || payload.work_method || null,
-          ppe: normalizeList(payload.ppe),
-          notes: payload.notes || payload.note || null,
-          stopWorkTriggers: normalizeList(payload.stopWorkTriggers || payload.stop_work_triggers)
-        }),
+        toJson(data),
         timestamp,
         timestamp
       );
@@ -42123,7 +45136,7 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
           reason: ['high', 'critical'].includes(riskLevel)
             ? 'High-risk hazard analyses require human review before field reliance.'
             : 'Approved JHAs affect worker instructions, safety controls, and compliance records.',
-          data: { requestedStatus, riskLevel, hazards, controls }
+          data: { requestedStatus, riskLevel, hazards, controls, linkedTaskIds, safetyDefinitionHash }
         }, { actor, audit: false });
         this.db.prepare('UPDATE jha_records SET approval_id = ?, updated_at = ? WHERE id = ?').run(approval.id, nowIso(), id);
       }
@@ -42369,6 +45382,24 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       if (supersedesRow && supersedesRow.product_key !== productKey) {
         throw ledgerInputError('sds_revision_product_mismatch', 'A revision must retain the same manufacturer and product identity as the source SDS.', { supersedesSdsId }, 409);
       }
+      const hasLinkedMaterials = Object.prototype.hasOwnProperty.call(payload, 'linkedMaterialIds')
+        || Object.prototype.hasOwnProperty.call(payload, 'linked_material_ids')
+        || Object.prototype.hasOwnProperty.call(payload, 'materialRequirementIds')
+        || Object.prototype.hasOwnProperty.call(payload, 'material_requirement_ids');
+      const linkedMaterialIds = [...new Set(normalizeList(
+        hasLinkedMaterials
+          ? payload.linkedMaterialIds || payload.linked_material_ids || payload.materialRequirementIds || payload.material_requirement_ids
+          : fromJson(supersedesRow?.data_json, {}).linkedMaterialIds
+      ))].sort();
+      if (linkedMaterialIds.length > 100) {
+        throw ledgerInputError('sds_revision_material_scope_limit', 'An SDS revision can be linked to at most 100 job material requirements.');
+      }
+      const linkedMaterialRows = linkedMaterialIds.length
+        ? this.db.prepare(`SELECT id FROM material_requirements WHERE job_id = ? AND status <> 'cancelled' AND id IN (${linkedMaterialIds.map(() => '?').join(', ')})`).all(jobId, ...linkedMaterialIds)
+        : [];
+      if (linkedMaterialRows.length !== linkedMaterialIds.length) {
+        throw ledgerInputError('sds_revision_material_scope_invalid', 'Every linked SDS material requirement must be active and belong to this job.', { linkedMaterialIds }, 409);
+      }
       const existing = this.db.prepare('SELECT * FROM sds_sheets WHERE job_id = ? AND entry_key = ?').get(jobId, entryKey);
       const revisionNumber = existing
         ? Number(existing.revision_number || 1)
@@ -42381,7 +45412,8 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       const fingerprintBasis = {
         jobId, productKey, revisionNumber, supersedesSdsId, material, manufacturer, productCode: productCode || null,
         language, issuedOn, expiresAt, documentId, documentChecksum, hazardClasses, requiredPpe,
-        firstAidMeasures, fireMeasures, handlingStorage, spillResponse, disposal, emergencyContact, revisionReason, notes: notes || null
+        firstAidMeasures, fireMeasures, handlingStorage, spillResponse, disposal, emergencyContact, revisionReason,
+        linkedMaterialIds, notes: notes || null
       };
       const entryFingerprint = sha256Json(fingerprintBasis);
       if (existing) {
@@ -42430,6 +45462,8 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
         emergencyContact,
         revisionReason,
         notes: notes || null,
+        sdsRevisionFormat: SDS_REVISION_FORMAT,
+        linkedMaterialIds,
         governedRevision: true,
         externalCommitments: 0
       };
@@ -42465,6 +45499,39 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
         }
       }, { actor, audit: false });
       this.db.prepare('UPDATE sds_sheets SET approval_id = ?, updated_at = ? WHERE id = ?').run(approval.id, timestamp, id);
+
+      for (const materialRequirementId of linkedMaterialIds) {
+        const materialRow = this.db.prepare('SELECT * FROM material_requirements WHERE id = ? AND job_id = ?')
+          .get(materialRequirementId, jobId);
+        if (!materialRow) continue;
+        const materialData = fromJson(materialRow.data_json, {});
+        if (materialData.sdsRequirementStatus === 'required') continue;
+        const materialEvent = {
+          entryKey: `sds-revision:${id}`,
+          status: 'required',
+          reason: `Linked to pending SDS revision ${revisionNumber} for ${material}.`,
+          actor,
+          recordedAt: timestamp
+        };
+        const nextMaterialData = {
+          ...materialData,
+          sdsRequirementStatus: 'required',
+          sdsRequirementReason: materialEvent.reason,
+          sdsRequirementReviewedBy: actor,
+          sdsRequirementReviewedAt: timestamp,
+          sdsRequirementEntryKey: materialEvent.entryKey,
+          sdsRequirementHistory: [...(Array.isArray(materialData.sdsRequirementHistory) ? materialData.sdsRequirementHistory.slice(-99) : []), materialEvent]
+        };
+        this.db.prepare('UPDATE material_requirements SET data_json = ?, updated_at = ? WHERE id = ? AND job_id = ?')
+          .run(toJson(nextMaterialData), timestamp, materialRequirementId, jobId);
+        this.audit({
+          entityType: 'material_requirement', entityId: materialRequirementId, jobId,
+          action: 'sds_required_by_product_revision', actor,
+          before: this.mapMaterialRequirement(materialRow),
+          after: this.mapMaterialRequirement(this.db.prepare('SELECT * FROM material_requirements WHERE id = ?').get(materialRequirementId)),
+          metadata: { sdsSheetId: id, approvalId: approval.id, revisionNumber, externalCommitments: 0 }
+        });
+      }
       const revision = this.getSdsSheet(id, { jobId });
       this.audit({
         entityType: 'sds_sheet', entityId: id, jobId, action: 'create_sds_revision', actor,
@@ -42489,7 +45556,15 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       const assignedCrewEvidence = crewEvidence.items.find(item => item.assignmentId === assignedWorker?.id) || crewEvidence.items[0] || null;
 
       const existingMeeting = retainedRecord(detail.safetyMeetings || [], ['cancelled', 'canceled', 'rejected']);
-      const existingJha = retainedRecord(detail.jhas || [], ['cancelled', 'canceled', 'rejected', 'expired']);
+      const activeTaskIds = [...new Set((detail.tasks || [])
+        .filter(task => !['cancelled', 'canceled', 'deleted', 'completed'].includes(normalizeStatus(task.status, '')))
+        .map(task => task.id))].sort();
+      const reusableJha = (detail.jhas || []).find(record => (
+        !['cancelled', 'canceled', 'rejected', 'expired'].includes(normalizeStatus(record.status, 'open'))
+        && JSON.stringify([...new Set((record.data?.linkedTaskIds || []).map(String))].sort()) === JSON.stringify(activeTaskIds)
+      )) || null;
+      const jhaTemplate = reusableJha || retainedRecord(detail.jhas || [], ['cancelled', 'canceled', 'rejected', 'expired']);
+      const existingJha = reusableJha;
       const existingSds = retainedRecord(detail.sdsSheets || [], ['cancelled', 'canceled', 'rejected', 'expired']);
       const existingOrientation = assignedCrewEvidence?.orientation
         || (!assignedWorker ? retainedRecord(detail.orientations || [], ['cancelled', 'canceled', 'rejected', 'expired']) : null);
@@ -42506,21 +45581,26 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
         notes: 'Internal safety briefing draft. Completion and publication require retained evidence and approval where applicable.'
       }, { actor, audit: false });
       const jha = existingJha || this.createJhaRecord(jobId, {
-        title: `${detail.title} job hazard analysis`,
+        title: jhaTemplate ? `${jhaTemplate.title} task scope review` : `${detail.title} job hazard analysis`,
         status: 'draft',
-        riskLevel: detail.riskLevel || 'medium',
+        riskLevel: jhaTemplate?.riskLevel || detail.riskLevel || 'medium',
         dueAt,
         assignee: payload.assignee || assignedWorker?.workerName || actor,
+        linkedTaskIds: activeTaskIds,
         hazards: normalizeList(payload.hazards).length
           ? normalizeList(payload.hazards)
-          : ['Site access and public interface', 'Task-specific equipment and material hazards', 'Changing field conditions'],
+          : jhaTemplate?.hazards || ['Site access and public interface', 'Task-specific equipment and material hazards', 'Changing field conditions'],
         controls: normalizeList(payload.controls).length
           ? normalizeList(payload.controls)
-          : ['Confirm controls before work starts', 'Use required PPE and isolation', 'Stop work and record changed conditions'],
+          : jhaTemplate?.controls || ['Confirm controls before work starts', 'Use required PPE and isolation', 'Stop work and record changed conditions'],
         ppe: normalizeList(payload.ppe).length
           ? normalizeList(payload.ppe)
-          : ['Safety shoes', 'Gloves', 'Eye protection'],
-        notes: 'Internal JHA draft. It does not authorize field reliance until required approvals are resolved.'
+          : jhaTemplate?.data?.ppe || ['Safety shoes', 'Gloves', 'Eye protection'],
+        workMethod: jhaTemplate?.data?.workMethod || null,
+        stopWorkTriggers: jhaTemplate?.data?.stopWorkTriggers || [],
+        notes: jhaTemplate
+          ? `Task-scoped draft based on ${jhaTemplate.id}. Reassess hazards, controls, PPE, and work method for every linked task before approval.`
+          : 'Internal JHA draft. It does not authorize field reliance until required approvals are resolved.'
       }, { actor, audit: false });
       const sdsSheet = existingSds || this.createSdsSheet(jobId, {
         material: payload.material || `${detail.jobType || 'Job'} material register`,
@@ -45865,11 +48945,26 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
         approvalStatuses: new Set(['escalated', 'resolved', 'closed']),
         approvalForHighRisk: true,
         terminalStatuses: new Set(['resolved', 'closed']),
+        validate(row, requestedStatus) {
+          if (!['resolved', 'closed'].includes(requestedStatus)) return;
+          if (!normalizeText(payload.notes || payload.note, '')
+            || !normalizeText(payload.correctiveAction || payload.corrective_action || payload.resolution, '')) {
+            const error = new Error('Incident resolution requires a review note and documented corrective action');
+            error.statusCode = 400;
+            error.code = 'incident_resolution_evidence_required';
+            throw error;
+          }
+        },
         update(row, next) {
+          const existingData = fromJson(row.data_json, {});
           return {
             status: next.status,
             approvalId: next.approvalId,
-            data: next.data,
+            data: {
+              ...next.data,
+              responsible: normalizeText(payload.responsible || payload.owner || payload.assignee, existingData.responsible || '' ) || null,
+              dueAt: normalizeText(payload.dueAt || payload.due_at, existingData.dueAt || '') || null
+            },
             title: normalizeText(payload.title, row.title),
             resolvedAt: next.closedAt
           };
@@ -46061,10 +49156,23 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
         || normalizeBoolean(payload.requiresApproval, false)
       );
       const existingData = fromJson(row.data_json, {});
+      const fieldTaskIds = normalizedType === 'rfi' && existingData.fieldShareEnabled === true
+        ? [...new Set(existingData.fieldTaskIds || [])]
+        : [];
+      const fieldTaskTitles = fieldTaskIds.map(id => this.db.prepare('SELECT title FROM job_tasks WHERE id = ? AND job_id = ?').get(id, jobId)?.title).filter(Boolean);
+      const fieldDistribution = fieldTaskIds.length ? {
+        fieldShareEnabled: true,
+        fieldTaskIds,
+        fieldTaskTitles
+      } : {};
+      const approvalSummary = `Approve ${config.label} transition to ${requestedStatus}${fieldTaskTitles.length
+        ? `; share approved answer with field tasks: ${fieldTaskTitles.join(', ')}`
+        : ''}`;
       const transition = {
         requestedStatus,
         previousStatus: normalizeStatus(row.status, 'open'),
         note: payload.notes || payload.note || null,
+        ...(normalizedType === 'rfi' ? { response: payload.response || payload.answer || payload.resolution || payload.notes || payload.note || before.response || null } : {}),
         correctiveAction: payload.correctiveAction || payload.corrective_action || null,
         resolution: payload.resolution || null,
         evidence: normalizeList(payload.evidence || payload.photos),
@@ -46079,6 +49187,11 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       const storedStatus = needsApproval && config.approvalStatuses.has(requestedStatus)
         ? 'pending_approval'
         : requestedStatus;
+      const requestedSubmittalAttachments = normalizedType === 'submittal'
+        ? (payload.attachments || payload.documents || payload.files
+          ? normalizeList(payload.attachments || payload.documents || payload.files)
+          : before.attachments || [])
+        : [];
       const next = {
         status: storedStatus,
         approvalId: row.approval_id || null,
@@ -46102,9 +49215,16 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
             SET summary = ?, reason = ?, data_json = ?, updated_at = ?
             WHERE id = ?
           `).run(
-            `Approve ${config.label} transition to ${requestedStatus}`,
+            approvalSummary,
             `Changing this ${config.label} to ${requestedStatus} can affect safety, closeout, or client commitments and requires explicit review.`,
-            toJson({ requestedStatus, transition }),
+            toJson({ requestedStatus, transition, ...fieldDistribution, ...(normalizedType === 'jha' ? {
+              linkedTaskIds: before.data?.linkedTaskIds || [],
+              safetyDefinitionHash: before.data?.safetyDefinitionHash || jhaSafetyDefinitionHash(before)
+            } : {}), ...(normalizedType === 'submittal' ? {
+              taskIds: before.data?.taskIds || [],
+              attachments: requestedSubmittalAttachments,
+              attachmentManifest: this.submittalAttachmentManifest(jobId, requestedSubmittalAttachments)
+            } : {}) }),
             timestamp,
             pending.id
           );
@@ -46115,9 +49235,16 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
             targetId: recordId,
             jobId,
             approvalType: `${normalizedType}_lifecycle_transition`,
-            summary: `Approve ${config.label} transition to ${requestedStatus}`,
+            summary: approvalSummary,
             reason: `Changing this ${config.label} to ${requestedStatus} can affect safety, closeout, or client commitments and requires explicit review.`,
-            data: { requestedStatus, transition }
+            data: { requestedStatus, transition, ...fieldDistribution, ...(normalizedType === 'jha' ? {
+              linkedTaskIds: before.data?.linkedTaskIds || [],
+              safetyDefinitionHash: before.data?.safetyDefinitionHash || jhaSafetyDefinitionHash(before)
+            } : {}), ...(normalizedType === 'submittal' ? {
+              taskIds: before.data?.taskIds || [],
+              attachments: requestedSubmittalAttachments,
+              attachmentManifest: this.submittalAttachmentManifest(jobId, requestedSubmittalAttachments)
+            } : {}) }
           }, { actor, audit: false });
         }
         next.approvalId = approval.id;
@@ -46183,8 +49310,11 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
   prepareRecurringServiceJob(recurringPlanId, payload = {}, options = {}) {
     return this.transaction(() => {
       const actor = options.actor || payload.actor || 'Contractor.AI';
-      const planRow = this.db.prepare('SELECT * FROM recurring_plans WHERE id = ?').get(recurringPlanId);
+      let planRow = this.db.prepare('SELECT * FROM recurring_plans WHERE id = ?').get(recurringPlanId);
       if (!planRow) return null;
+      new (require('./work-context').WorkContext)(this).lock(planRow.job_id);
+      this.db.prepare('UPDATE recurring_plans SET status = status WHERE id = ?').run(recurringPlanId);
+      planRow = this.db.prepare('SELECT * FROM recurring_plans WHERE id = ?').get(recurringPlanId);
       const sourceJob = this.requireJob(planRow.job_id);
       const client = this.mapClient(this.db.prepare('SELECT * FROM clients WHERE id = ?').get(planRow.client_id || sourceJob.client_id));
       const planData = fromJson(planRow.data_json);
@@ -46239,6 +49369,7 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
         WHERE id = ?
       `).run(followUp.id, nextDueAt, timestamp, recurringPlanId);
 
+      const installedAssetIds = new (require('./asset-history').AssetHistory)(this).inheritRecurring(recurringPlanId, followUp.id, actor);
       const updatedPlan = this.mapRecurringPlan(this.db.prepare('SELECT * FROM recurring_plans WHERE id = ?').get(recurringPlanId));
       this.audit({
         entityType: 'recurring_plan',
@@ -46249,6 +49380,7 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
         after: {
           recurringPlan: updatedPlan,
           recurringJobId: followUp.id,
+          installedAssetIds,
           sourceJobId: sourceJob.id,
           nextDueAt
         },
@@ -46414,8 +49546,9 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
     const isOutdoor = payload.weatherSensitive === true
       || payload.weather_sensitive === true
       || /garden|pav|roof|fence|outside|outdoor|painting|clean/i.test(`${job.job_type} ${job.title} ${job.description}`);
-    const recommendation = payload.recommendation || (isOutdoor && precipitation >= 60
-      ? 'Outdoor work has material weather risk. Draft a reschedule or indoor-work fallback for approval.'
+    const weatherRisk = WEATHER_RISK_CONDITIONS.has(condition.toLowerCase()) || precipitation >= 60;
+    const recommendation = payload.recommendation || (weatherRisk
+      ? 'Weather conditions require a human suitability review. Draft a reschedule or indoor-work fallback for approval.'
       : isOutdoor
         ? 'Weather is workable, but keep a same-day check before dispatch.'
         : 'Weather is not a primary constraint for this job.');
@@ -46478,15 +49611,18 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       };
     }
     const weather = this.mapWeather(row);
+    const assessedAt = Date.parse(weather.data?.fetchedAt || weather.createdAt || '');
+    const ageMs = Date.now() - assessedAt;
+    const stale = !Number.isFinite(assessedAt) || ageMs < -5 * 60 * 1000 || ageMs > WEATHER_ASSESSMENT_MAX_AGE_MS;
     return {
-      status: ['rain_risk', 'wind_risk', 'storm_risk', 'visibility_risk'].includes(weather.condition) || weather.precipitationPercent >= 60 ? 'risk' : 'workable',
+      status: stale ? 'stale' : WEATHER_RISK_CONDITIONS.has(String(weather.condition || '').toLowerCase()) || weather.precipitationPercent >= 60 ? 'risk' : 'workable',
       location: weather.location,
       condition: weather.data?.weatherDescription || weather.condition,
       temperature: weather.data?.temperatureC ?? null,
       precipitation: weather.precipitationPercent,
       windKph: weather.data?.windKph ?? null,
       windGustKph: weather.data?.windGustKph ?? null,
-      recommendation: weather.recommendation,
+      recommendation: stale ? 'Weather assessment is older than 12 hours or has an invalid assessment time. Refresh it before field planning.' : weather.recommendation,
       source: weather.data?.source || 'local_assessment',
       provider: weather.data?.provider?.name || null,
       jobId: weather.jobId,
@@ -47374,8 +50510,9 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       : bestAvailableCandidate || assignedCandidate || null;
     const toolConflicts = this.scheduleToolConflicts(jobId, detail, plannedStart, plannedEnd);
     const latestWeather = detail.weather[0] || null;
+    const weatherAssessment = weatherAssessmentReadiness(latestWeather, plannedStart);
     const isOutdoor = /garden|pav|roof|fence|outside|outdoor|painting|clean/i.test(`${job.jobType} ${job.title} ${job.description}`);
-    const weatherRisk = latestWeather && normalizeNumber(latestWeather.precipitationPercent, 0) >= 60;
+    const weatherRisk = weatherAssessment.status === 'risk';
     const routeReady = (detail.routePlans || []).some(item => !['cancelled', 'rejected', 'declined'].includes(normalizeStatus(item.status, 'draft')));
     const loadingReady = (detail.loadingPlans || []).some(item => !['cancelled', 'rejected', 'declined'].includes(normalizeStatus(item.status, 'draft')));
     const crewEvidence = this.crewEvidenceReadiness(detail);
@@ -47420,6 +50557,11 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       const message = isOutdoor ? 'Outdoor job has no weather assessment yet.' : 'No weather assessment is recorded for this job.';
       warnings.push(message);
       if (isOutdoor) missing.push('weather_assessment');
+    } else if (['stale', 'not_comparable'].includes(weatherAssessment.status)) {
+      warnings.push(weatherAssessment.status === 'stale'
+        ? 'Weather assessment is older than 12 hours or has an invalid assessment time.'
+        : 'Weather forecast does not cover the current planned start time.' );
+      if (isOutdoor) missing.push('weather_assessment');
     } else if (weatherRisk) {
       warnings.push(latestWeather.recommendation);
       blockers.push({ type: 'weather_risk', severity: 'medium', message: latestWeather.recommendation });
@@ -47457,8 +50599,8 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
         requiresApproval: normalizeBoolean(payload.clientCommitment ?? payload.client_commitment ?? payload.committedToClient, false)
       });
     }
-    if (!latestWeather && isOutdoor) {
-      nextActions.push({ type: 'assess_weather', message: 'Record weather assessment before committing outdoor work.', requiresApproval: false });
+    if (isOutdoor && !['checked', 'risk'].includes(weatherAssessment.status)) {
+      nextActions.push({ type: 'assess_weather', message: 'Record a current weather assessment for the planned start before committing outdoor work.', requiresApproval: false });
     }
     if (!routeReady) {
       nextActions.push({ type: 'create_route_plan', message: 'Create route/access plan before dispatch.', requiresApproval: false });
@@ -47511,7 +50653,7 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
         tools: { status: toolConflicts.length ? 'conflict' : detail.tools.length ? 'ready' : 'missing', reservations: detail.tools.length, conflicts: toolConflicts.length },
         materials: { status: detail.materials.length ? 'ready' : 'missing', requirements: detail.materials.length },
         weather: latestWeather
-          ? { status: weatherRisk ? 'risk' : 'checked', condition: latestWeather.condition, precipitationPercent: latestWeather.precipitationPercent, recommendation: latestWeather.recommendation }
+          ? { ...weatherAssessment, condition: latestWeather.condition, precipitationPercent: latestWeather.precipitationPercent, recommendation: latestWeather.recommendation }
           : { status: isOutdoor ? 'missing' : 'not_required' },
         route: { status: routeReady ? 'ready' : 'missing' },
         loading: { status: loadingReady ? 'ready' : (detail.tools.length || detail.materials.length) ? 'missing' : 'not_required' },
@@ -48177,6 +51319,26 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
         throw error;
       }
       const resolver = this.approvalResolver(payload, options);
+      if (status === 'approved' && ['assignment_replacement', 'assignment_replacement_plan'].includes(before.target_type) && options.enforceSeparation === true
+        && normalizeText(before.requested_by, '') === resolver) {
+        throw ledgerInputError('assignment_replacement_independent_approval_required', 'Independent approval is required for this assignment replacement.', { approvalId }, 409);
+      }
+      if (status === 'approved' && ['resource_plan', 'portfolio_resource_plan'].includes(before.target_type) && options.enforceSeparation === true
+        && normalizeText(before.requested_by, '') === resolver) {
+        throw ledgerInputError('resource_plan_independent_approval_required', 'A different authenticated operator must approve the resource plan.', { approvalId }, 409);
+      }
+      if (status === 'approved' && before.target_type === 'communication') {
+        new (require('./client-conversation').ClientConversation)(this).assertMessageApprovalCurrent(before.target_id, before.job_id);
+      }
+      if (status === 'approved' && before.target_type === 'variation_implementation_plan' && options.enforceSeparation === true
+        && normalizeText(before.requested_by, '') === resolver) {
+        throw ledgerInputError('variation_implementation_independent_approval_required', 'A different authenticated operator must approve this implementation plan.', { approvalId }, 409);
+      }
+      if (before.target_type === 'work_delivery_decision') new (require('./work-delivery').WorkDelivery)(this).prepareResolution(before, status, payload);
+      if (before.target_type === 'inspection_coverage_decision') new (require('./inspection-coverage').InspectionCoverage)(this).prepareResolution(before, status, resolver);
+      if (before.target_type === 'client_delivery_offer') new (require('./client-delivery').ClientDelivery)(this).prepareResolution(before, status);
+      if (before.target_type === 'work_balance_plan') new (require('./work-balance').WorkBalance)(this).prepareResolution(before, status);
+      if (['production_baseline', 'production_entry_reversal'].includes(before.target_type)) new (require('./work-context').WorkContext)(this).lock(before.job_id);
       if (status === 'approved') this.validateInstallationQcApproval(before, payload, options);
       if (before.target_type === 'photo_evidence_set') this.validatePhotoEvidenceApproval(before, payload, options);
       if (status === 'approved' && before.target_type === 'nonconformance_closure' && options.enforceSeparation === true) {
@@ -48208,6 +51370,47 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       if (status === 'approved' && before.job_id && !['job_archive', 'job_restore'].includes(before.target_type)) {
         this.requireJob(before.job_id);
       }
+      if (status === 'approved' && before.target_type === 'submittal_record') {
+        const submittalApprovalData = fromJson(before.data_json, {});
+        const row = this.db.prepare('SELECT job_id, approval_id, attachments_json, data_json FROM submittal_records WHERE id = ? AND job_id = ?')
+          .get(before.target_id, before.job_id);
+        if (!row || row.approval_id !== before.id) {
+          throw ledgerInputError('submittal_approval_target_changed', 'The submittal no longer matches this approval request.', { approvalId }, 409);
+        }
+        const approvedLinks = fromJson(before.data_json, {}).taskIds;
+        const currentLinks = fromJson(row.data_json, {}).taskIds;
+        const approvedTaskIds = [...new Set((Array.isArray(approvedLinks) ? approvedLinks : []).map(String))].sort();
+        const currentTaskIds = [...new Set((Array.isArray(currentLinks) ? currentLinks : []).map(String))].sort();
+        const taskCount = approvedTaskIds.length
+          ? Number(this.db.prepare(`SELECT COUNT(*) AS count FROM job_tasks WHERE job_id = ? AND id IN (${approvedTaskIds.map(() => '?').join(',')})`)
+            .get(before.job_id, ...approvedTaskIds).count || 0)
+          : 0;
+        if (JSON.stringify(approvedTaskIds) !== JSON.stringify(currentTaskIds) || taskCount !== approvedTaskIds.length) {
+          throw ledgerInputError('submittal_approval_scope_changed', 'The submittal task scope changed or is no longer valid; request a fresh approval.', { approvalId }, 409);
+        }
+        const rowAttachmentIds = fromJson(row.attachments_json, []);
+        const currentAttachmentIds = [...new Set((Array.isArray(rowAttachmentIds) ? rowAttachmentIds : []).map(String))].sort();
+        const approvedAttachmentIds = Array.isArray(submittalApprovalData.attachments)
+          ? [...new Set(submittalApprovalData.attachments.map(String))].sort()
+          : [];
+        const currentManifest = this.submittalAttachmentManifest(before.job_id, currentAttachmentIds);
+        const approvedManifest = normalizeSubmittalAttachmentManifest(submittalApprovalData.attachmentManifest);
+        if (JSON.stringify(currentAttachmentIds) !== JSON.stringify(approvedAttachmentIds)
+          || (!approvedManifest && currentManifest.length > 0)
+          || (approvedManifest && JSON.stringify(approvedManifest) !== JSON.stringify(normalizeSubmittalAttachmentManifest(currentManifest)))) {
+          throw ledgerInputError('submittal_approval_documents_changed', 'The submittal attachments or an attached PDF changed while approval was pending; request a fresh approval.', { approvalId }, 409);
+        }
+      }
+      if (status === 'approved' && before.target_type === 'client_selection') {
+        const selectionRow = this.db.prepare('SELECT * FROM client_selections WHERE id = ? AND job_id = ?').get(before.target_id, before.job_id);
+        if (!selectionRow || selectionRow.status !== 'pending_approval' || selectionRow.approval_id !== before.id) {
+          throw ledgerInputError('client_selection_approval_target_changed', 'The customer-choice draft no longer matches this approval.', { approvalId }, 409);
+        }
+        const selection = this.mapClientSelection(selectionRow);
+        if (selection.data?.publishAfterApproval === true) {
+          new (require('./client-conversation').ClientConversation)(this).assertSelectionPublicationCurrent(selection);
+        }
+      }
       const timestamp = nowIso();
       this.db.prepare(`
         UPDATE approvals
@@ -48217,6 +51420,34 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
 
       if (status === 'approved') {
         this.applyApprovalTarget(before.target_type, before.target_id);
+      } else if (before.target_type === 'assignment_replacement') {
+        const assignment = this.db.prepare('SELECT * FROM assignments WHERE id = ?').get(before.target_id);
+        if (assignment && assignment.status === 'pending_approval') {
+          const data = fromJson(assignment.data_json, {});
+          this.db.prepare('UPDATE assignments SET status = ?, data_json = ?, updated_at = ? WHERE id = ? AND status = ?')
+            .run(status, toJson({ ...data, approvalResolution: { status, resolvedAt: timestamp, resolvedBy: resolver, reason: payload.reason || payload.notes || null } }), timestamp, before.target_id, 'pending_approval');
+        }
+        const decision = fromJson(before.data_json, {});
+        if (decision.standbyCalloutId) this.db.prepare("UPDATE standby_callouts SET status = 'accepted', approval_id = NULL, updated_at = ? WHERE id = ? AND status = 'pending_approval'")
+          .run(timestamp, decision.standbyCalloutId);
+      } else if (before.target_type === 'assignment_replacement_plan') {
+        const plan = fromJson(before.data_json, {});
+        for (const item of plan.assignments || []) {
+          const assignment = this.db.prepare('SELECT * FROM assignments WHERE id = ? AND status = ?').get(item.replacementAssignmentId, 'pending_approval');
+          if (!assignment) continue;
+          const data = fromJson(assignment.data_json, {});
+          this.db.prepare('UPDATE assignments SET status = ?, data_json = ?, updated_at = ? WHERE id = ? AND status = ?')
+            .run(status, toJson({ ...data, approvalResolution: { status, resolvedAt: timestamp, resolvedBy: resolver, reason: payload.reason || payload.notes || null } }), timestamp, assignment.id, 'pending_approval');
+        }
+        this.audit({ entityType: 'assignment_replacement_plan', entityId: before.target_id, action: 'resolve_assignment_replacement_plan', actor: resolver, metadata: { approvalId, status, assignmentCount: (plan.assignments || []).length, externalCommitments: 0 } });
+      } else if (before.target_type === 'work_delivery_decision') {
+        new (require('./work-delivery').WorkDelivery)(this).resolve({ ...before, resolved_by: resolver }, status);
+      } else if (before.target_type === 'inspection_coverage_decision') {
+        new (require('./inspection-coverage').InspectionCoverage)(this).resolve({ ...before, resolved_by: resolver }, status);
+      } else if (before.target_type === 'client_delivery_offer') {
+        new (require('./client-delivery').ClientDelivery)(this).resolve({ ...before, resolved_by: resolver }, status);
+      } else if (before.target_type === 'work_balance_plan') {
+        new (require('./work-balance').WorkBalance)(this).resolve({ ...before, resolved_by: resolver }, status);
       } else if (String(before.approval_type || '').endsWith('_lifecycle_transition')) {
         this.restoreRejectedLifecycleTarget(before, status, {
           timestamp,
@@ -48251,6 +51482,14 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
             timestamp,
             before.target_id
           );
+        }
+      } else if (before.target_type === 'client_selection') {
+        const row = this.db.prepare('SELECT * FROM client_selections WHERE id = ? AND job_id = ?').get(before.target_id, before.job_id);
+        const data = fromJson(row?.data_json, {});
+        if (row && data.publishAfterApproval === true && row.approval_id === before.id) {
+          this.db.prepare('UPDATE client_selections SET status = ?, data_json = ?, updated_at = ? WHERE id = ? AND status = ?')
+            .run(status, toJson({ ...data, clientVisible: false, publishAfterApproval: false,
+              publication: { approvalId: before.id, status, resolvedAt: timestamp, resolvedBy: resolver, reason: payload.reason || payload.notes || null } }), timestamp, row.id, 'pending_approval');
         }
       } else if (before.target_type === 'data_subject_request') {
         this.restoreRejectedDataSubjectRequest(before, status, {
@@ -49272,9 +52511,163 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
     return after;
   }
 
+  applyApprovedAssignmentReplacement(jobId, original, replacement, approvalId, actor, timestamp) {
+    const originalWorkerId = original.worker_id;
+    const replacementWorkerId = replacement.worker_id;
+    const tasks = this.db.prepare(`
+      SELECT * FROM job_tasks
+      WHERE job_id = ? AND status NOT IN ('completed', 'closed', 'cancelled', 'canceled', 'deleted', 'rejected')
+      ORDER BY created_at, id
+    `).all(jobId);
+    const changedTaskIds = [];
+    const roleKey = value => normalizeText(value, '').normalize('NFKC').trim().toLocaleLowerCase('nl-NL').replace(/[^\p{L}\p{N}]+/gu, ' ');
+
+    for (const row of tasks) {
+      const task = this.mapTask(row);
+      const data = task.data && typeof task.data === 'object' && !Array.isArray(task.data) ? task.data : {};
+      const crewWorkerIds = Array.isArray(data.crewWorkerIds) ? data.crewWorkerIds : null;
+      const crewWorkerAssignments = Array.isArray(data.crewWorkerAssignments) ? data.crewWorkerAssignments : null;
+      const supervisorWorkerIds = Array.isArray(data.supervisorWorkerIds) ? data.supervisorWorkerIds : null;
+      const references = task.assigneeId === originalWorkerId
+        || crewWorkerIds?.includes(originalWorkerId)
+        || crewWorkerAssignments?.some(member => member?.workerId === originalWorkerId)
+        || supervisorWorkerIds?.includes(originalWorkerId)
+        || data.supervisorWorkerId === originalWorkerId;
+      if (!references) continue;
+      if (crewWorkerIds?.includes(replacementWorkerId)
+        || crewWorkerAssignments?.some(member => member?.workerId === replacementWorkerId)
+        || supervisorWorkerIds?.includes(replacementWorkerId)
+        || data.supervisorWorkerId === replacementWorkerId) {
+        throw ledgerInputError('assignment_replacement_task_duplicate_worker',
+          'The replacement is already named in an affected task. Review its crew and supervision plan before approving.',
+          { assignmentId: replacement.id, taskId: task.id }, 409);
+      }
+
+      const taskStart = Date.parse(task.plannedStart || '');
+      const taskEnd = Date.parse(task.plannedEnd || '');
+      const hasTaskSchedule = Boolean(task.plannedStart || task.plannedEnd);
+      if ((hasTaskSchedule && (!Number.isFinite(taskStart) || !Number.isFinite(taskEnd)
+        || taskStart < Date.parse(replacement.scheduled_start) || taskEnd > Date.parse(replacement.scheduled_end)))) {
+        throw ledgerInputError('assignment_replacement_task_window_stale',
+          'A task assigned to the unavailable worker has no fully covered, current schedule. Replan the task before approving this replacement.',
+          { assignmentId: replacement.id, taskId: task.id }, 409);
+      }
+
+      const requiredRole = roleKey(data.requiredTrade || replacement.role);
+      const crewMember = crewWorkerAssignments?.find(member => member?.workerId === originalWorkerId);
+      const crewRole = roleKey(crewMember?.role || data.requiredTrade || replacement.role);
+      const supervises = supervisorWorkerIds?.includes(originalWorkerId) || data.supervisorWorkerId === originalWorkerId;
+      const supervisorRole = roleKey(data.supervisorTrade || replacement.role);
+      if ((task.assigneeId === originalWorkerId && requiredRole !== roleKey(replacement.role))
+        || (crewWorkerIds?.includes(originalWorkerId) && crewRole !== roleKey(replacement.role))
+        || (crewMember && crewRole !== roleKey(replacement.role))
+        || (supervises && supervisorRole !== roleKey(replacement.role))) {
+        throw ledgerInputError('assignment_replacement_task_role_mismatch',
+          'The replacement does not match a trade explicitly required by one of the unavailable worker’s tasks.',
+          { assignmentId: replacement.id, taskId: task.id, replacementRole: replacement.role }, 409);
+      }
+      const qualification = this.assessWorkerQualifications(replacementWorkerId, {
+        jobId, role: replacement.role, at: task.plannedEnd
+      });
+      if (!qualification.ready) {
+        throw ledgerInputError('assignment_replacement_task_qualification_required',
+          'The replacement lacks a current qualification required for one of the affected tasks.',
+          { assignmentId: replacement.id, taskId: task.id, blockers: qualification.blockers }, 409);
+      }
+
+      const before = task;
+      const nextData = {
+        ...data,
+        ...(crewWorkerIds ? { crewWorkerIds: crewWorkerIds.map(id => id === originalWorkerId ? replacementWorkerId : id) } : {}),
+        ...(crewWorkerAssignments ? { crewWorkerAssignments: crewWorkerAssignments.map(member => member?.workerId === originalWorkerId
+          ? { ...member, workerId: replacementWorkerId } : member) } : {}),
+        ...(supervisorWorkerIds ? { supervisorWorkerIds: supervisorWorkerIds.map(id => id === originalWorkerId ? replacementWorkerId : id) } : {}),
+        ...(data.supervisorWorkerId === originalWorkerId ? { supervisorWorkerId: replacementWorkerId } : {}),
+        ...(hasTaskSchedule ? {} : { replacementScheduleReviewRequired: { approvalId, reason: 'Task had no retained schedule when its worker was replaced.', requiredBeforeAllocation: true } }),
+        replacementHistory: [...(Array.isArray(data.replacementHistory) ? data.replacementHistory : []), {
+          approvalId, fromWorkerId: originalWorkerId, toWorkerId: replacementWorkerId, appliedAt: timestamp
+        }]
+      };
+      this.db.prepare('UPDATE job_tasks SET assignee_id = ?, data_json = ?, updated_at = ? WHERE id = ? AND job_id = ?')
+        .run(task.assigneeId === originalWorkerId ? replacementWorkerId : task.assigneeId,
+          toJson(nextData), timestamp, task.id, jobId);
+      const after = this.mapTask(this.db.prepare('SELECT * FROM job_tasks WHERE id = ?').get(task.id));
+      this.audit({ entityType: 'task', entityId: task.id, jobId, action: 'reassign_task_after_worker_replacement',
+        actor, before, after, metadata: { approvalId, fromWorkerId: originalWorkerId, toWorkerId: replacementWorkerId, externalCommitments: 0 } });
+      changedTaskIds.push(task.id);
+    }
+
+    const localDateParts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Europe/Amsterdam', year: 'numeric', month: '2-digit', day: '2-digit'
+    }).formatToParts(new Date(timestamp));
+    const today = `${localDateParts.find(part => part.type === 'year')?.value}-${localDateParts.find(part => part.type === 'month')?.value}-${localDateParts.find(part => part.type === 'day')?.value}`;
+    const futureAllocations = this.db.prepare(`
+      SELECT id FROM crew_capacity_allocations
+      WHERE assignment_id = ? AND job_id = ? AND status = 'active' AND work_date >= ?
+      ORDER BY work_date, id
+    `).all(original.id, jobId, today);
+    for (const allocation of futureAllocations) {
+      this.cancelCrewCapacityAllocation(allocation.id, {
+        reason: `Replanned after approved assignment replacement ${approvalId}.`
+      }, { actor });
+    }
+    return { taskIds: changedTaskIds, cancelledAllocationCount: futureAllocations.length };
+  }
+
   applyApprovalTarget(targetType, targetId) {
     const timestamp = nowIso();
-    if (targetType === 'photo_evidence_set') {
+    if (targetType === 'worker_assignment_release_request') {
+      const approval = this.db.prepare(`SELECT * FROM approvals
+        WHERE target_type = ? AND target_id = ? AND status = 'approved' ORDER BY resolved_at DESC LIMIT 1`).get(targetType, targetId);
+      const data = fromJson(approval?.data_json, {});
+      const snapshot = data.assignmentId ? this.db.prepare('SELECT * FROM assignments WHERE id = ? AND job_id = ? AND worker_id = ?')
+        .get(data.assignmentId, data.jobId, data.workerId) : null;
+      const application = data.applicationId ? this.db.prepare('SELECT * FROM work_board_applications WHERE id = ? AND assignment_id = ? AND account_id = ? AND status = ?')
+        .get(data.applicationId, data.assignmentId, data.accountId, 'assigned') : null;
+      const unchanged = Boolean(snapshot && application && snapshot.status === data.status
+        && snapshot.scheduled_start === data.scheduledStart && snapshot.scheduled_end === data.scheduledEnd
+        && snapshot.updated_at === data.updatedAt && ['planned', 'scheduled'].includes(snapshot.status));
+      if (!approval || approval.target_id !== targetId || !unchanged) {
+        throw ledgerInputError('worker_assignment_release_stale', 'The placement changed after the worker requested release; no assignment was changed.', { assignmentId: targetId }, 409);
+      }
+      const openAttendance = this.db.prepare("SELECT id FROM attendance_sessions WHERE assignment_id = ? AND status = 'checked_in'").get(targetId);
+      if (openAttendance) throw ledgerInputError('assignment_open_attendance', 'Check out the worker before approving this release request.', { assignmentId: targetId, attendanceSessionId: openAttendance.id }, 409);
+      const released = this.releaseAssignment(data.jobId, targetId, {
+        status: 'released', reason: `Worker release request approved (${data.reasonCategory}).`
+      }, { actor: approval.resolved_by || 'approval' });
+      this.db.prepare("UPDATE work_board_applications SET status = 'released' WHERE id = ? AND assignment_id = ? AND status = 'assigned'")
+        .run(data.applicationId, targetId);
+      this.audit({ entityType: 'work_board_application', entityId: data.applicationId, jobId: data.jobId,
+        action: 'approve_worker_assignment_release', actor: approval.resolved_by || 'approval',
+        before: { status: 'assigned', assignmentId: targetId }, after: { status: 'released', assignmentId: targetId },
+        metadata: { approvalId: approval.id, reasonCategory: data.reasonCategory, assignmentStatus: released.status, externalCommitments: 0 } });
+    } else if (targetType === 'resource_plan') {
+      new (require('./resource-planner').ResourcePlanner)(this).applyApprovedResourcePlan(targetId);
+    } else if (targetType === 'portfolio_resource_plan') {
+      new (require('./resource-planner').ResourcePlanner)(this).applyApprovedPortfolioResourcePlan(targetId);
+    } else if (targetType === 'work_delivery_decision') {
+      const decision = this.db.prepare('SELECT approval_id FROM work_delivery_decisions WHERE id = ?').get(targetId);
+      const approval = decision && this.db.prepare("SELECT * FROM approvals WHERE id = ? AND status = 'approved'").get(decision.approval_id);
+      if (!approval) throw ledgerInputError('work_delivery_approval_required', 'An approved delivery decision is required.', {}, 409);
+      new (require('./work-delivery').WorkDelivery)(this).resolve(approval, 'approved');
+    } else if (targetType === 'inspection_coverage_decision') {
+      const decision = this.db.prepare('SELECT approval_id FROM inspection_coverage_decisions WHERE id = ?').get(targetId);
+      const approval = decision && this.db.prepare("SELECT * FROM approvals WHERE id = ? AND status = 'approved'").get(decision.approval_id);
+      if (!approval) throw ledgerInputError('inspection_coverage_approval_required', 'An approved inspection coverage decision is required.', {}, 409);
+      new (require('./inspection-coverage').InspectionCoverage)(this).resolve(approval, 'approved');
+    } else if (targetType === 'client_delivery_offer') {
+      const offer = this.db.prepare('SELECT approval_id FROM client_delivery_offers WHERE id = ?').get(targetId);
+      const approval = offer && this.db.prepare("SELECT * FROM approvals WHERE id = ? AND status = 'approved'").get(offer.approval_id);
+      if (!approval) throw ledgerInputError('client_delivery_approval_required', 'An approved client delivery offer is required.', {}, 409);
+      new (require('./client-delivery').ClientDelivery)(this).resolve(approval, 'approved');
+    } else if (targetType === 'work_balance_plan') {
+      const plan = this.db.prepare('SELECT approval_id FROM work_balance_plans WHERE id = ?').get(targetId);
+      const approval = plan && this.db.prepare("SELECT * FROM approvals WHERE id = ? AND status = 'approved'").get(plan.approval_id);
+      if (!approval) throw ledgerInputError('work_balance_approval_required', 'An approved work allocation is required.', {}, 409);
+      new (require('./work-balance').WorkBalance)(this).resolve(approval, 'approved');
+    } else if (targetType === 'variation_implementation_plan') {
+      new (require('./variation-implementation').VariationImplementation)(this).apply(targetId);
+    } else if (targetType === 'photo_evidence_set') {
       this.applyPhotoEvidenceApproval(targetId, timestamp);
     } else if (targetType === 'data_subject_request') {
       this.applyDataSubjectRequestDecision(targetId);
@@ -49466,6 +52859,28 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
         : null;
 
       if (approval && jobId && patch && Object.keys(patch).length) {
+        const requestsOperationalCompletion = normalizeStatus(patch.status, '') === 'completed'
+          || (Object.prototype.hasOwnProperty.call(patch, 'progressPercent') && normalizeNumber(patch.progressPercent, 0) >= 100);
+        if (requestsOperationalCompletion) {
+          const expected = approvalData.completionReadiness;
+          const current = this.assessOperationalCompletionReadiness(jobId);
+          if (!current.ready) {
+            throw ledgerInputError(
+              'job_completion_not_ready',
+              'Operational completion is blocked until remaining tasks, material shortfalls, safety and quality blockers, inspections, permits, and site issues are resolved.',
+              current,
+              409
+            );
+          }
+          if (!expected?.sourceHash || expected.sourceHash !== current.sourceHash) {
+            throw ledgerInputError(
+              'job_completion_readiness_changed',
+              'Operational completion evidence changed after this approval was requested. Review the current completion assessment and submit a fresh completion request.',
+              { expectedSourceHash: expected?.sourceHash || null, current },
+              409
+            );
+          }
+        }
         const before = this.getJobDetail(jobId, { includeAudit: false });
         const actor = approval.resolved_by || approval.requested_by || 'approval';
         const after = this.updateJob(jobId, {
@@ -49535,8 +52950,10 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
         this.db.prepare(`
           UPDATE change_orders
           SET status = 'superseded', updated_at = ?
-          WHERE id = ? AND job_id = ? AND status IN ('changes_requested', 'rejected_by_client', 'rejected', 'cancelled')
-        `).run(timestamp, beforeChangeOrder.supersedesChangeOrderId, beforeChangeOrder.jobId);
+          WHERE job_id = ? AND variation_number = ?
+            AND revision_number < ?
+            AND status IN ('changes_requested', 'rejected_by_client', 'rejected', 'cancelled')
+        `).run(timestamp, beforeChangeOrder.jobId, beforeChangeOrder.variationNumber, beforeChangeOrder.revisionNumber);
       }
       const changeOrder = this.db.prepare('SELECT job_id FROM change_orders WHERE id = ?').get(targetId);
       if (changeOrder) {
@@ -49916,13 +53333,16 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
         });
       }
     } else if (targetType === 'client_selection') {
-      const selection = this.db.prepare('SELECT data_json FROM client_selections WHERE id = ?').get(targetId);
-      const requestedStatus = normalizeStatus(fromJson(selection?.data_json, {}).requestedStatus, 'approved');
-      const approvedStatus = ['approved', 'accepted', 'client_confirmed', 'locked', 'selected', 'ordered'].includes(requestedStatus)
-        ? requestedStatus
-        : 'approved';
-      this.db.prepare('UPDATE client_selections SET status = ?, decided_at = COALESCE(decided_at, ?), updated_at = ? WHERE id = ?')
-        .run(approvedStatus, timestamp, timestamp, targetId);
+      const selection = this.db.prepare('SELECT * FROM client_selections WHERE id = ?').get(targetId);
+      const data = fromJson(selection?.data_json, {});
+      const publishingConversationChoice = data.publishAfterApproval === true;
+      const requestedStatus = normalizeStatus(data.requestedStatus, 'approved');
+      const approvedStatus = publishingConversationChoice ? 'pending_client'
+        : ['approved', 'accepted', 'client_confirmed', 'locked', 'selected', 'ordered'].includes(requestedStatus) ? requestedStatus : 'approved';
+      const nextData = publishingConversationChoice ? { ...data, clientVisible: true, publishAfterApproval: false,
+        publication: { approvalId: selection.approval_id, status: 'approved', publishedAt: timestamp } } : data;
+      this.db.prepare('UPDATE client_selections SET status = ?, data_json = ?, decided_at = CASE WHEN ? = 1 THEN decided_at ELSE COALESCE(decided_at, ?) END, updated_at = ? WHERE id = ?')
+        .run(approvedStatus, toJson(nextData), publishingConversationChoice ? 1 : 0, timestamp, timestamp, targetId);
     } else if (targetType === 'pre_task_plan') {
       const plan = this.db.prepare('SELECT * FROM pre_task_plans WHERE id = ?').get(targetId);
       if (!plan || !plan.source_hash || plan.status !== 'pending_approval') {
@@ -49935,11 +53355,11 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
         jhaId: plan.jha_id,
         workPermitId: plan.work_permit_id,
         sdsSheetIds: fromJson(plan.sds_sheet_ids_json, [])
-      }, { validate: true });
+      }, { validate: true, includeTaskLinks: fromJson(plan.data_json, {}).format === PRE_TASK_PLAN_FORMAT_SCOPED });
       const approval = plan.approval_id ? this.db.prepare('SELECT * FROM approvals WHERE id = ?').get(plan.approval_id) : null;
       const approvalData = fromJson(approval?.data_json, {});
       const snapshotValid = Boolean(
-        snapshot && snapshot.format === PRE_TASK_PLAN_FORMAT && plan.snapshot_hash
+        snapshot && [PRE_TASK_PLAN_FORMAT, PRE_TASK_PLAN_FORMAT_SCOPED].includes(snapshot.format) && plan.snapshot_hash
         && snapshot.sourceHash === plan.source_hash && sha256Json(snapshot) === plan.snapshot_hash
         && sourceCurrentHash === plan.source_hash && linked.hash === fromJson(plan.data_json, {}).linkedSourcesHash
         && approvalData.sourceHash === plan.source_hash && approvalData.snapshotHash === plan.snapshot_hash
@@ -50049,6 +53469,126 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
           after: this.mapClientPortalAccess(this.db.prepare('SELECT * FROM client_portal_access WHERE id = ?').get(targetId))
         });
       }
+    } else if (targetType === 'assignment_replacement_plan') {
+      const approval = this.db.prepare("SELECT * FROM approvals WHERE target_type = 'assignment_replacement_plan' AND target_id = ? AND status = 'approved' ORDER BY resolved_at DESC LIMIT 1").get(targetId);
+      const plan = fromJson(approval?.data_json, {});
+      const period = this.db.prepare("SELECT * FROM worker_availability_periods WHERE id = ? AND worker_id = ? AND status IN ('active', 'pending_cancellation')").get(plan.availabilityPeriodId, plan.workerId);
+      const items = plan.assignments || [];
+      const originalIds = items.map(item => item.originalAssignmentId);
+      const replacementIds = items.map(item => item.replacementAssignmentId);
+      if (!approval || !period || !items.length || new Set(originalIds).size !== items.length) {
+        throw ledgerInputError('assignment_replacement_plan_stale', 'The replacement plan or availability period is no longer current. No assignment was changed.', { planId: targetId }, 409);
+      }
+      const currentConflicts = this.db.prepare(`
+        SELECT assignments.id, assignments.scheduled_start, assignments.scheduled_end
+        FROM assignments JOIN jobs ON jobs.id = assignments.job_id
+        WHERE assignments.worker_id = ? AND ${this.activeAssignmentStatusSql('assignments')}
+          AND ${this.operationalJobStatusSql('jobs')}
+          AND assignments.scheduled_start IS NOT NULL AND assignments.scheduled_end IS NOT NULL
+      `).all(plan.workerId)
+        .filter(row => this.workerAvailabilityPeriodOverlapsAssignment({ workerId: plan.workerId, periodId: period.id,
+          scheduledStart: row.scheduled_start, scheduledEnd: row.scheduled_end }))
+        .map(row => row.id).sort();
+      if (JSON.stringify(currentConflicts) !== JSON.stringify([...originalIds].sort())) {
+        throw ledgerInputError('assignment_replacement_plan_stale', 'The set of assignments affected by this availability period changed after the plan was requested. No assignment was changed.', { planId: targetId, expectedAssignmentIds: originalIds, currentAssignmentIds: currentConflicts }, 409);
+      }
+      const validated = items.map(item => {
+        const original = this.db.prepare('SELECT assignments.*, workers.name AS worker_name FROM assignments LEFT JOIN workers ON workers.id = assignments.worker_id WHERE assignments.id = ? AND assignments.job_id = ?').get(item.originalAssignmentId, item.jobId);
+        const replacement = this.db.prepare('SELECT assignments.*, workers.name AS worker_name FROM assignments LEFT JOIN workers ON workers.id = assignments.worker_id WHERE assignments.id = ?').get(item.replacementAssignmentId);
+        const snapshot = item.originalSnapshot || {};
+        const unchanged = Boolean(original && original.worker_id === snapshot.workerId && original.role === snapshot.role
+          && original.status === snapshot.status && original.scheduled_start === snapshot.scheduledStart
+          && original.scheduled_end === snapshot.scheduledEnd && original.updated_at === snapshot.updatedAt);
+        const linked = Boolean(replacement && replacement.job_id === item.jobId && replacement.worker_id === item.workerId
+          && replacement.status === 'pending_approval' && fromJson(replacement.data_json, {}).replacement?.planId === targetId);
+        if (!unchanged || !linked || !this.workerAvailabilityPeriodOverlapsAssignment({ workerId: original.worker_id,
+          periodId: period.id, scheduledStart: original.scheduled_start, scheduledEnd: original.scheduled_end })) {
+          throw ledgerInputError('assignment_replacement_plan_stale', 'An original assignment, proposal, or availability conflict changed after this plan was requested. No assignment was changed.', { planId: targetId, assignmentId: item.originalAssignmentId }, 409);
+        }
+        const attendance = this.db.prepare("SELECT id FROM attendance_sessions WHERE assignment_id = ? AND status = 'checked_in'").get(original.id);
+        if (attendance) throw ledgerInputError('assignment_open_attendance', 'Check out the current worker before approving the complete replacement plan.', { assignmentId: original.id, attendanceSessionId: attendance.id }, 409);
+        return { item, original, replacement };
+      });
+      const replacementLoad = new Map();
+      for (const row of validated) {
+        const candidate = this.workerReplacementCandidates(row.original, { excludeAssignmentIds: replacementIds }).find(item => item.worker.id === row.replacement.worker_id);
+        if (!candidate) throw ledgerInputError('assignment_replacement_candidate_stale', 'A proposed worker no longer passes current availability, role, conflict, and qualification checks. No assignment was changed.', { assignmentId: row.item.originalAssignmentId, workerId: row.replacement.worker_id }, 409);
+        const assignments = replacementLoad.get(row.replacement.worker_id) || [];
+        if (assignments.some(other => this.assignmentWindowsOverlap(row.original.scheduled_start, row.original.scheduled_end, other.scheduled_start, other.scheduled_end))) {
+          throw ledgerInputError('assignment_replacement_plan_candidate_overlap', 'A proposed worker now has overlapping assignments within this plan. No assignment was changed.', { workerId: row.replacement.worker_id }, 409);
+        }
+        assignments.push(row.original);
+        replacementLoad.set(row.replacement.worker_id, assignments);
+      }
+      for (const row of validated) {
+        const released = this.releaseAssignment(row.original.job_id, row.original.id, { status: 'released', reason: `Replaced by coordinated approval ${approval.id}.` }, { actor: approval.resolved_by || 'approval' });
+        const data = fromJson(row.replacement.data_json, {});
+        const requestedStatus = normalizeStatus(row.item.requestedStatus, 'planned');
+        const approvedStatus = ['planned', 'scheduled', 'active', 'in_progress', 'approved'].includes(requestedStatus) ? requestedStatus : 'planned';
+        this.db.prepare('UPDATE assignments SET status = ?, data_json = ?, updated_at = ? WHERE id = ? AND status = ?')
+          .run(approvedStatus, toJson({ ...data, requiresApproval: false, availabilityConflicts: [], availabilityConflictCount: 0, approvedAt: timestamp, replacement: { ...data.replacement, releasedAssignmentId: row.original.id, approvalId: approval.id, approvedAt: timestamp, approvedBy: approval.resolved_by || 'approval' } }), timestamp, row.replacement.id, 'pending_approval');
+        const activated = this.mapAssignment(this.db.prepare('SELECT assignments.*, workers.name AS worker_name FROM assignments LEFT JOIN workers ON workers.id = assignments.worker_id WHERE assignments.id = ?').get(row.replacement.id));
+        const taskHandoff = this.applyApprovedAssignmentReplacement(row.original.job_id, row.original, row.replacement,
+          approval.id, approval.resolved_by || 'approval', timestamp);
+        this.audit({ entityType: 'assignment', entityId: row.replacement.id, jobId: row.original.job_id, action: 'apply_assignment_replacement_plan', actor: approval.resolved_by || 'approval', before: { originalAssignment: row.original }, after: { releasedAssignment: released, replacementAssignment: activated }, metadata: { approvalId: approval.id, planId: targetId, availabilityPeriodId: period.id, taskHandoff, externalCommitments: 0 } });
+        this.db.prepare("UPDATE jobs SET phase = CASE WHEN phase = 'intake' THEN 'planned' ELSE phase END, updated_at = ? WHERE id = ?").run(timestamp, row.original.job_id);
+      }
+      this.audit({ entityType: 'assignment_replacement_plan', entityId: targetId, action: 'apply_assignment_replacement_plan', actor: approval.resolved_by || 'approval', metadata: { approvalId: approval.id, assignmentCount: validated.length, jobIds: [...new Set(validated.map(row => row.original.job_id))], externalCommitments: 0 } });
+    } else if (targetType === 'assignment_replacement') {
+      const replacement = this.db.prepare('SELECT assignments.*, workers.name AS worker_name FROM assignments LEFT JOIN workers ON workers.id = assignments.worker_id WHERE assignments.id = ?').get(targetId);
+      const approval = this.db.prepare("SELECT * FROM approvals WHERE target_type = 'assignment_replacement' AND target_id = ? AND status = 'approved' ORDER BY resolved_at DESC LIMIT 1").get(targetId);
+      const decision = fromJson(approval?.data_json, {});
+      const original = decision.originalAssignmentId
+        ? this.db.prepare('SELECT assignments.*, workers.name AS worker_name FROM assignments LEFT JOIN workers ON workers.id = assignments.worker_id WHERE assignments.id = ? AND assignments.job_id = ?').get(decision.originalAssignmentId, approval?.job_id)
+        : null;
+      const snapshot = decision.originalSnapshot || {};
+      const originalCurrent = Boolean(original
+        && original.worker_id === snapshot.workerId
+        && original.role === snapshot.role
+        && original.status === snapshot.status
+        && original.scheduled_start === snapshot.scheduledStart
+        && original.scheduled_end === snapshot.scheduledEnd
+        && original.updated_at === snapshot.updatedAt);
+      if (!approval || !replacement || replacement.status !== 'pending_approval' || !originalCurrent
+        || replacement.worker_id !== decision.workerId || replacement.job_id !== approval.job_id) {
+        throw ledgerInputError('assignment_replacement_snapshot_stale', 'The original assignment changed after this replacement was requested. No assignment was changed; reject this request and prepare a fresh one.', { assignmentId: targetId, originalAssignmentId: decision.originalAssignmentId }, 409);
+      }
+      const period = this.db.prepare("SELECT * FROM worker_availability_periods WHERE id = ? AND worker_id = ? AND status IN ('active', 'pending_cancellation')").get(decision.availabilityPeriodId, original.worker_id);
+      if (!period || !this.workerAvailabilityPeriodOverlapsAssignment({ workerId: original.worker_id, periodId: period.id,
+        scheduledStart: original.scheduled_start, scheduledEnd: original.scheduled_end })) {
+        throw ledgerInputError('assignment_replacement_conflict_stale', 'The retained availability conflict changed before approval. No assignment was changed.', { assignmentId: original.id, availabilityPeriodId: decision.availabilityPeriodId }, 409);
+      }
+        const calloutId = normalizeText(decision.standbyCalloutId, '');
+        const callout = calloutId ? this.db.prepare("SELECT * FROM standby_callouts WHERE id = ? AND status = 'pending_approval' AND approval_id = ? AND assignment_id = ? AND worker_id = ?").get(calloutId, approval.id, original.id, replacement.worker_id) : null;
+        const admitted = callout && this.db.prepare("SELECT id FROM work_board_accounts WHERE worker_id = ? AND status = 'admitted' LIMIT 1").get(replacement.worker_id);
+        const standby = callout && this.db.prepare("SELECT * FROM worker_availability_periods WHERE id = ? AND worker_id = ? AND period_type = 'standby' AND status = 'active'").get(callout.standby_period_id, replacement.worker_id);
+        const calloutData = fromJson(callout?.data_json, {}), standbyData = fromJson(standby?.data_json, {});
+        const minimumNoticeHours = Math.max(0, Math.min(168, Math.trunc(Number(standbyData.minimumNoticeHours) || 0)));
+        const emergencyRecovery = isConfirmedMissingCheckinRecovery(period, original);
+        if (calloutId && (!callout || !admitted || !standby
+          || Number(calloutData.snapshot?.minimumNoticeHours || 0) !== minimumNoticeHours
+          || (Date.parse(original.scheduled_start) - Date.parse(callout.created_at) < minimumNoticeHours * 3600000
+            && !(emergencyRecovery && minimumNoticeHours === 0))
+          || !this.workerAvailabilityPeriodOverlapsAssignment({ workerId: replacement.worker_id, periodId: standby.id, periodType: 'standby',
+            scheduledStart: original.scheduled_start, scheduledEnd: original.scheduled_end }))) {
+          throw ledgerInputError('standby_callout_stale', 'The accepted standby call-out is no longer current. No assignment was changed.', { assignmentId: original.id, standbyCalloutId: calloutId }, 409);
+        }
+        const candidate = this.workerReplacementCandidates(original, { excludeAssignmentIds: [targetId], allowStandbyWorkerId: callout ? replacement.worker_id : null }).find(item => item.worker.id === replacement.worker_id);
+      if (!candidate) throw ledgerInputError('assignment_replacement_candidate_stale', 'The proposed worker no longer passes current availability, role, conflict, and qualification checks. No assignment was changed.', { assignmentId: targetId, workerId: replacement.worker_id }, 409);
+      const attendance = this.db.prepare("SELECT id FROM attendance_sessions WHERE assignment_id = ? AND status = 'checked_in'").get(original.id);
+      if (attendance) throw ledgerInputError('assignment_open_attendance', 'Check out the current worker before approving an assignment replacement.', { assignmentId: original.id, attendanceSessionId: attendance.id }, 409);
+      const requestedStatus = normalizeStatus(decision.requestedStatus, 'planned');
+      const approvedStatus = ['planned', 'scheduled', 'active', 'in_progress', 'approved'].includes(requestedStatus) ? requestedStatus : 'planned';
+      const release = this.releaseAssignment(original.job_id, original.id, { status: 'released', reason: `Replaced by approved assignment ${targetId}.` }, { actor: approval.resolved_by || 'approval' });
+      const data = fromJson(replacement.data_json, {});
+      this.db.prepare('UPDATE assignments SET status = ?, data_json = ?, updated_at = ? WHERE id = ? AND status = ?')
+        .run(approvedStatus, toJson({ ...data, requiresApproval: false, availabilityConflicts: [], availabilityConflictCount: 0, approvedAt: timestamp, replacement: { ...data.replacement, originalAssignmentId: original.id, releasedAssignmentId: original.id, approvalId: approval.id, approvedAt: timestamp, approvedBy: approval.resolved_by || 'approval' } }), timestamp, targetId, 'pending_approval');
+      const activated = this.mapAssignment(this.db.prepare('SELECT assignments.*, workers.name AS worker_name FROM assignments LEFT JOIN workers ON workers.id = assignments.worker_id WHERE assignments.id = ?').get(targetId));
+      const taskHandoff = this.applyApprovedAssignmentReplacement(original.job_id, original, replacement,
+        approval.id, approval.resolved_by || 'approval', timestamp);
+      this.audit({ entityType: 'assignment', entityId: targetId, jobId: original.job_id, action: 'apply_assignment_replacement', actor: approval.resolved_by || 'approval', before: { originalAssignment: original }, after: { releasedAssignment: release, replacementAssignment: activated }, metadata: { approvalId: approval.id, availabilityPeriodId: period.id, taskHandoff, externalCommitments: 0 } });
+      if (decision.standbyCalloutId) this.db.prepare("UPDATE standby_callouts SET status = 'placed', updated_at = ? WHERE id = ? AND status = 'pending_approval'").run(timestamp, decision.standbyCalloutId);
+      this.db.prepare("UPDATE jobs SET phase = CASE WHEN phase = 'intake' THEN 'planned' ELSE phase END, updated_at = ? WHERE id = ?").run(timestamp, original.job_id);
     } else if (targetType === 'assignment') {
       const assignment = this.db.prepare('SELECT * FROM assignments WHERE id = ?').get(targetId);
       const data = fromJson(assignment?.data_json, {});
@@ -50960,10 +54500,47 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
     const status = archiveOnly || requestedStatus === 'archived' ? '' : requestedStatus;
     const search = normalizeText(filters.search, '').toLowerCase();
     const limit = safeLimit(filters.limit, 100, 500);
+    const afterUpdatedAt = normalizeText(filters.afterUpdatedAt ?? filters.after_updated_at, '');
+    const afterJobId = normalizeText(filters.afterJobId ?? filters.after_job_id, '');
+    if (Boolean(afterUpdatedAt) !== Boolean(afterJobId)) {
+      const error = new Error('Both the job update time and job ID are required for a jobs cursor.');
+      error.statusCode = 400;
+      error.code = 'job_list_cursor_invalid';
+      throw error;
+    }
     const includeArchived = archiveOnly || requestedStatus === 'archived'
       || normalizeBoolean(filters.includeArchived ?? filters.include_archived, false);
     const clauses = [];
     const parameters = [];
+    const workerId = normalizeText(filters.workerId ?? filters.worker_id, '');
+    const workerJobIds = [...new Set((Array.isArray(filters.jobIds ?? filters.job_ids)
+      ? filters.jobIds ?? filters.job_ids
+      : []).map(value => normalizeText(value, '')).filter(Boolean))];
+    const workerScopeRequired = normalizeBoolean(filters.workerScopeRequired ?? filters.worker_scope_required, false);
+    if (workerScopeRequired && !workerId && workerJobIds.length === 0) {
+      clauses.push('1 = 0');
+    } else if (workerId && workerJobIds.length) {
+      clauses.push(`(jobs.id IN (${workerJobIds.map(() => '?').join(', ')}) OR EXISTS (
+        SELECT 1 FROM assignments scoped_assignments
+        WHERE scoped_assignments.job_id = jobs.id AND scoped_assignments.worker_id = ?
+          AND LOWER(COALESCE(scoped_assignments.status, '')) NOT IN ('released', 'cancelled', 'completed', 'closed', 'rejected')
+      ))`);
+      parameters.push(...workerJobIds, workerId);
+    } else if (workerId) {
+      clauses.push(`EXISTS (
+        SELECT 1 FROM assignments scoped_assignments
+        WHERE scoped_assignments.job_id = jobs.id AND scoped_assignments.worker_id = ?
+          AND LOWER(COALESCE(scoped_assignments.status, '')) NOT IN ('released', 'cancelled', 'completed', 'closed', 'rejected')
+      )`);
+      parameters.push(workerId);
+    } else if (workerJobIds.length) {
+      clauses.push(`jobs.id IN (${workerJobIds.map(() => '?').join(', ')})`);
+      parameters.push(...workerJobIds);
+    }
+    if (afterUpdatedAt) {
+      clauses.push('(jobs.updated_at < ? OR (jobs.updated_at = ? AND jobs.id < ?))');
+      parameters.push(afterUpdatedAt, afterUpdatedAt, afterJobId);
+    }
     if (status) {
       clauses.push('jobs.status = ?');
       parameters.push(status);
@@ -50989,7 +54566,7 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       FROM jobs
       JOIN clients ON clients.id = jobs.client_id
       ${where}
-      ORDER BY jobs.updated_at DESC
+      ORDER BY jobs.updated_at DESC, jobs.id DESC
       LIMIT ?
     `).all(...parameters, limit);
     return rows.map(row => this.mapJob(row));
@@ -51091,7 +54668,10 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
   }
 
   communicationSummary() {
-    const rows = this.db.prepare('SELECT status, direction, approval_id, data_json FROM communication_records').all();
+    const rows = this.db.prepare('SELECT id, status, direction, approval_id, data_json FROM communication_records').all();
+    const reviewedConversationMessages = new Set(this.db.prepare(`
+      SELECT entity_id FROM audit_events WHERE entity_type = 'conversation_review'
+    `).all().map(row => row.entity_id));
     const summary = {
       total: rows.length,
       outboundDrafts: 0,
@@ -51105,7 +54685,7 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       const direction = normalizeStatus(row.direction, '');
       const data = fromJson(row.data_json, {});
       if (direction === 'outbound' && ['draft', 'pending_approval'].includes(status)) summary.outboundDrafts += 1;
-      if (direction === 'inbound' && ['new', 'received', 'unread'].includes(status)) summary.inboundUnread += 1;
+      if (direction === 'inbound' && ['new', 'received', 'unread'].includes(status) && !reviewedConversationMessages.has(row.id)) summary.inboundUnread += 1;
       if (direction === 'outbound' && data.expectsReply && ['sent', 'delivered', 'awaiting_client', 'client_reply_required'].includes(status)) {
         summary.waitingForReply += 1;
       }
@@ -51552,6 +55132,16 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
 
       const portalSelection = snapshot.job.selections.find(item => item.id === selectionId);
       if (!portalSelection) throw this.portalAccessError();
+      const publicSelection = {
+        id: selectionRow.id,
+        title: selectionRow.title,
+        category: selectionRow.category,
+        status: selectionRow.status,
+        selectedOption: fromJson(selectionRow.data_json, {}).selectedOption || null,
+        dueAt: selectionRow.due_at,
+        decidedAt: selectionRow.decided_at,
+        updatedAt: selectionRow.updated_at
+      };
 
       const requestedDecision = normalizeStatus(payload.decision || payload.response, '');
       const decision = ['accept', 'accepted', 'approve', 'approved', 'confirm', 'confirmed'].includes(requestedDecision)
@@ -51612,7 +55202,7 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
           throw error;
         }
         return {
-          selection: this.mapClientSelection(selectionRow),
+          selection: publicSelection,
           approval: replay,
           response: { ...replay.data, status: 'pending_review' },
           portal: snapshot.portal,
@@ -51677,7 +55267,7 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
         }
       });
       return {
-        selection,
+        selection: publicSelection,
         approval,
         response: { ...responseData, status: 'pending_review' },
         portal: snapshot.portal,
@@ -54168,10 +57758,28 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
         const evidenceRecords = (detail.documents || []).length + (detail.fieldReports || []).length;
         const activeFieldJob = activeJobStatuses.has(jobStatus) || (detail.assignments || []).length > 0 || evidenceRecords > 0;
         const safetyPackMissing = activeFieldJob && safetyRecords.length === 0;
+        const activeTaskIds = new Set((detail.tasks || []).filter(task => !['cancelled', 'canceled', 'deleted', 'completed'].includes(normalizeStatus(task.status, ''))).map(task => task.id));
+        const activeAssignments = (detail.assignments || []).filter(assignment => this.activeAssignmentStatus(assignment.status));
+        const assignedWorkerIds = new Set(activeAssignments.map(assignment => assignment.workerId).filter(Boolean));
+        const fieldTaskIds = new Set();
+        for (const workerId of assignedWorkerIds) {
+          const workerAssignments = activeAssignments.filter(assignment => assignment.workerId === workerId);
+          for (const taskId of fieldTaskScope(detail, workerId, workerAssignments).visibleTaskIds) {
+            if (activeTaskIds.has(taskId)) fieldTaskIds.add(taskId);
+          }
+        }
+        const approvedJhaTaskIds = new Set(fieldJhaRecords(this, detail.jhas).flatMap(record => record.linkedTaskIds || []));
+        const taskById = new Map((detail.tasks || []).map(task => [task.id, task]));
+        const missingJhaTaskIds = [...fieldTaskIds].filter(taskId => {
+          const status = taskById.get(taskId)?.jhaApplicability?.status || 'unreviewed';
+          return status !== 'not_required' && (status !== 'required' || !approvedJhaTaskIds.has(taskId));
+        });
+        const jhaTaskScopeGap = missingJhaTaskIds.length > 0;
         const safetyGap = activeFieldJob && (
           safetyPackMissing
           || openLmraAssessments.length > 0
           || missingLmraAssessments.length > 0
+          || jhaTaskScopeGap
         );
         const designReview = openRfis.length > 0
           || submittalReviews.length > 0
@@ -54235,7 +57843,7 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
             externalCommitments: 0
           });
         }
-        if (safetyPackMissing) nextActions.push({ type: 'prepare_safety_pack', label: 'Prepare JHA, SDS, safety talk, and access evidence', requiresApproval: false });
+        if (safetyPackMissing || jhaTaskScopeGap) nextActions.push({ type: 'prepare_safety_pack', label: 'Prepare JHA, SDS, safety talk, and access evidence', requiresApproval: false });
         if (jhas.length) nextActions.push({
           type: 'review_jha',
           label: 'Review JHA and work method controls',
@@ -54645,7 +58253,7 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       const scope = this.activeRecordScope(requirement.table);
       const placeholders = requirement.coverageStatuses.map(() => '?').join(',');
       return Number(this.db.prepare(`
-        SELECT COUNT(DISTINCT records.id) AS count
+        SELECT COUNT(${scope.distinct ? 'DISTINCT ' : ''}records.id) AS count
         FROM ${scope.from}
         WHERE ${scope.condition}
           AND records.status IN (${placeholders})
@@ -54654,7 +58262,7 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
     if (requirement.recordType) {
       const scope = this.activeRecordScope(requirement.table);
       return Number(this.db.prepare(`
-        SELECT COUNT(DISTINCT records.id) AS count
+        SELECT COUNT(${scope.distinct ? 'DISTINCT ' : ''}records.id) AS count
         FROM ${scope.from}
         WHERE ${scope.condition}
           AND records.type = ?
@@ -54751,7 +58359,7 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
         ? [requirement.credentialType, ...closed]
         : closed;
     return Number(this.db.prepare(`
-      SELECT COUNT(DISTINCT records.id) AS count
+      SELECT COUNT(${scope.distinct ? 'DISTINCT ' : ''}records.id) AS count
       FROM ${scope.from}
       WHERE ${scope.condition}
         ${typeClause}
@@ -55701,10 +59309,14 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
   }
 
   dashboardSummary() {
+    const dataVersion = this.databaseMode === 'sqlite'
+      ? this.db.prepare('PRAGMA data_version').get().data_version : null;
     const cache = this.dashboardSummaryCache;
     if (
       cache
+      && this.transactionDepth === 0
       && cache.revision === this.mutationRevision
+      && cache.dataVersion === dataVersion
       && Date.now() - cache.createdAtMs < DASHBOARD_SUMMARY_CACHE_TTL_MS
     ) {
       return cache.summary;
@@ -56025,11 +59637,14 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       capabilitySummary: capabilityMap.summary,
       preconstruction: opportunityPipeline
     };
-    this.dashboardSummaryCache = {
-      revision: this.mutationRevision,
-      createdAtMs: Date.now(),
-      summary
-    };
+    if (this.transactionDepth === 0) {
+      this.dashboardSummaryCache = {
+        revision: this.mutationRevision,
+        dataVersion,
+        createdAtMs: Date.now(),
+        summary
+      };
+    }
     return summary;
   }
 
@@ -56347,7 +59962,8 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
     const today = nowIso().slice(0, 10);
     const dailyCycleJobs = this.db.prepare(`
       SELECT jobs.id, jobs.title, cycles.id AS cycle_id, cycles.status AS cycle_status,
-        cycles.huddle_snapshot_hash, cycles.updated_at AS cycle_updated_at
+        cycles.huddle_source_hash, cycles.huddle_snapshot_hash, cycles.huddle_snapshot_json,
+        cycles.updated_at AS cycle_updated_at
       FROM jobs
       LEFT JOIN daily_operating_cycles cycles
         ON cycles.job_id = jobs.id AND cycles.work_date = ? AND cycles.shift_label = 'day'
@@ -56374,6 +59990,63 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
           ? `${job.title} has an open ${job.cycle_status} daily cycle and needs a retained end-of-day plan-versus-actual report.`
           : `${job.title} needs today's crew start huddle before the daily operating cycle is complete.`
       });
+
+      if (!job.cycle_id || job.cycle_status !== 'released') continue;
+      const huddleSnapshot = fromJson(job.huddle_snapshot_json, null);
+      if (!huddleSnapshot || huddleSnapshot.format !== DAILY_OPERATING_CYCLE_FORMAT
+        || huddleSnapshot.cycleId !== job.cycle_id || huddleSnapshot.jobId !== job.id
+        || huddleSnapshot.status !== 'released'
+        || huddleSnapshot.sourceHash !== job.huddle_source_hash
+        || retainedSnapshotSourceHash(huddleSnapshot, ['sourceHash', 'status', 'retainedAt', 'retainedBy', 'safeguards']) !== job.huddle_source_hash
+        || sha256Text(job.huddle_snapshot_json) !== job.huddle_snapshot_hash) continue;
+
+      for (const crewMember of huddleSnapshot.crew || []) {
+        if (!crewMember.assignmentId) continue;
+        const assignment = this.db.prepare(`
+          SELECT assignments.id, assignments.worker_id, assignments.status, assignments.scheduled_start,
+            assignments.scheduled_end, workers.name AS worker_name
+          FROM assignments
+          JOIN workers ON workers.id = assignments.worker_id
+          WHERE assignments.id = ? AND assignments.job_id = ? AND assignments.worker_id = ?
+        `).get(crewMember.assignmentId, job.id, crewMember.workerId);
+        if (!assignment || !['assigned', 'scheduled', 'active', 'in_progress'].includes(assignment.status)
+          || !assignment.scheduled_start || !assignment.scheduled_end
+          || Date.parse(assignment.scheduled_start) > Date.now() - 30 * 60_000
+          || Date.parse(assignment.scheduled_end) <= Date.now()) continue;
+        if (this.findWorkerAvailabilityConflicts({ workerId: assignment.worker_id,
+          scheduledStart: assignment.scheduled_start, scheduledEnd: assignment.scheduled_end }).length) continue;
+        const attendance = this.db.prepare(`
+          SELECT id FROM attendance_sessions
+          WHERE assignment_id = ? AND status IN ('checked_in', 'checked_out')
+          LIMIT 1
+        `).get(assignment.id);
+        if (attendance) continue;
+        const sourceHash = sha256Json({
+          cycleId: job.cycle_id,
+          huddleSnapshotHash: job.huddle_snapshot_hash,
+          assignmentId: assignment.id,
+          workerId: assignment.worker_id,
+          scheduledStart: assignment.scheduled_start,
+          scheduledEnd: assignment.scheduled_end,
+          graceMinutes: 30
+        });
+        const taskId = `task_${sha256Text(`daily-checkin-review:${sourceHash}`).slice(0, 24)}`;
+        if (this.db.prepare("SELECT id FROM job_tasks WHERE id = ? AND status NOT IN ('completed', 'cancelled')").get(taskId)) continue;
+        actions.push({
+          type: 'review_daily_cycle',
+          actionKind: 'worker_checkin_missing',
+          jobId: job.id,
+          jobTitle: job.title,
+          cycleId: job.cycle_id,
+          assignmentId: assignment.id,
+          workerId: assignment.worker_id,
+          workerName: assignment.worker_name,
+          taskId,
+          sourceHash,
+          severity: 'high',
+          message: `${assignment.worker_name} has no recorded site check-in 30 minutes after the planned start on ${job.title}. Confirm the situation; no absence is assumed.`
+        });
+      }
     }
     const jobsWithoutFieldReports = this.db.prepare(`
       SELECT jobs.id, jobs.title, jobs.status
@@ -57875,17 +61548,19 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
 
     const jobsWithoutLoading = this.db.prepare(`
       SELECT jobs.id, jobs.title,
-        COUNT(DISTINCT tool_reservations.id) AS tools,
-        COUNT(DISTINCT material_requirements.id) AS materials
+        (SELECT COUNT(DISTINCT tools.id) FROM tool_reservations tools
+          WHERE tools.job_id = jobs.id AND tools.status NOT IN ('cancelled', 'released')) AS tools,
+        (SELECT COUNT(DISTINCT materials.id) FROM material_requirements materials
+          WHERE materials.job_id = jobs.id AND materials.status NOT IN ('cancelled')) AS materials
       FROM jobs
-      LEFT JOIN tool_reservations ON tool_reservations.job_id = jobs.id AND tool_reservations.status NOT IN ('cancelled', 'released')
-      LEFT JOIN material_requirements ON material_requirements.job_id = jobs.id AND material_requirements.status NOT IN ('cancelled')
-      LEFT JOIN loading_plans ON loading_plans.job_id = jobs.id AND loading_plans.status NOT IN ('cancelled', 'rejected')
       WHERE jobs.status IN ('planned', 'scheduled', 'in_progress')
-      GROUP BY jobs.id
-      HAVING COUNT(loading_plans.id) = 0
-        AND (COUNT(DISTINCT tool_reservations.id) > 0 OR COUNT(DISTINCT material_requirements.id) > 0)
-      ORDER BY jobs.updated_at DESC
+        AND NOT EXISTS (SELECT 1 FROM loading_plans plans
+          WHERE plans.job_id = jobs.id AND plans.id IS NOT NULL AND plans.status NOT IN ('cancelled', 'rejected'))
+        AND (EXISTS (SELECT 1 FROM tool_reservations tools
+          WHERE tools.job_id = jobs.id AND tools.id IS NOT NULL AND tools.status NOT IN ('cancelled', 'released'))
+          OR EXISTS (SELECT 1 FROM material_requirements materials
+            WHERE materials.job_id = jobs.id AND materials.id IS NOT NULL AND materials.status NOT IN ('cancelled')))
+      ORDER BY jobs.updated_at DESC, jobs.id ASC
       LIMIT 5
     `).all();
     for (const job of jobsWithoutLoading) {
@@ -58427,6 +62102,7 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       highPriority: 0,
       approvalRequired: 0,
       safeDraftable: 0,
+      runnableDrafts: 0,
       blocked: 0,
       externalCommitments: 0,
       streams: {}
@@ -58437,6 +62113,7 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       if (['critical', 'high'].includes(normalizeStatus(action.severity, 'medium'))) summary.highPriority += 1;
       if (action.requiresApproval) summary.approvalRequired += 1;
       if (action.safeDraftable) summary.safeDraftable += 1;
+      if (action.safeDraftable && !action.blocked) summary.runnableDrafts += 1;
       if (action.blocked) summary.blocked += 1;
     }
     return summary;
@@ -58444,6 +62121,12 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
 
   buildTodayCommandPlan(filters = {}) {
     const limit = safeLimit(filters.limit, 24, 100);
+    const requestedOffset = Number(filters.offset);
+    const offset = Number.isSafeInteger(requestedOffset) && requestedOffset >= 0 ? requestedOffset : 0;
+    const stream = normalizeStatus(filters.stream, 'all');
+    const actionFilter = new Set([].concat(filters.actionId || filters.action_id || [])
+      .concat(filters.actionIds || filters.action_ids || [])
+      .flatMap(value => String(value || '').split(',')).map(value => value.trim()).filter(Boolean));
     const sourceJobLimit = safeLimit(filters.jobLimit || filters.job_limit, 12, 50);
     const search = normalizeText(filters.search, '').toLowerCase();
     const mode = normalizeStatus(filters.mode || filters.status, 'all');
@@ -58453,7 +62136,9 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       SELECT id FROM jobs
       WHERE status NOT IN ('cancelled', 'canceled', 'rejected', 'archived', 'pending_archive_approval', 'deleted', 'void')
     `).all().map(row => row.id));
-    const commandJobs = this.listJobs({ limit: 500 })
+    const listedJobs = this.listJobs({ limit: 500 });
+    const jobTitles = new Map(listedJobs.map(job => [job.id, job.title]));
+    const commandJobs = listedJobs
       .filter(job => actionableJobIds.has(job.id))
       .filter(job => !jobFilter.size || jobFilter.has(job.id))
       .slice(0, sourceJobLimit);
@@ -58476,7 +62161,7 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
         stream,
         actionType,
         jobId: command.jobId || null,
-        jobTitle: command.jobTitle || command.title || null,
+        jobTitle: command.jobTitle || jobTitles.get(command.jobId) || command.title || null,
         approvalId: command.approvalId || null,
         requirementKey: command.requirementKey || null,
         capabilityKey: command.capabilityKey || null,
@@ -58510,17 +62195,66 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       });
     }
 
+    const returnedVariations = this.db.prepare(`
+      SELECT change_orders.*, jobs.title AS job_title
+      FROM change_orders
+      JOIN jobs ON jobs.id = change_orders.job_id
+      WHERE jobs.status NOT IN ('cancelled', 'canceled', 'rejected', 'archived', 'pending_archive_approval', 'deleted', 'void')
+        AND change_orders.status IN ('changes_requested', 'rejected_by_client', 'rejected')
+        AND change_orders.revision_number = (
+          SELECT MAX(latest.revision_number)
+          FROM change_orders latest
+          WHERE latest.job_id = change_orders.job_id
+            AND latest.variation_number = change_orders.variation_number
+        )
+      ORDER BY change_orders.updated_at ASC
+      LIMIT 50
+    `).all();
+    for (const row of returnedVariations) {
+      const variation = this.mapChangeOrder(row);
+      const clientDecision = variation.data?.clientResponse?.decision || variation.snapshot?.revisionOrigin?.decision || null;
+      if (!['changes_requested', 'rejected'].includes(clientDecision)) continue;
+      const internallyRejected = variation.status === 'rejected';
+      add({
+        actionType: 'prepare_client_variation_revision',
+        jobId: variation.jobId,
+        jobTitle: row.job_title,
+        sourceId: variation.id,
+        severity: internallyRejected || clientDecision === 'rejected' ? 'high' : 'medium',
+        requiresApproval: false,
+        safeDraftable: false,
+        source: 'formal_variation_response',
+        message: internallyRejected
+          ? `${row.job_title}: internal approval rejected ${variation.variationNumber} revision ${variation.revisionNumber}. Review the retained client response and prepare a new revision; no scope, price, schedule, or client commitment changes automatically.`
+          : `${row.job_title}: the client ${clientDecision === 'rejected' ? 'rejected' : 'requested changes to'} ${variation.variationNumber} revision ${variation.revisionNumber}. Review the response and prepare a formal revision; no scope, price, schedule, or client commitment changes automatically.`,
+        data: {
+          changeOrderId: variation.id,
+          variationNumber: variation.variationNumber,
+          revisionNumber: variation.revisionNumber,
+          clientDecision,
+          clientResponseApprovalId: variation.data?.clientResponse?.approvalId || variation.snapshot?.revisionOrigin?.approvalId || null,
+          clientResponseReference: variation.data?.clientResponse?.issueReference || variation.snapshot?.revisionOrigin?.issueReference || null,
+          dueAt: variation.formalControl?.responseDueAt || null
+        }
+      });
+    }
+
     for (const action of this.nextActions()) {
       add({
         ...action,
         stream: this.commandPlanStreamForAction(action.type),
         actionType: action.type,
         source: 'next_action_monitor',
-        sourceId: action.approvalId || action.communicationId || action.assignmentId || action.reservationId || action.materialRequirementId || action.paymentId || action.aftercareId || action.recurringPlanId || action.frameworkImplementationId || action.jobType || action.jobId,
+        data: action,
+        sourceId: action.sourceId || action.opportunityId || action.bidPackageId || action.approvalId || action.communicationId || action.assignmentId || action.reservationId || action.materialRequirementId || action.paymentId || action.aftercareId || action.recurringPlanId || action.frameworkImplementationId || action.jobType || action.jobId,
         safeDraftable: safeActionTypes.has(normalizeStatus(action.type, '')),
         requiresApproval: normalizeBoolean(action.requiresApproval, false)
       });
     }
+
+    for (const action of require('./operational-recovery').operationalRecoveryFollowUpActions(this, {
+      jobIds: jobFilter.size ? [...jobFilter] : null
+    })) add(action);
 
     const readinessFilters = { limit: sourceJobLimit, jobIds: sourceJobIds };
     const readinessSources = sourceJobIds.length ? [
@@ -58590,20 +62324,35 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       return action.stream === mode || action.actionType === mode || action.severity === mode;
     };
     const matchesSearch = action => !search || JSON.stringify(action).toLowerCase().includes(search);
-    const filtered = commands.filter(action => matchesMode(action) && matchesSearch(action));
+    const filtered = commands.filter(action => matchesMode(action) && matchesSearch(action)
+      && (stream === 'all' || action.stream === stream)
+      && (!actionFilter.size || actionFilter.has(action.id)));
     filtered.sort((left, right) => {
       const scoreDelta = right.score - left.score;
       if (scoreDelta) return scoreDelta;
-      return String(left.jobTitle || left.message).localeCompare(String(right.jobTitle || right.message));
+      return String(left.jobTitle || left.message).localeCompare(String(right.jobTitle || right.message))
+        || left.id.localeCompare(right.id);
     });
 
     return {
       generatedAt: nowIso(),
       mode,
+      stream,
       summary: this.commandPlanSummary(commands, filtered.length),
-      actions: filtered.slice(0, limit),
+      matchingSummary: this.commandPlanSummary(filtered),
+      actions: filtered.slice(offset, offset + limit),
+      pagination: {
+        offset,
+        limit,
+        returned: filtered.slice(offset, offset + limit).length,
+        matching: filtered.length,
+        hasMore: offset + limit < filtered.length
+      },
       scope: {
         jobLimit: sourceJobLimit,
+        readinessJobLimit: sourceJobLimit,
+        eligibleJobs: [...actionableJobIds].filter(id => !jobFilter.size || jobFilter.has(id)).length,
+        completeAudit: false,
         consideredJobs: sourceJobIds.length,
         jobIds: sourceJobIds
       },
@@ -58618,7 +62367,7 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
     this.assertAutomationActive();
     const actor = options.actor || payload.actor || 'Contractor.AI';
     const limit = safeLimit(payload.limit, 10, 50);
-    const preview = this.buildTodayCommandPlan({ ...payload, limit: Math.max(limit, 50), mode: payload.mode || 'safe' });
+    const preview = this.buildTodayCommandPlan({ ...payload, offset: 0, limit: Math.max(limit, 50), mode: payload.mode || 'safe' });
     const requestedIds = new Set(
       []
         .concat(payload.actionId || payload.action_id || [])
@@ -58632,14 +62381,18 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       .slice(0, limit);
     const applied = [];
     const skipped = [];
+    const previewIds = new Set(preview.actions.map(action => action.id));
+    for (const id of requestedIds) {
+      if (!previewIds.has(id)) skipped.push({ id, reason: 'Command is no longer available in the current scope. Refresh and review the work plan.' });
+    }
     const capabilityByJob = new Map();
     const cycleTypes = new Set();
     const cycleJobs = new Set();
     const safeActionTypes = this.commandPlanSafeActionTypes();
 
     for (const action of selected) {
-      if (!action.safeDraftable) {
-        skipped.push({ ...action, reason: 'Action is not safe for command-plan auto-drafting.' });
+      if (!action.safeDraftable || action.blocked) {
+        skipped.push({ ...action, reason: action.blocked ? 'Command is blocked and needs operator review.' : 'Action is not safe for command-plan auto-drafting.' });
         continue;
       }
       if (action.actionType === 'draft_capability_gap' && action.jobId && action.requirementKey) {
@@ -59137,10 +62890,12 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
 
         const jhas = preview.filter(action => action.type === 'create_jha').slice(0, 3);
         for (const action of jhas) {
+          const jobTasks = this.db.prepare("SELECT id FROM job_tasks WHERE job_id = ? AND status NOT IN ('cancelled', 'canceled', 'deleted', 'completed') ORDER BY id").all(action.jobId);
           const jha = this.createJhaRecord(action.jobId, {
             status: 'draft',
             title: 'Pre-task job hazard analysis',
             riskLevel: action.severity === 'high' ? 'high' : 'medium',
+            linkedTaskIds: jobTasks.map(task => task.id),
             hazards: ['Access constraints', 'Manual handling', 'Tools and PPE controls'],
             controls: ['Confirm method statement', 'Brief crew before work', 'Stop work on changed conditions'],
             notes: 'Autonomous JHA draft. Approval is required before field reliance.',
@@ -60505,6 +64260,7 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
               purchaseOrderId: action.purchaseOrderId || null,
               receiptReason: action.reason,
               sourceHash: action.sourceHash || null,
+              operationalImpact: action.operationalImpact || null,
               internalOnly: true,
               externalCommitments: 0
             }
@@ -60741,6 +64497,18 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
 
   diagnose() {
     const issues = [];
+    try { require('./work-balance').verifyWorkBalance(this.db); }
+    catch { issues.push({ severity: 'error', message: 'Work allocation quantity, snapshot or approval-chain integrity verification failed.' }); }
+    try { require('./work-delivery').verifyWorkDeliveries(this.db); }
+    catch { issues.push({ severity: 'error', message: 'Work delivery snapshot, allocation or approval-chain integrity verification failed.' }); }
+    try { require('./asset-history').verifyAssetHistory(this.db); }
+    catch { issues.push({ severity: 'error', message: 'Installed asset history or source-link integrity verification failed.' }); }
+    try { require('./inspection-coverage').verifyInspectionCoverage(this.db); }
+    catch { issues.push({ severity: 'error', message: 'Inspection coverage or approval-chain integrity verification failed.' }); }
+    try { require('./client-delivery').verifyClientDelivery(this.db); }
+    catch { issues.push({ severity: 'error', message: 'Client delivery offer, response or source-chain integrity verification failed.' }); }
+    try { require('./operational-recovery').verifyOperationalRecovery(this.db); }
+    catch { issues.push({ severity: 'error', message: 'Operational recovery case snapshot or command integrity verification failed.' }); }
     let auditIntegrity;
     try {
       auditIntegrity = this.verifyAuditIntegrity();
@@ -61627,12 +65395,14 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
         deliveredAt: receipt.deliveredAt,
         receivedBy: receipt.receivedBy,
         location: receipt.location,
+        ...(Object.hasOwn(receipt.data, 'stockDestination') ? { stockDestination: receipt.stockDestination } : {}),
         evidenceReference: receipt.evidenceReference,
         evidenceDocumentId: receipt.evidenceDocumentId,
         finalDelivery: receipt.data.finalDelivery === true,
         lines: receipt.lines.map(line => ({
           lineKey: line.lineKey,
           materialRequirementId: line.materialRequirementId,
+          ...(Object.hasOwn(receipt.data, 'stockDestination') ? { stockMaterialId: line.data.stockMaterialId || null } : {}),
           itemName: line.itemName,
           unit: line.unit,
           receivedQuantity: line.receivedQuantity,
@@ -61813,7 +65583,11 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
         issues.push({ severity: 'error', message: `Formal variation ${variation.variationNumber} revision ${variation.revisionNumber} failed retained snapshot verification.` });
         continue;
       }
-      const expectedApprovalStatus = ['draft', 'pending_approval'].includes(variation.status)
+      const internallyRejectedThenSuperseded = variation.status === 'superseded'
+        && variation.data?.approvalResolution?.status === 'rejected';
+      const expectedApprovalStatus = internallyRejectedThenSuperseded
+        ? 'rejected'
+        : ['draft', 'pending_approval'].includes(variation.status)
         ? 'pending'
         : ['approved', 'issued', 'accepted', 'changes_requested', 'rejected_by_client', 'superseded'].includes(variation.status)
           ? 'approved'
@@ -63313,10 +67087,20 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
     const status = normalizeStatus(row.status, 'active');
     const reference = Date.now();
     const startsAt = row.starts_at;
-    const endsAt = row.ends_at;
+    const data = fromJson(row.data_json, {});
+    const returnUnknown = data.returnUnknown === true;
+    const endsAt = returnUnknown ? null : row.ends_at;
+    const recurrence = data.recurrence || null;
+    const nextOccurrence = recurrence
+      ? expandRecurrence({ id: row.id, startsAt: row.starts_at, endsAt: row.ends_at, data: { recurrence } }, {
+        rangeStart: row.starts_at,
+        rangeEnd: new Date(Date.parse(`${recurrence.until}T23:59:59.999Z`) + 14 * 60 * 60 * 1000).toISOString()
+      }).find(occurrence => Date.parse(occurrence.endsAt) >= reference) || null
+      : null;
     let phase = status;
     if (status === 'active' || status === 'pending_cancellation') {
-      if (Date.parse(endsAt) < reference) phase = 'past';
+      if (recurrence) phase = nextOccurrence && Date.parse(nextOccurrence.startsAt) <= reference ? 'current' : nextOccurrence ? 'upcoming' : 'past';
+      else if (!returnUnknown && Date.parse(endsAt) < reference) phase = 'past';
       else if (Date.parse(startsAt) > reference) phase = 'upcoming';
       else phase = 'current';
     }
@@ -63332,9 +67116,16 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       phase,
       startsAt,
       endsAt,
+      returnUnknown,
+      minimumNoticeHours: periodType === 'standby' ? Math.max(0, Math.min(168, Math.trunc(Number(data.minimumNoticeHours) || 0))) : 0,
+      recurrence: recurrence ? { frequency: recurrence.frequency, daysOfWeek: recurrence.daysOfWeek,
+        timeZone: recurrence.timeZone, until: recurrence.until } : null,
+      nextOccurrence: nextOccurrence ? { startsAt: nextOccurrence.startsAt, endsAt: nextOccurrence.endsAt } : null,
+      followUpAt: returnUnknown ? data.reviewAt || null : null,
+      followUpDue: returnUnknown && data.reviewAt ? Date.parse(data.reviewAt) <= reference : false,
       cancellationApprovalId: row.cancellation_approval_id || null,
       sourceFingerprint: row.source_fingerprint,
-      data: fromJson(row.data_json, {}),
+      data,
       createdAt: row.created_at,
       updatedAt: row.updated_at
     };
@@ -63439,7 +67230,7 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
   }
 
   mapTask(row) {
-    return {
+    const task = {
       id: row.id,
       jobId: row.job_id,
       title: row.title,
@@ -63456,6 +67247,7 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       createdAt: row.created_at,
       updatedAt: row.updated_at
     };
+    return { ...task, jhaApplicability: taskJhaApplicability(task) };
   }
 
   mapTaskDependency(row) {
@@ -63500,23 +67292,31 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
     const snapshotJson = normalizeText(row.snapshot_json, '');
     const snapshot = fromJson(snapshotJson, null);
     const weeklyHours = roundScheduleHours(row.weekly_hours);
-    const sourceHash = sha256Json({
-      format: CREW_CAPACITY_PROFILE_FORMAT,
+    const data = fromJson(row.data_json, {});
+    const workingWindows = data.workingWindows || {};
+    const format = [CREW_CAPACITY_PROFILE_FORMAT_V2, CREW_CAPACITY_PROFILE_FORMAT_V3].includes(snapshot?.format)
+      ? snapshot.format
+      : CREW_CAPACITY_PROFILE_FORMAT_V1;
+    const source = {
+      format,
       workerId: row.worker_id,
       effectiveFrom: row.effective_from,
       timezone: row.timezone,
       dailyHours,
       weeklyHours
-    });
+    };
+    if ([CREW_CAPACITY_PROFILE_FORMAT_V2, CREW_CAPACITY_PROFILE_FORMAT_V3].includes(format)) source.workingWindows = workingWindows;
+    const sourceHash = sha256Json(source);
     const integrityValid = Boolean(
       snapshot
-      && snapshot.format === CREW_CAPACITY_PROFILE_FORMAT
+      && [CREW_CAPACITY_PROFILE_FORMAT_V1, CREW_CAPACITY_PROFILE_FORMAT_V2, CREW_CAPACITY_PROFILE_FORMAT_V3].includes(snapshot.format)
       && snapshot.profileId === row.id
       && snapshot.workerId === row.worker_id
       && normalizeNumber(snapshot.versionNumber, 0) === normalizeNumber(row.version_number, 0)
       && snapshot.effectiveFrom === row.effective_from
       && snapshot.timezone === row.timezone
       && sha256Json(snapshot.dailyHours || {}) === sha256Json(dailyHours)
+      && (format === CREW_CAPACITY_PROFILE_FORMAT_V1 || sha256Json(snapshot.workingWindows || {}) === sha256Json(workingWindows))
       && roundScheduleHours(snapshot.weeklyHours) === weeklyHours
       && sourceHash === row.source_hash
       && sha256Text(snapshotJson) === row.snapshot_hash
@@ -63531,13 +67331,15 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       timezone: row.timezone,
       weeklyHours,
       dailyHours,
+      workingWindows,
+      hasWorkingTimeWindows: [CREW_CAPACITY_PROFILE_FORMAT_V2, CREW_CAPACITY_PROFILE_FORMAT_V3].includes(format),
       sourceHash: row.source_hash,
       snapshotHash: row.snapshot_hash,
       snapshot,
       integrityValid,
       entryKey: row.entry_key,
       entryFingerprint: row.entry_fingerprint,
-      data: fromJson(row.data_json, {}),
+      data,
       createdAt: row.created_at,
       updatedAt: row.updated_at
     };
@@ -63900,12 +67702,32 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
     const formalControl = snapshot?.formalControl || data.formalControl || null;
     const sourceHashValid = Boolean(snapshot?.source && row.source_hash && sha256Json(snapshot.source) === row.source_hash);
     const snapshotHashValid = Boolean(snapshotJson && row.snapshot_hash && sha256Text(snapshotJson) === row.snapshot_hash);
+    const snapshotMatchesRow = Boolean(snapshot
+      && snapshot.jobId === row.job_id
+      && (snapshot.quoteId || null) === (row.quote_id || null)
+      && snapshot.variationNumber === row.variation_number
+      && Number(snapshot.revisionNumber) === Number(row.revision_number)
+      && (snapshot.supersedesChangeOrderId || null) === (row.supersedes_change_order_id || null)
+      && snapshot.entryKey === (row.entry_key || null)
+      && snapshot.entryFingerprint === row.entry_fingerprint
+      && snapshot.sourceHash === row.source_hash
+      && snapshotHashValid
+      && snapshot.title === row.title
+      && snapshot.scopeDelta === row.scope_delta
+      && snapshot.currency === row.currency
+      && roundMoney(snapshot.amount) === roundMoney(row.amount)
+      && roundQuantity(snapshot.taxRate) === roundQuantity(row.tax_rate)
+      && roundMoney(snapshot.taxAmount) === roundMoney(row.tax_amount)
+      && roundMoney(snapshot.total) === roundMoney(row.total)
+      && roundQuantity(snapshot.scheduleDeltaDays) === roundQuantity(row.schedule_delta_days)
+      && sha256Json(snapshot.lineItems || []) === sha256Json(fromJson(row.line_items_json, [])));
     const integrityValid = Boolean(
       snapshot
       && snapshot.format === FORMAL_VARIATION_FORMAT
       && snapshot.variationNumber === row.variation_number
       && Number(snapshot.revisionNumber) === Number(row.revision_number)
       && snapshot.entryFingerprint === row.entry_fingerprint
+      && snapshotMatchesRow
       && sourceHashValid
       && snapshotHashValid
     );
@@ -64898,6 +68720,7 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       preparedBy: row.prepared_by,
       responsibleWorkerId: row.responsible_worker_id || null,
       jhaId: row.jha_id,
+      linkedTaskIds: data.format === PRE_TASK_PLAN_FORMAT_SCOPED ? [...new Set(normalizeList(data.linkedTaskIds).map(String))].sort() : [],
       workPermitId: row.work_permit_id || null,
       sdsSheetIds: fromJson(row.sds_sheet_ids_json, []),
       steps: fromJson(row.steps_json, []),
@@ -65456,6 +69279,7 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
   }
 
   mapIncident(row) {
+    const data = fromJson(row.data_json);
     return {
       id: row.id,
       jobId: row.job_id,
@@ -65464,10 +69288,13 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       status: row.status,
       severity: row.severity,
       reportedBy: row.reported_by,
+      taskId: data.taskId || null,
       occurredAt: row.occurred_at,
       resolvedAt: row.resolved_at,
       approvalId: row.approval_id,
-      data: fromJson(row.data_json),
+      responsible: data.responsible || null,
+      dueAt: data.dueAt || null,
+      data,
       createdAt: row.created_at,
       updatedAt: row.updated_at
     };
@@ -65514,6 +69341,7 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       acknowledgedAt: row.acknowledged_at || null,
       acknowledgedBy: row.acknowledged_by || null,
       evidenceReference: row.evidence_reference || null,
+      briefingContentHash: data.briefingContentHash || null,
       entryKey: row.entry_key || null,
       entryFingerprint: row.entry_fingerprint || null,
       data,
@@ -65575,7 +69403,7 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
     const sourceHashValid = Boolean(row.source_hash && sha256Json(sourceBasis) === row.source_hash);
     const snapshotHashValid = Boolean(
       snapshot
-      && snapshot.format === SDS_REVISION_FORMAT
+      && snapshot.format === sourceBasis.format
       && snapshot.sdsSheetId === row.id
       && snapshot.jobId === row.job_id
       && snapshot.sourceHash === row.source_hash
@@ -65617,6 +69445,7 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
         title: documentRow.title,
         filename: documentRow.filename,
         mimeType: documentRow.mime_type,
+        sizeBytes: normalizeNumber(documentRow.size_bytes, 0),
         status: documentRow.status
       } : null,
       hazardClasses: normalizeList(data.hazardClasses || data.hazardClass),
@@ -65627,6 +69456,7 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       spillResponse: data.spillResponse || null,
       disposal: data.disposal || null,
       emergencyContact: data.emergencyContact || null,
+      linkedMaterialIds: [...new Set(normalizeList(data.linkedMaterialIds))].sort(),
       revisionReason: data.revisionReason || null,
       sourceHash: row.source_hash || null,
       snapshotHash: row.snapshot_hash || null,
@@ -65748,6 +69578,7 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
   }
 
   mapMaterialRequirement(row) {
+    const data = fromJson(row.data_json);
     return {
       id: row.id,
       jobId: row.job_id,
@@ -65759,7 +69590,13 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       supplier: row.supplier,
       cost: normalizeNumber(row.cost, 0),
       neededBy: row.needed_by,
-      data: fromJson(row.data_json),
+      sdsRequirementStatus: ['required', 'not_required'].includes(data.sdsRequirementStatus)
+        ? data.sdsRequirementStatus
+        : 'unreviewed',
+      sdsRequirementReason: data.sdsRequirementReason || null,
+      sdsRequirementReviewedBy: data.sdsRequirementReviewedBy || null,
+      sdsRequirementReviewedAt: data.sdsRequirementReviewedAt || null,
+      data,
       createdAt: row.created_at,
       updatedAt: row.updated_at
     };
@@ -65797,6 +69634,7 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       deliveredAt: row.delivered_at,
       receivedBy: row.received_by,
       location: row.location,
+      stockDestination: data.stockDestination === 'company_warehouse' ? 'company_warehouse' : 'job_site',
       evidenceReference: row.evidence_reference,
       evidenceDocumentId: row.evidence_document_id,
       entryKey: row.entry_key,
@@ -65921,11 +69759,11 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
     if (row.type !== 'drawing_revision') return document;
 
     const snapshot = fromJson(row.snapshot_json, null);
-    const sourceBasis = drawingRevisionSourceBasis(row);
+    const sourceBasis = drawingRevisionSourceBasis(row, snapshot?.format || DRAWING_REVISION_FORMAT);
     const sourceHashValid = Boolean(row.source_hash && sha256Json(sourceBasis) === row.source_hash);
     const snapshotHashValid = Boolean(
       snapshot
-      && snapshot.format === DRAWING_REVISION_FORMAT
+      && [DRAWING_REVISION_FORMAT, LEGACY_DRAWING_REVISION_FORMAT].includes(snapshot.format)
       && snapshot.drawingRevisionId === row.id
       && snapshot.jobId === row.job_id
       && snapshot.sourceHash === row.source_hash
@@ -66444,7 +70282,7 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
         && sha256Text(snapshotJson) === row.snapshot_hash
       ),
       approvalId: row.approval_id,
-      data: fromJson(row.data_json),
+      data: fromJson(row.data_json, {}),
       createdAt: row.created_at,
       updatedAt: row.updated_at
     };
@@ -66573,7 +70411,6 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
         && sha256Text(snapshotJson) === row.snapshot_hash
       ),
       approvalId: row.approval_id,
-      data: fromJson(row.data_json),
       createdAt: row.created_at,
       updatedAt: row.updated_at
     };
@@ -67062,7 +70899,52 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       if (value) safeguards.push(value);
     };
 
-    if (targetType === 'data_subject_request') {
+    if (targetType === 'submittal_record') {
+      const row = this.db.prepare('SELECT * FROM submittal_records WHERE id = ? AND job_id = ?')
+        .get(approval.targetId || approval.target_id, approval.jobId || approval.job_id);
+      const submittal = row ? this.mapSubmittal(row) : null;
+      const taskIds = [...new Set((Array.isArray(data.taskIds) ? data.taskIds : []).map(String))].sort();
+      const taskRows = taskIds.length
+        ? this.db.prepare(`SELECT id, title FROM job_tasks WHERE job_id = ? AND id IN (${taskIds.map(() => '?').join(',')})`)
+          .all(approval.jobId || approval.job_id, ...taskIds)
+        : [];
+      const taskTitles = new Map(taskRows.map(task => [task.id, task.title]));
+      const scope = taskIds.length ? taskIds.map(id => taskTitles.get(id) || `Unavailable task (${id})`) : ['Entire job'];
+      primaryEffect = `Review ${submittal?.title || approval.summary || 'submittal'} for ${taskIds.length ? `${taskIds.length} linked task${taskIds.length === 1 ? '' : 's'}` : 'the entire job'}.`;
+      addEffect('Release the approved product or technical information only within the retained task scope.');
+      addSafeguard('Approval is refused if the submittal or its exact linked-task set changed while review was pending.');
+      addSafeguard('Does not order material, change quantities or dates, or send information externally.');
+      riskLevel = 'high';
+      preview.title = submittal?.title || null;
+      preview.packageName = submittal?.packageName || data.packageName || null;
+      preview.taskScope = scope;
+      preview.externalCommitments = 0;
+    } else if (targetType === 'worker_assignment_release_request') {
+      primaryEffect = `Review ${data.workerName || 'the assigned worker'}'s request to release ${data.positionTitle || 'this placement'}.`;
+      addEffect(`Reason category: ${data.reasonCategory || 'not recorded'}.`);
+      addEffect('If approved, release the exact assignment and close its linked worker-board placement in one ledger transaction.');
+      addSafeguard('The original assignment and schedule remain unchanged until approval; the current assignment snapshot is rechecked before applying.');
+      addSafeguard('Approval is blocked while the worker is checked in. This does not create replacement coverage, change a customer date, or send a message.');
+      riskLevel = 'high';
+      preview.assignmentId = data.assignmentId || null;
+      preview.jobId = data.jobId || approval.jobId || null;
+      preview.scheduledStart = data.scheduledStart || null;
+      preview.scheduledEnd = data.scheduledEnd || null;
+      preview.reasonCategory = data.reasonCategory || null;
+      preview.externalCommitments = 0;
+    } else if (targetType === 'assignment_replacement_plan') {
+      const assignments = data.assignments || [];
+      primaryEffect = `Approve coordinated replacement of ${assignments.length} assignment${assignments.length === 1 ? '' : 's'} across ${new Set(assignments.map(item => item.jobId)).size} job${new Set(assignments.map(item => item.jobId)).size === 1 ? '' : 's'}.`;
+      for (const item of assignments) addEffect(`${item.jobTitle || item.jobId}: ${item.originalWorkerName || item.originalAssignmentId} -> ${item.workerName || item.workerId}`);
+      addSafeguard('The complete affected assignment set, each source assignment, availability period, candidate capacity, qualifications, and check-in state are revalidated before any change.');
+      addSafeguard('All replacements apply in one database transaction; if one check fails, none are applied.');
+      addSafeguard('Does not notify workers or clients or make external schedule commitments.');
+      riskLevel = 'high';
+      preview.availabilityPeriodId = data.availabilityPeriodId || null;
+      preview.assignmentCount = assignments.length;
+      preview.assignments = assignments.map(item => ({ job: item.jobTitle || item.jobId, from: item.originalWorkerName || item.originalAssignmentId, to: item.workerName || item.workerId, scheduledStart: item.originalSnapshot?.scheduledStart || null, scheduledEnd: item.originalSnapshot?.scheduledEnd || null }));
+      preview.externalCommitments = 0;
+    } else if (targetType === 'data_subject_request') {
       const request = this.getDataSubjectRequest(approval.targetId || approval.target_id);
       const action = request.assessment?.action || data.action || 'review_privacy_request';
       primaryEffect = `${action.replaceAll('_', ' ')} for the verified ${request.subjectType} request.`;
@@ -67236,6 +71118,33 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       preview.channel = mapped?.channel || data.channel || null;
       preview.body = mapped?.body || null;
       preview.recipient = mapped?.data?.recipient || data.recipient || null;
+      if (mapped?.data?.fieldReportOrigin) {
+        const sourceRow = this.db.prepare('SELECT * FROM field_reports WHERE id = ? AND job_id = ?')
+          .get(mapped.data.fieldReportOrigin.reportId, mapped.jobId);
+        const sourceReport = sourceRow ? this.mapFieldReport(sourceRow) : null;
+        preview.fieldReportSource = sourceReport ? {
+          reportDate: sourceReport.reportDate,
+          workCompleted: sourceReport.workCompleted,
+          sourceHash: mapped.data.fieldReportOrigin.reportSourceHash
+        } : { unavailable: true };
+        addSafeguard('The field report must remain unchanged, currently approved, and explicitly marked client-visible through publication. The client message remains a separate approval and portal publication; no WhatsApp or email is sent.');
+      }
+      if (mapped?.data?.photoEvidenceOrigin) {
+        const origin = mapped.data.photoEvidenceOrigin;
+        try {
+          const set = this.getPhotoEvidenceSet(origin.setId, { jobId: mapped.jobId });
+          const capture = set.captures.find(item => item.id === origin.captureId);
+          preview.photoEvidenceSource = capture ? {
+            title: set.title, taskTitle: set.taskTitle, phase: capture.phase,
+            caption: capture.caption, capturedAt: capture.capturedAt,
+            filename: capture.document?.filename || capture.document?.title,
+            sha256: origin.sha256
+          } : { unavailable: true };
+        } catch {
+          preview.photoEvidenceSource = { unavailable: true };
+        }
+        addSafeguard('The selected field photo must still be part of the same current, integrity-checked, released evidence set. The customer copy remains private until its separate approval and portal publication; no external message is sent.');
+      }
       if (purchaseOrderIssue) {
         preview.purchaseOrderId = mapped.data.sourceRecordId;
         preview.issueReference = mapped.data.issueReference;
@@ -67278,6 +71187,36 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       preview.restorePhase = data.restorePhase || null;
       preview.archivedAt = data.archivedAt || null;
       preview.requestedAt = data.requestedAt || null;
+    } else if (targetType === 'client_selection') {
+      const row = this.db.prepare('SELECT * FROM client_selections WHERE id = ? AND job_id = ?')
+        .get(approval.targetId || approval.target_id, approval.jobId || approval.job_id);
+      const selection = row ? this.mapClientSelection(row) : null;
+      primaryEffect = `Review customer choice ${selection?.title || data.title || 'proposal'}.`;
+      addEffect(`If approved, publish the exact question and ${selection?.options?.length || 0} response option(s) to the scoped client portal.`);
+      addSafeguard('Approval only makes this choice visible in the client portal. It does not record a client response, agreement, scope change, price, schedule, order, or work authorization.');
+      addSafeguard('For conversation-derived choices, the original inbound message and current analysis are rechecked when approval resolves.');
+      addSafeguard('No WhatsApp message or other external communication is sent.');
+      riskLevel = 'high';
+      preview.title = selection?.title || data.title || null;
+      preview.options = selection?.options || [];
+      preview.dueAt = selection?.dueAt || data.dueAt || null;
+      preview.rationale = selection?.data?.conversationOrigin?.rationale || data.conversationOrigin?.rationale || data.notes || null;
+      preview.clientVisibleAfterApproval = data.publishAfterApproval === true;
+      preview.sourceBound = Boolean(selection?.data?.conversationOrigin?.evidenceKind === 'message_finding');
+      const conversationOrigin = selection?.data?.conversationOrigin || data.conversationOrigin;
+      if (conversationOrigin?.evidenceKind === 'message_finding') {
+        preview.conversationOrigin = {
+          evidenceKind: conversationOrigin.evidenceKind,
+          accessId: conversationOrigin.accessId,
+          messageId: conversationOrigin.messageId,
+          messageSourceHash: conversationOrigin.messageSourceHash,
+          quote: conversationOrigin.quote,
+          category: conversationOrigin.category,
+          suggestion: conversationOrigin.suggestion,
+          uncertainty: conversationOrigin.uncertainty,
+          analysisIdentity: conversationOrigin.analysisIdentity
+        };
+      }
     } else if (targetType === 'client_selection_response') {
       const selection = data.selectionId
         ? this.db.prepare('SELECT * FROM client_selections WHERE id = ?').get(data.selectionId)
@@ -67436,6 +71375,68 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       preview.snapshotHash = mapped?.snapshotHash || data.snapshotHash || null;
       preview.integrityValid = mapped?.integrityValid === true;
       preview.sourceCurrent = mapped?.sourceCurrent === true;
+      const conversationOrigin = mapped?.data?.conversationOrigin;
+      if (conversationOrigin?.evidenceKind === 'message_finding') {
+        preview.conversationOrigin = {
+          evidenceKind: conversationOrigin.evidenceKind,
+          accessId: conversationOrigin.accessId,
+          messageId: conversationOrigin.messageId,
+          messageSourceHash: conversationOrigin.messageSourceHash,
+          quote: conversationOrigin.quote,
+          category: conversationOrigin.category,
+          suggestion: conversationOrigin.suggestion,
+          uncertainty: conversationOrigin.uncertainty,
+          analysisIdentity: conversationOrigin.analysisIdentity
+        };
+        addEffect('Includes the exact source-bound client message and its recorded analysis for reviewer context.');
+        addSafeguard('The message and analysis are evidence, not proof that the proposed scope, price, schedule, or technical feasibility is correct.');
+      }
+      const revisionOrigin = mapped?.snapshot?.revisionOrigin;
+      if (revisionOrigin?.evidenceKind === 'client_variation_response') {
+        preview.revisionOrigin = {
+          evidenceKind: revisionOrigin.evidenceKind,
+          changeOrderId: revisionOrigin.changeOrderId,
+          variationNumber: revisionOrigin.variationNumber,
+          revisionNumber: revisionOrigin.revisionNumber,
+          approvalId: revisionOrigin.approvalId,
+          responseId: revisionOrigin.responseId,
+          decision: revisionOrigin.decision,
+          note: revisionOrigin.note,
+          submittedAt: revisionOrigin.submittedAt,
+          portalAccessId: revisionOrigin.portalAccessId,
+          issueReference: revisionOrigin.issueReference,
+          packageHash: revisionOrigin.packageHash,
+          sourceBasisHash: revisionOrigin.sourceBasisHash,
+          formalSourceHash: revisionOrigin.formalSourceHash,
+          formalSnapshotHash: revisionOrigin.formalSnapshotHash
+        };
+        addEffect('Carries the internally approved client response from the exact prior issue package.');
+        addSafeguard('The client response is evidence, not approval or acceptance of this new scope, price, or schedule.');
+      }
+    } else if (targetType === 'variation_implementation_plan') {
+      const tasks = Array.isArray(data.tasks) ? data.tasks : [];
+      const materialCount = tasks.reduce((count, task) => count + (task.materials || []).length, 0);
+      primaryEffect = `Approve ${tasks.length} internal work step${tasks.length === 1 ? '' : 's'} and ${materialCount} linked material need${materialCount === 1 ? '' : 's'}.`;
+      addEffect(`Create ${tasks.length} open, unassigned task${tasks.length === 1 ? '' : 's'} and ${materialCount} material requirement${materialCount === 1 ? '' : 's'} for accepted variation ${data.variationNumber || data.changeOrderId || ''}.`);
+      addSafeguard('Rechecks the exact accepted variation, verified issue package and receipt, plan checksum, and current job task/material state before applying.');
+      addSafeguard('Does not set dates, assign workers, create schedule dependencies, place orders, set supplier or price, or communicate externally.');
+      riskLevel = 'high';
+      preview.changeOrderId = data.changeOrderId || null;
+      preview.variationNumber = data.variationNumber || null;
+      preview.revisionNumber = data.revisionNumber || null;
+      preview.variationTitle = data.variationTitle || null;
+      preview.acceptedScope = data.acceptedScope || null;
+      preview.tasks = tasks.map(task => ({
+        title: task.title,
+        description: task.description || null,
+        durationHours: task.durationHours,
+        materials: (task.materials || []).map(material => ({ name: material.name, quantity: material.quantity, unit: material.unit }))
+      }));
+      preview.taskCount = tasks.length;
+      preview.materialCount = materialCount;
+      preview.application = data.application || null;
+      preview.sourceCurrent = Boolean(data.planHash && data.variationSnapshotHash && data.acceptanceHash && data.operationalHash);
+      preview.externalCommitments = 0;
     } else if (targetType === 'change_order_client_response') {
       const row = this.db.prepare('SELECT * FROM change_orders WHERE id = ?').get(data.changeOrderId);
       const mapped = row ? this.mapChangeOrder(row) : null;
@@ -67935,6 +71936,58 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       addEffect('Move the field, safety, access, or quality record to its approved/completed state.');
       addSafeguard('Does not override future safety observations, client issues, or field blockers.');
       riskLevel = ['incident_record', 'safety_check', 'jha_record', 'site_access_log'].includes(targetType) ? 'high' : 'medium';
+    } else if (targetType === 'work_balance_plan') {
+      primaryEffect = 'De geplande productiehoeveelheden over deze werkpakketten verdelen.';
+      addEffect('Nieuwe productie en deelopleveringen werken door in de resterende hoeveelheid en positiecontrole.');
+      addSafeguard('Controleer de afbakening. Onzekere of niet toegerekende uitvoering blijft zichtbaar.');
+      addSafeguard('Geen tweede productieregistratie, startvergunning, plaatsing, kalenderafspraak, bestelling of betaling.');
+      riskLevel = 'medium';
+      preview.afbakening = data.reference;
+      preview.onderbouwing = data.reason;
+      for (const [index, row] of (data.scope || []).entries()) preview[`Werkpakketregel ${index + 1}`] = `${row.packageCode} / ${row.packageTitle}: ${row.description}, ${row.plannedQuantity} ${row.unit}`;
+    } else if (targetType === 'client_delivery_offer') {
+      primaryEffect = 'Deze afgebakende deeloplevering beschikbaar maken voor de geselecteerde klanttoegang.';
+      addEffect('Toont alleen de beoordeelde klantbeschrijving, hoeveelheden, controlestatus en al gedeelde gespreksfoto\'s.');
+      addSafeguard('Controleer ontvanger, bevoegdheidsgrond, scope en reactietermijn. Een reactie vereist daarna eigen verificatie.');
+      addSafeguard('Geen automatisch bericht, WhatsApp, veiligheidsvrijgave, betaling of afsluiting van de opdracht.');
+      riskLevel = 'high';
+      Object.assign(preview, { ontvanger: data.recipientName, bevoegdheidsgrond: data.authorityReference, klantbeschrijving: data.public?.scope,
+        reactietermijn: data.expiresAt, controlestatus: data.public?.coverageStatus, klanttoegang: data.accessId });
+      for (const [index, row] of (data.public?.quantities || []).entries()) preview[`Hoeveelheid ${index + 1}`] = `${row.description}: ${row.quantity} ${row.unit}`;
+      for (const [index, photo] of (data.public?.photos || []).entries()) preview[`Gespreksfoto ${index + 1}`] = photo.filename;
+    } else if (targetType === 'inspection_coverage_decision') {
+      primaryEffect = approval.approvalType === 'inspection_coverage_plan' ? 'Het controleplan voor deze deeloplevering vastleggen.' : 'De onderbouwde dekking van het controleplan vastleggen.';
+      addEffect('Behoudt de volledige controlelijst, bewijsverwijzingen en beoordelingsgeschiedenis.');
+      addSafeguard('Een andere beoordelaar dan de indiener is vereist. Gewijzigde scope of bewijs blokkeert goedkeuring.');
+      addSafeguard('Geen veiligheidsvrijgave, ingebruikname, klantacceptatie, betaling of contractafsluiting.');
+      riskLevel = 'high';
+      preview.controlescope = data.scopeReference || null;
+      preview.onderbouwing = data.reason || null;
+      for (const [index, check] of (data.checks || []).entries()) preview[`Controle ${index + 1}: ${check.title}`] = `${check.criterion} Instructie: ${check.fieldInstruction} Niet-toepasselijkheid: ${check.allowNotApplicable ? 'beoordeling met bewijs toegestaan' : 'niet toegestaan'}.`;
+      for (const [index, response] of (data.responses || []).entries()) {
+        const inspection = response.inspectionId && this.db.prepare('SELECT title FROM inspection_records WHERE id = ? AND job_id = ?').get(response.inspectionId, approval.jobId || approval.job_id);
+        preview[`Bewijs ${index + 1}: ${response.key}`] = `${response.outcome === 'passed' ? 'Inspectie akkoord' : 'Niet van toepassing'}${inspection ? `: ${inspection.title}` : ''}. ${response.scopeReference}`;
+      }
+      const coverageDocuments = [...new Set([...(data.documentIds || []), ...(data.responses || []).flatMap(response => response.documentIds || [])])];
+      for (const [index, id] of coverageDocuments.entries()) {
+        const document = this.db.prepare('SELECT title,data_json FROM documents WHERE id = ? AND job_id = ?').get(id, approval.jobId || approval.job_id);
+        preview[`Bronstuk ${index + 1}`] = document ? `${document.title}: ${fromJson(document.data_json, {}).reference || id}` : id;
+      }
+    } else if (targetType === 'work_delivery_decision') {
+      primaryEffect = data.kind === 'void' ? 'Correct the active allocation of a retained partial work delivery.' : 'Verify the retained customer response to a specific partial work delivery.';
+      addEffect(data.kind === 'void' ? 'Keep the original delivery and decisions; release its measurements for a corrected allocation.' : `Retain the named response as ${data.outcome || 'unavailable'} for the exact reported work.`);
+      addSafeguard('Does not certify inspection coverage, grant safety clearance, change contractual terms, send a message, close a job or confirm payment.');
+      addSafeguard('Changed physical or documentary evidence blocks approval; prior decisions remain in history.');
+      riskLevel = 'high';
+      Object.assign(preview, { title: data.title, respondent: data.respondent, outcome: data.outcome, respondedAt: data.respondedAt, evidenceDocumentId: data.evidenceDocumentId, authorityReference: data.authorityReference });
+      const portalResponse = this.db.prepare('SELECT offer_id,snapshot_json FROM client_delivery_responses WHERE decision_id = ?').get(approval.targetId || approval.target_id);
+      if (portalResponse) {
+        const offer = this.db.prepare('SELECT snapshot_json FROM client_delivery_offers WHERE id = ?').get(portalResponse.offer_id);
+        const source = fromJson(offer?.snapshot_json, {}), response = fromJson(portalResponse.snapshot_json, {});
+        Object.assign(preview, { klantaanbod: source.public?.scope, beoogdeOntvanger: source.recipientName, teControlerenBevoegdheid: source.authorityReference, toelichtingKlant: response.note });
+        for (const [index, photo] of (response.photos || []).entries()) preview[`Reactiefoto ${index + 1}`] = photo.filename;
+        addSafeguard('Een bezitbare projectlink en opgegeven naam zijn geen geverifieerde identiteit; controleer de reactie en bevoegdheid.');
+      }
     } else if (targetType === 'production_baseline') {
       const row = this.db.prepare('SELECT * FROM production_baselines WHERE id = ?').get(approval.targetId || approval.target_id);
       const mapped = row ? this.mapProductionBaseline(row) : null;
@@ -68208,12 +72261,39 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       preview.sourceHash = mapped?.sourceHash || data.sourceHash || null;
       preview.targetHash = mapped?.targetHash || data.targetHash || null;
       preview.snapshotHash = mapped?.snapshotHash || data.snapshotHash || null;
+    } else if (targetType === 'job_update') {
+      const patch = data.patch && typeof data.patch === 'object' ? data.patch : {};
+      const completion = data.completionReadiness || null;
+      const isCompletion = normalizeStatus(patch.status, '') === 'completed'
+        || (Object.prototype.hasOwnProperty.call(patch, 'progressPercent') && normalizeNumber(patch.progressPercent, 0) >= 100);
+      primaryEffect = isCompletion
+        ? `Review operational completion for ${data.before?.title || 'this job'}.`
+        : `Approve ${ledgerApprovalHumanTarget(targetType)} change.`;
+      addEffect(isCompletion
+        ? 'Set the job to operationally completed only after current execution, safety, inspection, permit, and site-issue blockers are cleared.'
+        : 'Apply the requested job-state or retained job-detail change.');
+      if (isCompletion) {
+        preview.completionReadiness = completion ? {
+          status: completion.status,
+          ready: completion.ready,
+          blockers: completion.blockers || [],
+          warnings: completion.warnings || [],
+          separation: completion.separation || {}
+        } : { status: 'review_required', ready: false, blockers: [], warnings: [], separation: {} };
+        addSafeguard('Completion approval is rechecked against current source records. If evidence changed or blockers remain, the approval is refused and a fresh review is required.');
+        addSafeguard('Customer acceptance, handover delivery, invoicing, and payment remain separate lifecycle states; this approval does not imply any of them.');
+        riskLevel = completion?.ready ? 'medium' : 'high';
+      } else {
+        addSafeguard('Does not send external client communication automatically.');
+        riskLevel = 'high';
+      }
+      preview.proposedPatch = patch;
     } else if (['budget_line', 'draw_request', 'lien_waiver', 'finance_handoff'].includes(targetType)) {
       primaryEffect = `Approve ${ledgerApprovalHumanTarget(targetType)} finance control.`;
       addEffect('Move the finance control record to its approved/submitted/ready state.');
       addSafeguard('Does not export bookkeeping data, request funding, or release legal/financial commitments automatically unless a later explicit action does so.');
       riskLevel = 'high';
-    } else if (['change_order', 'client_selection', 'punch_item', 'warranty_claim', 'job_update'].includes(targetType)) {
+    } else if (['change_order', 'client_selection', 'punch_item', 'warranty_claim'].includes(targetType)) {
       primaryEffect = `Approve ${ledgerApprovalHumanTarget(targetType)} change.`;
       addEffect('Apply the requested client, scope, closeout, or job-state change.');
       addSafeguard('Does not send external client communication automatically.');

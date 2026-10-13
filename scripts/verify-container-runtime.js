@@ -1,18 +1,26 @@
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
+const fs = require('node:fs');
+const os = require('node:os');
 const { spawnSync } = require('node:child_process');
 const path = require('node:path');
+const { handoverSmokeCode } = require('./company-handover-smoke');
+const { resourcePlannerSmokeCode } = require('./resource-planner-smoke');
 
 const projectRoot = path.resolve(__dirname, '..');
 const runId = crypto.randomUUID().replace(/-/g, '').slice(0, 12);
 const imageTag = `contractor-ai-runtime-smoke:${runId}`;
 const containerName = `contractor-ai-runtime-smoke-${runId}`;
 const volumeName = `contractor-ai-runtime-smoke-${runId}`;
+const identityName = `contractor-ai-identity-smoke-${runId}`;
 const authToken = `container-smoke-owner-${crypto.randomBytes(24).toString('hex')}`;
 
 let imageCreated = false;
 let volumeCreated = false;
 let containerCreated = false;
+let identityContainerCreated = false;
+let identityVolumeCreated = false;
+let identityFixture;
 
 function docker(args, options = {}) {
   const result = spawnSync('docker', args, {
@@ -37,8 +45,8 @@ function docker(args, options = {}) {
   return output;
 }
 
-function inspectContainer() {
-  const result = docker(['inspect', containerName]);
+function inspectContainer(name = containerName) {
+  const result = docker(['inspect', name]);
   const parsed = JSON.parse(result.stdout);
   assert.equal(Array.isArray(parsed), true, 'Docker inspect must return a container array.');
   assert.equal(parsed.length, 1, 'Docker inspect must return exactly one smoke container.');
@@ -98,11 +106,11 @@ async function waitForReady(baseUrl, timeoutMs = 90_000) {
   throw new Error(`Container readiness timed out: ${lastFailure}`);
 }
 
-async function waitForDockerHealth(timeoutMs = 90_000) {
+async function waitForDockerHealth(timeoutMs = 90_000, name = containerName) {
   const deadline = Date.now() + timeoutMs;
   let lastStatus = 'missing';
   while (Date.now() < deadline) {
-    const inspected = inspectContainer();
+    const inspected = inspectContainer(name);
     if (inspected.State?.Status === 'exited' || inspected.State?.Status === 'dead') {
       throw new Error(`Container stopped while waiting for Docker health (exit ${inspected.State.ExitCode}).`);
     }
@@ -153,7 +161,7 @@ async function verifyApplication(baseUrl) {
   assert.equal(login.body?.role, 'owner');
   const setCookie = login.response.headers.get('set-cookie') || '';
   const cookie = setCookie.split(';', 1)[0];
-  assert.match(cookie, /^contractor_ai_session=/);
+  assert.match(cookie, /^contractor_ai_session_[a-f0-9]{16}=/);
   assert.match(setCookie, /HttpOnly/i);
   assert.match(setCookie, /SameSite=Strict/i);
   assert.match(setCookie, /Secure/i);
@@ -183,14 +191,88 @@ async function verifyApplication(baseUrl) {
   return { cookie, migration: detailed.body.ledger.migrations.currentVersion };
 }
 
-function stopContainer() {
-  docker(['stop', '--time', '15', containerName], { timeoutMs: 30_000 });
-  const inspected = inspectContainer();
+function stopContainer(name = containerName) {
+  docker(['stop', '--time', '15', name], { timeoutMs: 30_000 });
+  const inspected = inspectContainer(name);
   assert.equal(inspected.State?.Status, 'exited', 'The container must stop after SIGTERM.');
   assert.equal(inspected.State?.ExitCode, 0, 'The application must shut down cleanly.');
 }
 
+async function verifyIdentityContainer() {
+  identityFixture = fs.mkdtempSync(path.join(os.tmpdir(), 'contractor-ai-container-identity-'));
+  const companiesFile = path.join(identityFixture, 'companies.json');
+  fs.writeFileSync(companiesFile, '[]\n', { mode: 0o644 });
+  docker(['volume', 'create', '--label', `contractor-ai.smoke=${runId}`, identityName]);
+  identityVolumeCreated = true;
+  identityContainerCreated = true;
+  docker(['run', '--detach', '--name', identityName, '--label', `contractor-ai.smoke=${runId}`,
+    '--init', '--read-only', '--network', 'none', '--tmpfs', '/tmp:size=64m,mode=1777',
+    '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges:true',
+    '--mount', `type=volume,source=${identityName},target=/var/lib/contractor-ai`,
+    '--mount', `type=bind,source=${companiesFile},target=/etc/identity-companies.json,readonly`,
+    '--health-interval', '2s', '--health-start-period', '2s',
+    '--env', 'CONTRACTOR_IDENTITY_MODE=local', '--env', 'CONTRACTOR_IDENTITY_HOST=127.0.0.1',
+    '--env', 'CONTRACTOR_IDENTITY_ISSUER=http://127.0.0.1:3010', '--env', 'CONTRACTOR_IDENTITY_PORT=3010',
+    '--env', 'CONTRACTOR_IDENTITY_DB_FILE=/var/lib/contractor-ai/registry.sqlite',
+    '--env', 'CONTRACTOR_IDENTITY_COMPANIES_FILE=/etc/identity-companies.json',
+    '--env', `CONTRACTOR_IDENTITY_ENCRYPTION_KEY=${crypto.randomBytes(32).toString('base64')}`,
+    '--env', `CONTRACTOR_IDENTITY_BACKUP_KEY=${crypto.randomBytes(32).toString('base64')}`,
+    '--env', `CONTRACTOR_IDENTITY_NEW_ENCRYPTION_KEY=${crypto.randomBytes(32).toString('base64')}`,
+    imageTag, 'node', 'identity-server.js']);
+  const inspected = inspectContainer(identityName);
+  assert.equal(inspected.Config.User, 'node');
+  assert.equal(inspected.HostConfig.ReadonlyRootfs, true);
+  assert.equal(inspected.HostConfig.NetworkMode, 'none');
+  assert.notEqual(docker(['exec', identityName, 'id', '-u']).stdout, '0');
+  const probe = async function () {
+    const assert = require('node:assert/strict'), issuer = process.env.CONTRACTOR_IDENTITY_ISSUER;
+    const request = async route => {
+      const response = await fetch(`${issuer}${route}`, { signal: AbortSignal.timeout(4000), redirect: 'error' });
+      assert.equal(response.status, 200);
+      return response;
+    };
+    const discovery = await (await request('/.well-known/openid-configuration')).json();
+    assert.equal(discovery.issuer, issuer);
+    assert.ok(discovery.code_challenge_methods_supported.includes('S256'));
+    const keys = await (await request(new URL(discovery.jwks_uri).pathname)).json();
+    assert.equal(keys.keys.length, 1);
+    assert.equal(Object.hasOwn(keys.keys[0], 'd'), false);
+    assert.match(await (await request('/identity.html')).text(), /<div id="root"><\/div>/);
+    assert.equal(await require('./scripts/runtime-healthcheck').runtimeHealthcheck(), true);
+    const { main } = require('./scripts/identity-maintenance'), fs = require('node:fs');
+    const status = await main(['status']);
+    assert.equal(status.ready, true);
+    const checkpoint = '/var/lib/contractor-ai/checkpoint.json';
+    if (!fs.existsSync(checkpoint)) {
+      await main(['backup', '--output', checkpoint, '--actor', 'container-fixture', '--reference', 'Container recovery drill']);
+      const restored = await main(['restore', '--backup-file', checkpoint, '--expected-registry-id', status.registryId,
+        '--bindings-output', '/var/lib/contractor-ai/restored-bindings.json', '--actor', 'container-fixture', '--reference', 'Container recovery drill',
+        '--confirm', 'RESTORE_REGISTRY_WITHOUT_ACCESS'], { ...process.env, CONTRACTOR_IDENTITY_DB_FILE: '/var/lib/contractor-ai/restored.sqlite',
+        CONTRACTOR_IDENTITY_ENCRYPTION_KEY: process.env.CONTRACTOR_IDENTITY_NEW_ENCRYPTION_KEY });
+      assert.equal(restored.credentialsRestored, false); assert.equal(restored.admissionRestored, false);
+    }
+    assert.equal((await main(['verify', '--backup-file', checkpoint])).registryId, status.registryId);
+    process.stdout.write(JSON.stringify({ keys }));
+  };
+  let retained;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    if (attempt) docker(['start', identityName]);
+    await waitForDockerHealth(60000, identityName);
+    const result = docker(['exec', identityName, 'node', '-e', `(${probe.toString()})().catch(error => { console.error(error); process.exitCode = 1; });`]);
+    const current = JSON.parse(result.stdout);
+    if (retained) assert.deepEqual(current.keys, retained.keys, 'Registry signing keys must survive a container restart.');
+    retained = current;
+    stopContainer(identityName);
+  }
+  return { startup: true, restartPersistence: true, oidcDiscovery: true, separateVolume: true, networkDisabled: true, dockerHealthcheck: true, maintenanceBackupRestore: true };
+}
+
 function cleanup() {
+  if (identityContainerCreated) docker(['rm', '--force', identityName], { allowFailure: true, timeoutMs: 30_000 });
+  if (identityVolumeCreated) docker(['volume', 'rm', '--force', identityName], { allowFailure: true, timeoutMs: 30_000 });
+  if (identityFixture && path.dirname(path.resolve(identityFixture)) === path.resolve(os.tmpdir()) && path.basename(identityFixture).startsWith('contractor-ai-container-identity-')) {
+    fs.rmSync(identityFixture, { recursive: true, force: true, maxRetries: 5, retryDelay: 250 });
+  }
   if (containerCreated) docker(['rm', '--force', containerName], { allowFailure: true, timeoutMs: 30_000 });
   if (volumeCreated) docker(['volume', 'rm', '--force', volumeName], { allowFailure: true, timeoutMs: 30_000 });
   if (imageCreated) docker(['image', 'rm', '--force', imageTag], { allowFailure: true, timeoutMs: 60_000 });
@@ -248,9 +330,21 @@ async function main() {
   assert.equal(persistedReadiness.body?.ledger?.auditIntegrity?.valid, true);
   stopContainer();
 
+  const identityRuntime = await verifyIdentityContainer();
+  const handoverRun = docker(['run', '--rm', '--read-only', '--network', 'none', '--cap-drop', 'ALL',
+    '--security-opt', 'no-new-privileges:true', '--tmpfs', '/tmp:size=64m,mode=1777', imageTag, 'node', '-e', handoverSmokeCode]);
+  const { packagedHandover } = JSON.parse(handoverRun.stdout);
+  assert.equal(packagedHandover?.marker, true);
+  const planningRun = docker(['run', '--rm', '--read-only', '--network', 'none', '--cap-drop', 'ALL',
+    '--security-opt', 'no-new-privileges:true', '--tmpfs', '/tmp:size=64m,mode=1777', imageTag, 'node', '-e', resourcePlannerSmokeCode]);
+  const { packagedResourcePlanning } = JSON.parse(planningRun.stdout);
+  assert.equal(packagedResourcePlanning, true);
   process.stdout.write(`${JSON.stringify({
     valid: true,
     image: imageTag,
+    identityRuntime,
+    packagedHandover,
+    packagedResourcePlanning,
     runtime: {
       nonRoot: true,
       readOnly: true,
@@ -266,6 +360,11 @@ async function main() {
 
 main()
   .catch(error => {
+    if (identityContainerCreated) {
+      const logs = docker(['logs', '--tail', '100', identityName], { allowFailure: true, timeoutMs: 30_000 });
+      if (logs.stdout) process.stderr.write(`\nIdentity stdout:\n${logs.stdout}\n`);
+      if (logs.stderr) process.stderr.write(`\nIdentity stderr:\n${logs.stderr}\n`);
+    }
     if (containerCreated) {
       const logs = docker(['logs', '--tail', '200', containerName], { allowFailure: true, timeoutMs: 30_000 });
       if (logs.stdout) process.stderr.write(`\nContainer stdout:\n${logs.stdout}\n`);

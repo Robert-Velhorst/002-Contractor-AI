@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowLeft,
   ArrowRight,
@@ -86,6 +86,8 @@ export default function LastPlannerBoard({
 }) {
   const t = (key, variables) => operatorText(locale, key, variables)
   const [weekStart, setWeekStart] = useState(board?.week?.weekStart || '')
+  const weekEdited = useRef(false)
+  const requestedWeek = useRef('')
   const [selectedJobId, setSelectedJobId] = useState('')
   const [showConstraintForm, setShowConstraintForm] = useState(false)
   const [constraintDraft, setConstraintDraft] = useState({
@@ -111,8 +113,19 @@ export default function LastPlannerBoard({
   }, [candidates, constraints, jobs, plans])
 
   useEffect(() => {
-    if (board?.week?.weekStart) setWeekStart(board.week.weekStart)
+    if (board?.week?.weekStart && (!weekEdited.current || board.week.weekStart === requestedWeek.current)) {
+      weekEdited.current = false
+      requestedWeek.current = ''
+      setWeekStart(board.week.weekStart)
+    }
   }, [board?.week?.weekStart])
+
+  function loadWeek(value) {
+    weekEdited.current = true
+    requestedWeek.current = value
+    setWeekStart(value)
+    void onLoadWeek(value)
+  }
 
   useEffect(() => {
     if (selectedJobId && jobOptions.some((job) => job.id === selectedJobId)) return
@@ -241,18 +254,22 @@ export default function LastPlannerBoard({
       </div>
 
       <div className="last-planner-toolbar">
-        <button type="button" className="icon-button" aria-label={t('Previous week')} title={t('Previous week')} disabled={submitting} onClick={() => onLoadWeek(offsetDate(board?.week?.weekStart || weekStart, -7))}>
+        <button type="button" className="icon-button" aria-label={t('Previous week')} title={t('Previous week')} disabled={submitting} onClick={() => loadWeek(offsetDate(board?.week?.weekStart || weekStart, -7))}>
           <ArrowLeft size={17} />
         </button>
         <label>
           <span>{t('Week starts')}</span>
-          <input type="date" value={weekStart} onChange={(event) => setWeekStart(event.target.value)} />
+          <input type="date" value={weekStart} onChange={(event) => {
+            weekEdited.current = true
+            requestedWeek.current = ''
+            setWeekStart(event.target.value)
+          }} />
         </label>
-        <button type="button" className="secondary-button" disabled={submitting || !weekStart} onClick={() => onLoadWeek(weekStart)}>
+        <button type="button" className="secondary-button" disabled={submitting || !weekStart} onClick={() => loadWeek(weekStart)}>
           <RefreshCw size={16} />
           {t('Load week')}
         </button>
-        <button type="button" className="icon-button" aria-label={t('Next week')} title={t('Next week')} disabled={submitting} onClick={() => onLoadWeek(offsetDate(board?.week?.weekStart || weekStart, 7))}>
+        <button type="button" className="icon-button" aria-label={t('Next week')} title={t('Next week')} disabled={submitting} onClick={() => loadWeek(offsetDate(board?.week?.weekStart || weekStart, 7))}>
           <ArrowRight size={17} />
         </button>
         <label className="last-planner-job-select">

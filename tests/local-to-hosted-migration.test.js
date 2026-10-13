@@ -13,13 +13,15 @@ const { BACKUP_MANIFEST_V3, signBackupManifest } = require('../backup-manifest')
 const { approveLowRiskRegister } = require('./risk-register-fixture');
 const {
   migrateLocalBackupToHosted,
+  invalidateWorkerSessionRows,
   orderedSelfReferentialRows,
   orderedSourceTables,
   rewriteRowReferences,
   verifyBackupDirectory
 } = require('../scripts/migrate-local-backup-to-hosted');
 
-const connectionString = process.env.CONTRACTOR_AI_POSTGRES_TEST_URL;
+const { postgresTestDatabaseUrl } = require('./postgres-test-database');
+const connectionString = postgresTestDatabaseUrl();
 const backupSigningKey = 'contractor-ai-hosted-migration-test-signing-key-2026';
 process.env.CONTRACTOR_AI_BACKUP_SIGNING_KEY = backupSigningKey;
 
@@ -461,6 +463,16 @@ function createBackupFixture(t, suffix = 'success') {
     issuedAt: new Date(Date.now() - 60_000).toISOString(),
     expiresAt: new Date(Date.now() + 3_600_000).toISOString()
   });
+  const workerAccountId = crypto.randomUUID(), workerSessionHash = crypto.createHash('sha256').update(`migration-worker-session-${suffix}`).digest('hex');
+  const sessionTime = new Date().toISOString();
+  source.db.prepare(`INSERT INTO work_board_accounts
+    (id, email, password_hash, salt, status, worker_id, data_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(workerAccountId, `migration-worker-${suffix}@example.test`, 'unused', 'unused', 'admitted', null, '{}', sessionTime);
+  source.db.prepare(`INSERT INTO work_board_sessions
+    (token_hash, account_id, issued_at, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`)
+    .run(workerSessionHash, workerAccountId, sessionTime, new Date(Date.now() + 3_600_000).toISOString(), sessionTime, sessionTime);
+  for (const kind of ['login', 'session']) source.db.prepare('INSERT INTO identity_runtime_sessions (kind, id_hash, sealed_payload, expires_at) VALUES (?, ?, ?, ?)')
+    .run(kind, crypto.randomBytes(32).toString('hex'), 'opaque-migration-fixture', new Date(Date.now() + 3600000).toISOString());
   const managedOperatorAccessKey = `cai_migration-${suffix}-managed-access-key-with-safe-length`;
   const managedOperator = source.createManagedOperatorAccount({
     id: `migration-office-${suffix}`,
@@ -1079,7 +1091,7 @@ function createBackupFixture(t, suffix = 'success') {
     evidence: { included: true, fileCount: 4 },
     files
   }, backupSigningKey), null, 2));
-  return { attendanceSession, availabilityPeriod, backupDir, backupId, bidCommitment, bidJob, bidOrderPackage, bidPackage, billingMilestone, clientFeedback, commercialScope, controlledDocument, convertedTakeoff, costForecast, dataSubjectRequest, daywork, document, drawingDocument, drawingEvidenceBytes, drawingRevision, drawingStorageRef, energyDocument, energyEvidenceBytes, energyPerformance, energyStorageRef, environmentalActivity, environmentalReport, equipmentCustody, estimateRatePolicy, evidenceBytes, expenseReceipt, fiveSAudit, fiveSLocation, fiveSStandard, fiveSTool, handover, job, localStorageRef, managedOperator, managedOperatorAccessKey, materialReceipt, nonconformance, operatorPreference, organization, preTaskPlan, pricingDecision, productionBaseline, productionEntry, projectMeeting, pursuitDecision, pursuitOpportunity, qualificationRequirement, riskRegister, scheduleBaseline, sdsDocument, sdsEvidenceBytes, sdsRevision, sdsStorageRef, supplierInvoice, supplierPayment, takeoff, taskDependency, timesheetExport, timesheetPeriodStart, tradePartner, weeklyTimesheet, workerCredential };
+  return { attendanceSession, availabilityPeriod, backupDir, backupId, bidCommitment, bidJob, bidOrderPackage, bidPackage, billingMilestone, clientFeedback, commercialScope, controlledDocument, convertedTakeoff, costForecast, dataSubjectRequest, daywork, document, drawingDocument, drawingEvidenceBytes, drawingRevision, drawingStorageRef, energyDocument, energyEvidenceBytes, energyPerformance, energyStorageRef, environmentalActivity, environmentalReport, equipmentCustody, estimateRatePolicy, evidenceBytes, expenseReceipt, fiveSAudit, fiveSLocation, fiveSStandard, fiveSTool, handover, job, localStorageRef, managedOperator, managedOperatorAccessKey, materialReceipt, nonconformance, operatorPreference, organization, preTaskPlan, pricingDecision, productionBaseline, productionEntry, projectMeeting, pursuitDecision, pursuitOpportunity, qualificationRequirement, riskRegister, scheduleBaseline, sdsDocument, sdsEvidenceBytes, sdsRevision, sdsStorageRef, supplierInvoice, supplierPayment, takeoff, taskDependency, timesheetExport, timesheetPeriodStart, tradePartner, weeklyTimesheet, workerAccountId, workerCredential, workerSessionHash };
 }
 
 class FakeHostedStorage {
@@ -1152,6 +1164,19 @@ test('hosted migration orders self-referential follow-up rows without treating t
   }
 });
 
+test('hosted transfer revokes every active legacy worker session without changing prior revocations', () => {
+  const timestamp = '2026-09-24T12:00:00.000Z';
+  const existing = { token_hash: 'b'.repeat(64), revoked_at: '2026-09-01T10:00:00.000Z', revocation_reason: 'worker_logout', updated_at: '2026-09-01T10:00:00.000Z' };
+  const result = invalidateWorkerSessionRows([
+    { token_hash: 'a'.repeat(64), revoked_at: null, revocation_reason: null, updated_at: '2026-09-20T10:00:00.000Z' },
+    existing
+  ], timestamp);
+  assert.equal(result.activeCount, 1);
+  assert.deepEqual(result.rows[0], { token_hash: 'a'.repeat(64), revoked_at: timestamp,
+    revocation_reason: 'hosted_environment_migration', updated_at: timestamp });
+  assert.deepEqual(result.rows[1], existing);
+});
+
 test('hosted evidence rewrites preserve immutable governed SDS and drawing source snapshots', () => {
   const originalData = JSON.stringify({
     documentReference: 'manufacturer-sds.pdf',
@@ -1205,10 +1230,12 @@ test('verified local backup migrates losslessly to empty PostgreSQL and private 
   assert.equal(migration.backupId, fixture.backupId);
   assert.equal(migration.evidenceFiles, 4);
   assert.equal(migration.invalidatedOperatorSessions, 1);
+  assert.equal(migration.invalidatedIdentitySessions, 2);
+  assert.equal(migration.invalidatedWorkerSessions, 1);
   assert.equal(migration.deactivatedManagedOperators, 1);
   assert.equal(migration.clearedAuthenticationRateLimits, 1);
   assert.equal(migration.clearedApiRateLimits, 1);
-  assert.equal(migration.migrationVersion, '072_operator_locale_preferences');
+  assert.equal(migration.migrationVersion, '097_durable_evidence_storage_reservations');
   assert.equal(migration.sourceAuditIntegrity.supported, true);
   assert.equal(migration.sourceAuditIntegrity.valid, true);
   assert.equal(migration.auditIntegrity.valid, true);
@@ -1222,6 +1249,9 @@ test('verified local backup migrates losslessly to empty PostgreSQL and private 
   const hosted = new ContractorOperatingLedger({ databaseUrl: targetUrl });
   try {
     const detail = hosted.getJobDetail(fixture.job.id, { includeAudit: true });
+    const migratedWorkerSession = hosted.db.prepare('SELECT revoked_at, revocation_reason FROM work_board_sessions WHERE account_id = ?').get(fixture.workerAccountId);
+    assert.ok(migratedWorkerSession.revoked_at);
+    assert.equal(migratedWorkerSession.revocation_reason, 'hosted_environment_migration');
     const migratedFeedback = detail.clientFeedback.find(item => item.id === fixture.clientFeedback.id);
     assert.equal(migratedFeedback.integrityValid, true);
     assert.equal(migratedFeedback.snapshotHash, fixture.clientFeedback.snapshotHash);
@@ -1461,6 +1491,7 @@ test('verified local backup migrates losslessly to empty PostgreSQL and private 
     assert.equal(migratedHandover.document.data.evidenceHash, fixture.handover.evidenceHash);
     assert.match(migratedHandover.content, /Hosted migration success/);
     assert.equal(Number(hosted.db.prepare('SELECT COUNT(*) AS count FROM operator_sessions').get().count), 0);
+    assert.equal(Number(hosted.db.prepare('SELECT COUNT(*) AS count FROM identity_runtime_sessions').get().count), 0);
     const migratedManagedOperator = hosted.getManagedOperatorAccount(fixture.managedOperator.id);
     assert.equal(migratedManagedOperator.status, 'deactivated');
     assert.equal(migratedManagedOperator.keyVersion, fixture.managedOperator.keyVersion);

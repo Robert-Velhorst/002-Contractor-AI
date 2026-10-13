@@ -102,6 +102,39 @@ test('incidents are exact-replay safe, approval-backed, and retain evidence', t 
   );
 });
 
+test('incident task references are job-bound and included in retry identity', t => {
+  const { ledger, job } = fixture(t);
+  const task = ledger.addTask(job.id, { title: 'In-scope task' });
+  const secondTask = ledger.addTask(job.id, { title: 'Another in-scope task' });
+  const foreignJob = ledger.createIntake({ title: 'Separate incident job', client: { name: 'Other client' } });
+  const foreignTask = ledger.addTask(foreignJob.id, { title: 'Foreign task' });
+  const payload = {
+    entryKey: 'incident-task-replay-0001',
+    title: 'Task-linked near miss',
+    severity: 'low',
+    taskId: task.id,
+    reporterWorkerId: 'worker-1'
+  };
+
+  const first = ledger.createIncidentRecord(job.id, payload);
+  const replay = ledger.createIncidentRecord(job.id, payload);
+  assert.equal(replay.replayed, true);
+  assert.equal(first.taskId, task.id);
+  assert.equal(first.data.reporterWorkerId, 'worker-1');
+  assert.throws(
+    () => ledger.createIncidentRecord(job.id, { ...payload, taskId: secondTask.id }),
+    error => error.code === 'incident_entry_key_reused' && error.statusCode === 409
+  );
+  assert.throws(
+    () => ledger.createIncidentRecord(job.id, { ...payload, taskId: foreignTask.id, entryKey: 'incident-task-replay-0002' }),
+    error => error.code === 'incident_task_not_in_job' && error.statusCode === 400
+  );
+  assert.throws(
+    () => ledger.createIncidentRecord(job.id, { ...payload, taskId: foreignTask.id }),
+    error => error.code === 'incident_task_not_in_job' && error.statusCode === 400
+  );
+});
+
 test('incident write and approval roll back together when audit retention fails', t => {
   const { ledger, job } = fixture(t);
   const originalAudit = ledger.audit.bind(ledger);

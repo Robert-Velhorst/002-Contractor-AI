@@ -1,4 +1,5 @@
 const test = require('node:test');
+const { jpegFixture } = require('./image-fixtures');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const http = require('node:http');
@@ -42,6 +43,12 @@ function loadServerWithEnv(env = {}) {
     delete process.env.CONTRACTOR_AI_ROLE_TOKENS;
   } else {
     process.env.CONTRACTOR_AI_ROLE_TOKENS = env.CONTRACTOR_AI_ROLE_TOKENS;
+  }
+
+  if (env.CONTRACTOR_AI_WORK_BOARD_ENABLED === undefined) {
+    delete process.env.CONTRACTOR_AI_WORK_BOARD_ENABLED;
+  } else {
+    process.env.CONTRACTOR_AI_WORK_BOARD_ENABLED = env.CONTRACTOR_AI_WORK_BOARD_ENABLED;
   }
 
   delete process.env.DASHBOARD_AUTH_TOKEN;
@@ -112,6 +119,22 @@ test('local mode assigns a trusted audit actor and does not retain a submitted a
   });
 
   await withServer(app, async baseUrl => {
+    const localDevOrigin = await request(baseUrl, '/api/ledger/intake', {
+      method: 'POST',
+      headers: { Origin: 'http://127.0.0.1:34123', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: 'Allowed local dashboard mutation', client: { name: 'Local dashboard origin' } })
+    });
+    assert.equal(localDevOrigin.response.status, 201);
+    assert.equal(localDevOrigin.response.headers.get('access-control-allow-origin'), 'http://127.0.0.1:34123');
+
+    const unlistedLoopbackOrigin = await request(baseUrl, '/api/ledger/intake', {
+      method: 'POST',
+      headers: { Origin: 'http://127.0.0.1:34124', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: 'Rejected unlisted local port', client: { name: 'Unlisted local origin' } })
+    });
+    assert.equal(unlistedLoopbackOrigin.response.status, 403);
+    assert.equal(unlistedLoopbackOrigin.body.error.code, 'local_origin_forbidden');
+
     const foreignOrigin = await request(baseUrl, '/api/ledger/intake', {
       method: 'POST',
       headers: { Origin: 'https://attacker.invalid', 'Content-Type': 'application/json' },
@@ -471,15 +494,16 @@ test('approved client portal tokens work without exposing the authenticated dash
   });
 });
 
-test('multiple field principals retain independent job scope and audit identity', async () => {
+test('multiple legacy field principals retain read scope but cannot mutate without named worker identity', async () => {
   const operators = [
     { id: 'owner-multi-field', role: 'owner', token: 'multi-field-owner-token-at-least-32-characters' },
-    { id: 'field-north', name: 'North crew', role: 'field_worker', token: 'multi-field-north-token-at-least-32-characters', jobIds: ['job_field_north'] },
+    { id: 'field-north', name: 'North crew', role: 'field_worker', token: 'multi-field-north-token-at-least-32-characters', jobIds: ['job_field_north', 'job_company_targeted'] },
     { id: 'field-south', name: 'South crew', role: 'field_worker', token: 'multi-field-south-token-at-least-32-characters', jobIds: ['job_field_south'] }
   ];
   const app = loadServerWithEnv({
     NODE_ENV: 'production',
-    CONTRACTOR_AI_ROLE_TOKENS: JSON.stringify({ operators })
+    CONTRACTOR_AI_ROLE_TOKENS: JSON.stringify({ operators }),
+    CONTRACTOR_AI_WORK_BOARD_ENABLED: 'true'
   });
 
   await withServer(app, async baseUrl => {
@@ -498,6 +522,25 @@ test('multiple field principals retain independent job scope and audit identity'
       assert.equal(intake.body.job.id, id);
     }
 
+    const partner = await request(baseUrl, '/api/ledger/trade-partners', {
+      method: 'POST', headers: ownerHeaders,
+      body: JSON.stringify({ name: 'Verified Target Company', partnerType: 'subcontractor' })
+    });
+    assert.equal(partner.response.status, 201);
+    const targetedIntake = await request(baseUrl, '/api/ledger/intake', {
+      method: 'POST', headers: ownerHeaders,
+      body: JSON.stringify({ ledgerJobId: 'job_company_targeted', title: 'Company-targeted project', client: { name: 'Target client' }, assignAutomatically: false })
+    });
+    assert.equal(targetedIntake.response.status, 201);
+    const targetedPosition = await request(baseUrl, '/api/ledger/jobs/job_company_targeted/work-board', {
+      method: 'POST', headers: ownerHeaders,
+      body: JSON.stringify({ entryKey: 'target-company-scope-regression', targetTradePartnerId: partner.body.partner.id,
+        title: 'Targeted carpenter', role: 'Carpenter', city: 'Arnhem', startsAt: '2030-06-01T08:00:00Z',
+        endsAt: '2030-06-01T16:00:00Z', hours: 8, capacity: 1, rate: 45, description: 'Install roof battens.',
+        materials: 'Provided on site.', equipment: 'Hand tools.', prerequisites: 'Read the current work pack.', confirmPublication: true })
+    });
+    assert.equal(targetedPosition.response.status, 200, JSON.stringify(targetedPosition.body));
+
     const northSession = await request(baseUrl, '/api/session', { headers: northHeaders });
     const southSession = await request(baseUrl, '/api/session', { headers: southHeaders });
     assert.equal(northSession.body.operator.id, 'field-north');
@@ -509,6 +552,10 @@ test('multiple field principals retain independent job scope and audit identity'
     const southJobs = await request(baseUrl, '/api/ledger/jobs?limit=100', { headers: southHeaders });
     assert.deepEqual(northJobs.body.jobs.map(job => job.id), ['job_field_north']);
     assert.deepEqual(southJobs.body.jobs.map(job => job.id), ['job_field_south']);
+    assert.deepEqual(northJobs.body.pagination, { limit: 100, returned: 1, hasMore: false, nextCursor: null });
+    assert.deepEqual(southJobs.body.pagination, { limit: 100, returned: 1, hasMore: false, nextCursor: null });
+    const targetedJob = await request(baseUrl, '/api/ledger/jobs/job_company_targeted', { headers: northHeaders });
+    assert.equal(targetedJob.response.status, 403, 'a legacy project allowlist cannot bypass an open company-targeted position');
 
     const northProgress = await request(baseUrl, '/api/ledger/jobs/job_field_north/progress', {
       method: 'POST',
@@ -520,8 +567,10 @@ test('multiple field principals retain independent job scope and audit identity'
       headers: southHeaders,
       body: JSON.stringify({ entryKey: 'south-principal-progress-0001', status: 'in_progress', progressPercent: 30, note: 'South crew retained its own update.' })
     });
-    assert.equal(northProgress.response.status, 201);
-    assert.equal(southProgress.response.status, 201);
+    assert.equal(northProgress.response.status, 403);
+    assert.equal(northProgress.body.error.code, 'field_worker_identity_required');
+    assert.equal(southProgress.response.status, 403);
+    assert.equal(southProgress.body.error.code, 'field_worker_identity_required');
 
     const deniedCrossScope = await request(baseUrl, '/api/ledger/jobs/job_field_south/progress', {
       method: 'POST',
@@ -531,10 +580,6 @@ test('multiple field principals retain independent job scope and audit identity'
     assert.equal(deniedCrossScope.response.status, 403);
     assert.equal(deniedCrossScope.body.error.code, 'field_job_scope_forbidden');
 
-    const northDetail = await request(baseUrl, '/api/ledger/jobs/job_field_north', { headers: ownerHeaders });
-    const southDetail = await request(baseUrl, '/api/ledger/jobs/job_field_south', { headers: ownerHeaders });
-    assert.ok(northDetail.body.job.audit.some(event => event.action === 'record_progress' && event.actor === 'role:field_worker:field-north'));
-    assert.ok(southDetail.body.job.audit.some(event => event.action === 'record_progress' && event.actor === 'role:field_worker:field-south'));
   });
 });
 
@@ -604,6 +649,76 @@ test('role tokens limit operator mutations to their authorized ledger workflow',
       body: JSON.stringify({ title: 'Role audit fixture', client: { name: 'Role Client' }, address: 'Utrecht' })
     });
     assert.equal(officeIntake.response.status, 201);
+    const impactRoute = `/api/ledger/jobs/${officeIntake.body.job.id}/change-impact`;
+    const linkedMaterial = await request(baseUrl, `/api/ledger/jobs/${officeIntake.body.job.id}/materials`, {
+      method: 'POST', headers: officeHeaders, body: JSON.stringify({ name: 'Role fixture tiles', quantity: 4, unit: 'm2' })
+    });
+    assert.equal(linkedMaterial.response.status, 201);
+    const roleSelection = await request(baseUrl, `/api/ledger/jobs/${officeIntake.body.job.id}/client-selections`, {
+      method: 'POST', headers: officeHeaders, body: JSON.stringify({ title: 'Role fixture finish', options: ['A', 'B'] })
+    });
+    assert.equal(roleSelection.response.status, 201);
+    const decisionImpactRoute = `/api/ledger/jobs/${officeIntake.body.job.id}/client-selections/${roleSelection.body.clientSelection.id}/impact-links`;
+    assert.equal((await request(baseUrl, '/api/ledger/portfolio-review')).response.status, 401);
+    for (const headers of [officeHeaders, approverHeaders]) {
+      assert.equal((await request(baseUrl, '/api/ledger/portfolio-review', { headers })).response.status, 200);
+      assert.equal((await request(baseUrl, '/api/ledger/portfolio-review', { method: 'POST', headers, body: '{}' })).response.status, 403);
+      assert.equal((await request(baseUrl, impactRoute, { headers })).response.status, 200);
+    }
+    assert.equal((await request(baseUrl, '/api/ledger/portfolio-review', { headers: fieldHeaders })).response.status, 403);
+    assert.equal((await request(baseUrl, impactRoute, { headers: fieldHeaders })).response.status, 403);
+    const decisionLinksPayload = { links: [{ targetType: 'material_requirement', targetId: linkedMaterial.body.materialRequirement.id, rationale: 'Finish selection determines required tile quantity.' }] };
+    assert.equal((await request(baseUrl, decisionImpactRoute, { method: 'POST', headers: fieldHeaders, body: JSON.stringify(decisionLinksPayload) })).response.status, 403);
+    assert.equal((await request(baseUrl, decisionImpactRoute, { method: 'POST', headers: approverHeaders, body: JSON.stringify(decisionLinksPayload) })).response.status, 403);
+    assert.equal((await request(baseUrl, decisionImpactRoute, { method: 'POST', headers: officeHeaders, body: JSON.stringify(decisionLinksPayload) })).response.status, 200);
+    for (const headers of [fieldHeaders, approverHeaders]) {
+      assert.equal((await request(baseUrl, impactRoute, { method: 'POST', headers, body: '{"mode":"retain"}' })).response.status, 403);
+    }
+    assert.equal((await request(baseUrl, impactRoute, { method: 'POST', headers: officeHeaders, body: '{"mode":"apply"}' })).response.status, 400);
+    const variationIntake = await request(baseUrl, '/api/ledger/intake', {
+      method: 'POST',
+      headers: officeHeaders,
+      body: JSON.stringify({
+        title: 'Governed impact variation role fixture',
+        contractValue: 5000,
+        scheduledStart: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+        client: { name: 'Variation Role Client' },
+        tasks: [{ title: 'Foundation work', durationHours: 8 }],
+        assignAutomatically: false
+      })
+    });
+    assert.equal(variationIntake.response.status, 201);
+    const variationJob = variationIntake.body.job;
+    const variationRoute = `/api/ledger/jobs/${variationJob.id}/change-impact`;
+    const variationPreview = await request(baseUrl, variationRoute, {
+      method: 'POST',
+      headers: officeHeaders,
+      body: JSON.stringify({ mode: 'preview', taskId: variationJob.tasks[0].id, durationHours: 12, reason: 'Extra foundation excavation' })
+    });
+    assert.equal(variationPreview.response.status, 200);
+    const variationReview = await request(baseUrl, variationRoute, {
+      method: 'POST',
+      headers: officeHeaders,
+      body: JSON.stringify({ mode: 'retain', taskId: variationJob.tasks[0].id, durationHours: 12, reason: 'Extra foundation excavation', sourceHash: variationPreview.body.review.sourceHash, entryKey: 'role-impact-review-0001' })
+    });
+    assert.equal(variationReview.response.status, 200);
+    const prepareVariation = {
+      mode: 'prepare_variation',
+      reviewId: variationReview.body.review.id,
+      sourceHash: variationReview.body.review.sourceHash,
+      entryKey: 'role-impact-variation-0001',
+      title: 'Extra foundation work',
+      scopeDelta: 'Excavate additional material outside the retained foundation quantity.',
+      amount: 800,
+      scheduleDeltaDays: 1,
+      variationType: 'unforeseen_condition'
+    };
+    assert.equal((await request(baseUrl, variationRoute, { method: 'POST', headers: fieldHeaders, body: JSON.stringify(prepareVariation) })).response.status, 403);
+    assert.equal((await request(baseUrl, variationRoute, { method: 'POST', headers: approverHeaders, body: JSON.stringify(prepareVariation) })).response.status, 403);
+    const officeVariation = await request(baseUrl, variationRoute, { method: 'POST', headers: officeHeaders, body: JSON.stringify(prepareVariation) });
+    assert.equal(officeVariation.response.status, 200);
+    assert.equal(officeVariation.body.changeOrder.status, 'draft');
+    assert.equal(officeVariation.body.changeOrder.workAuthorized, false);
     const ownerBackup = await request(baseUrl, '/api/operations/backup', {
       method: 'POST',
       headers: ownerHeaders,
@@ -630,6 +745,7 @@ test('role tokens limit operator mutations to their authorized ledger workflow',
     const ownerSupport = await request(baseUrl, '/api/operations/support-bundle', { headers: ownerHeaders });
     assert.equal(ownerSupport.response.status, 200);
     assert.equal(ownerSupport.body.format, 'contractor-ai-support-bundle/v1');
+    assert.equal(ownerSupport.body.application.runtimeMode, 'local');
     const deniedOfficeSupport = await request(baseUrl, '/api/operations/support-bundle', { headers: officeHeaders });
     assert.equal(deniedOfficeSupport.response.status, 403);
     assert.equal(deniedOfficeSupport.body.error.code, 'insufficient_role');
@@ -1084,7 +1200,7 @@ test('role tokens limit operator mutations to their authorized ledger workflow',
     assert.equal(blockedIntake.body.error.code, 'insufficient_role');
 
     const evidence = new FormData();
-    evidence.append('evidenceFile', new Blob([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from('field proof')], { type: 'image/jpeg' }), 'roof-photo.jpg');
+    evidence.append('evidenceFile', new Blob([jpegFixture('field proof')], { type: 'image/jpeg' }), 'roof-photo.jpg');
     evidence.append('jobId', intake.body.job.id);
     evidence.append('attachToBuild', 'true');
     const fieldUpload = await fetch(`${baseUrl}/api/ledger/upload`, { method: 'POST', headers: { Authorization: `Bearer ${tokens.field_worker.token}` }, body: evidence });
@@ -1193,6 +1309,8 @@ test('role tokens limit operator mutations to their authorized ledger workflow',
       description: 'A loose panel shifted beside the occupied access route.',
       immediateAction: 'Work stopped and the access route was isolated.',
       evidenceDocumentIds: [fieldUploadBody.ledgerDocument.id],
+      responsible: 'Spoofed office owner',
+      dueAt: '2026-07-17',
       requiresApproval: true,
       actor: 'spoofed-owner'
     };
@@ -1205,6 +1323,8 @@ test('role tokens limit operator mutations to their authorized ledger workflow',
     assert.equal(fieldIncident.body.replayed, false);
     assert.equal(Object.hasOwn(fieldIncident.body.incident, 'data'), false);
     assert.equal(Object.hasOwn(fieldIncident.body.incident, 'approval'), false);
+    assert.equal(fieldIncident.body.incident.responsible, null);
+    assert.equal(fieldIncident.body.incident.dueAt, null);
 
     const fieldPunchPayload = {
       entryKey: 'field-punch-role-0001',
@@ -1298,7 +1418,7 @@ test('role tokens limit operator mutations to their authorized ledger workflow',
 
     const storedEvidenceCount = fs.readdirSync(process.env.UPLOAD_DIR).length;
     const otherEvidence = new FormData();
-    otherEvidence.append('evidenceFile', new Blob([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from('wrong field proof')], { type: 'image/jpeg' }), 'wrong-job-photo.jpg');
+    otherEvidence.append('evidenceFile', new Blob([jpegFixture('wrong field proof')], { type: 'image/jpeg' }), 'wrong-job-photo.jpg');
     otherEvidence.append('jobId', unassigned.body.job.id);
     const deniedUpload = await fetch(`${baseUrl}/api/ledger/upload`, { method: 'POST', headers: { Authorization: `Bearer ${tokens.field_worker.token}` }, body: otherEvidence });
     const deniedUploadBody = await deniedUpload.json();

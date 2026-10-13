@@ -1,4 +1,5 @@
 const { test, expect } = require('@playwright/test');
+const { jpegFixture } = require('../tests/image-fixtures');
 const { riskRegisterPayload } = require('../tests/risk-register-fixture');
 
 async function createBrowserJob(request, title, overrides = {}) {
@@ -193,6 +194,48 @@ async function approveQueueItem(page, approvalItem, reason = 'Browser QA verifie
   await expect(page.getByText('Approval approved. The ledger and audit trail were updated.')).toBeVisible();
 }
 
+test('completion approval review shows operational blockers and refuses premature completion', async ({ page, request }) => {
+  const intake = await createBrowserJob(request, `Browser completion gate ${Date.now()}`);
+  const proposalResponse = await request.put(`/api/ledger/jobs/${intake.job.id}`, {
+    data: {
+      status: 'completed',
+      progressPercent: 100,
+      reason: 'Browser QA verifies operational completion safeguards.'
+    }
+  });
+  expect(proposalResponse.ok()).toBeTruthy();
+  const proposal = await proposalResponse.json();
+  expect(proposal.status).toBe('pending_approval');
+
+  await page.goto('/');
+  await page.getByLabel(/^(Language|Taal)$/).selectOption('en-GB');
+  await page.getByRole('button', { name: /^Approvals/ }).click();
+  const approvalItem = page.locator('.approval-item').filter({ hasText: `Approve job update for ${intake.job.title}` });
+  await expect(approvalItem).toBeVisible();
+  await approvalItem.getByRole('button', { name: 'Review and approve' }).click();
+
+  const modal = page.getByTestId('approval-review-modal');
+  const completionReview = modal.getByTestId('operational-completion-review');
+  await expect(completionReview).toBeVisible();
+  await expect(completionReview).toContainText('Completion is blocked until the listed operational issues are resolved.');
+  await expect(completionReview).toContainText('execution task(s) remain incomplete');
+  await expect(completionReview).toContainText('Customer acceptance, handover delivery, invoicing, and payment are tracked separately.');
+
+  const resolveResponsePromise = page.waitForResponse(response => (
+    response.request().method() === 'POST'
+    && new URL(response.url()).pathname === `/api/ledger/approvals/${proposal.approval.id}/resolve`
+  ));
+  await modal.getByRole('button', { name: 'Confirm approval' }).click();
+  const resolveResponse = await resolveResponsePromise;
+  expect(resolveResponse.status()).toBe(409);
+
+  const detailResponse = await request.get(`/api/ledger/jobs/${intake.job.id}`);
+  expect(detailResponse.ok()).toBeTruthy();
+  const detail = await detailResponse.json();
+  expect(detail.job.status).not.toBe('completed');
+  expect(detail.job.approvals.find(item => item.id === proposal.approval.id).status).toBe('pending');
+});
+
 test('office operator can review job planning and create a client draft without delivery', async ({ page, request }) => {
   const intake = await createBrowserJob(request, 'Browser job workspace garden renovation');
   const workerResponse = await request.post('/api/ledger/workers', {
@@ -216,9 +259,14 @@ test('office operator can review job planning and create a client draft without 
   });
   expect(blockedToolResponse.ok()).toBeTruthy();
   const blockedTool = await blockedToolResponse.json();
+  const equipmentTaskResponse = await request.post(`/api/ledger/jobs/${intake.job.id}/tasks`, {
+    data: { title: 'Cut and fit garden hedge', durationHours: 2 }
+  });
+  expect(equipmentTaskResponse.ok()).toBeTruthy();
+  const equipmentTask = await equipmentTaskResponse.json();
 
   await page.goto('/');
-  await expect(page.getByRole('heading', { name: 'Today' })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, exact: true, name: 'Today' })).toBeVisible();
   await page.getByRole('button', { name: `Open ${intake.job.title}` }).first().click();
 
   const workspace = page.getByTestId('job-workspace');
@@ -234,8 +282,9 @@ test('office operator can review job planning and create a client draft without 
   await planner.getByLabel('Crew member').selectOption(worker.worker.id);
   await planner.getByRole('button', { name: 'Add crew assignment' }).click();
   await expect(page.getByText('Crew assignment was added to the internal work plan.')).toBeVisible();
-  await expect(planner.getByLabel('Equipment').locator(`option[value="${blockedTool.tool.id}"]`)).toHaveCount(0);
-  await planner.getByLabel('Equipment').selectOption(tool.tool.id);
+  await expect(planner.getByLabel('Equipment', { exact: true }).locator(`option[value="${blockedTool.tool.id}"]`)).toHaveCount(0);
+  await planner.getByLabel('Equipment', { exact: true }).selectOption(tool.tool.id);
+  await planner.getByLabel('Related equipment task').selectOption(equipmentTask.task.id);
   await planner.getByRole('button', { name: 'Reserve equipment' }).click();
   await expect(page.getByText('Equipment reservation was added to the internal work plan.')).toBeVisible();
 
@@ -243,7 +292,9 @@ test('office operator can review job planning and create a client draft without 
   expect(plannedJobResponse.ok()).toBeTruthy();
   const plannedJob = await plannedJobResponse.json();
   expect(plannedJob.job.assignments).toEqual(expect.arrayContaining([expect.objectContaining({ workerId: worker.worker.id, status: 'planned' })]));
-  expect(plannedJob.job.tools).toEqual(expect.arrayContaining([expect.objectContaining({ toolId: tool.tool.id, status: 'reserved' })]));
+  expect(plannedJob.job.tools).toEqual(expect.arrayContaining([expect.objectContaining({
+    toolId: tool.tool.id, status: 'reserved', data: expect.objectContaining({ taskId: equipmentTask.task.id })
+  })]));
 
   await planner.getByRole('button', { name: `Release assignment for ${worker.worker.name}` }).click();
   await expect(page.getByText('Crew assignment released from the internal work plan.')).toBeVisible();
@@ -286,7 +337,7 @@ test('office operator can review job planning and create a client draft without 
 test('commercial control retains server totals and changes contract value only after verified client acceptance', async ({ page, request }) => {
   test.setTimeout(120_000);
   await page.goto('/');
-  await expect(page.getByRole('heading', { name: 'Today' })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, exact: true, name: 'Today' })).toBeVisible();
   await page.getByRole('button', { name: 'Operations' }).click();
   const organizationPanel = page.getByTestId('organization-profile-panel');
   await expect(organizationPanel.getByRole('heading', { name: 'Business identity' })).toBeVisible();
@@ -317,7 +368,7 @@ test('commercial control retains server totals and changes contract value only a
   await retainFixedPriceBasis(request, intake.job.id, `browser-commercial-basis-${Date.now()}`);
   const openJob = async () => {
     await page.goto('/');
-    await expect(page.getByRole('heading', { name: 'Today' })).toBeVisible();
+    await expect(page.getByRole('heading', { level: 1, exact: true, name: 'Today' })).toBeVisible();
     await page.getByRole('button', { name: `Open ${intake.job.title}` }).first().click();
     await expect(page.getByTestId('job-workspace').getByRole('heading', { name: intake.job.title })).toBeVisible();
   };
@@ -382,7 +433,12 @@ test('commercial control retains server totals and changes contract value only a
   workspace = page.getByTestId('job-workspace');
   commercial = workspace.getByTestId('commercial-control');
   quoteRow = commercial.getByTestId(`commercial-quote-${quote.id}`);
-  await expect(quoteRow.getByRole('link', { name: 'Download package' })).toHaveAttribute('href', `/api/ledger/documents/${quotePackage.id}/issue-package`);
+  const packageUrl = new URL(await quoteRow.getByRole('link', { name: 'Download package' }).getAttribute('href'), page.url());
+  const session = await (await request.get('/api/session')).json();
+  expect(packageUrl.pathname).toBe(`/api/ledger/documents/${quotePackage.id}/issue-package`);
+  expect(packageUrl.searchParams.get('__company')).toBe(session.company.id);
+  expect(packageUrl.searchParams.get('__ledger')).toBe(session.company.ledgerId);
+  expect((await request.get(packageUrl.toString())).ok()).toBeTruthy();
   detailResponse = await request.get(`/api/ledger/jobs/${intake.job.id}`);
   detail = await detailResponse.json();
   expect(detail.job.communications.find(item => item.id === deliveryDraft.id)).toMatchObject({ status: 'approved', sentAt: null });
@@ -480,10 +536,10 @@ test('commercial control retains server totals and changes contract value only a
   workspace = page.getByTestId('job-workspace');
   commercial = workspace.getByTestId('commercial-control');
   changeRow = commercial.getByTestId(`commercial-change-${changeOrder.id}`);
-  await expect(changeRow.getByRole('link', { name: 'Download package' })).toHaveAttribute(
-    'href',
-    `/api/ledger/documents/${changePackage.id}/issue-package`,
-  );
+  const changeUrl = new URL(await changeRow.getByRole('link', { name: 'Download package' }).getAttribute('href'), page.url());
+  expect(changeUrl.pathname).toBe(`/api/ledger/documents/${changePackage.id}/issue-package`);
+  expect(changeUrl.searchParams.get('__company')).toBe(session.company.id);
+  expect(changeUrl.searchParams.get('__ledger')).toBe(session.company.ledgerId);
   await changeRow.getByRole('button', { name: 'Record delivery receipt' }).click();
   const changeDeliveryModal = page.getByTestId('commercial-delivery-modal');
   await changeDeliveryModal.getByLabel('Configured integration ID').fill('playwright_test_provider');
@@ -553,6 +609,7 @@ test('job workspace creates, starts, and completes retained tasks with evidence'
   const taskTitle = 'Protect completed floor before second fix';
 
   await page.goto('/');
+  await page.getByLabel(/^(Language|Taal)$/).selectOption('en-GB');
   await page.getByRole('button', { name: `Open ${intake.job.title}` }).first().click();
   const workspace = page.getByTestId('job-workspace');
   const taskControl = workspace.getByTestId('job-task-control');
@@ -561,6 +618,7 @@ test('job workspace creates, starts, and completes retained tasks with evidence'
   await taskControl.getByLabel('Task title').fill(taskTitle);
   await taskControl.getByLabel('Priority').selectOption('high');
   await taskControl.getByLabel('Due date').fill('2026-07-24');
+  await taskControl.getByLabel('Trade group 1', { exact: true }).fill('Carpenter');
   await taskControl.getByRole('button', { name: 'Add task' }).click();
   await expect(page.getByText(`Task retained: ${taskTitle}.`)).toBeVisible();
 
@@ -1495,7 +1553,8 @@ test('field assurance prepares internal safety records and gates an RFI answer',
   const punch = await punchResponse.json();
 
   await page.goto('/');
-  await page.getByRole('button', { name: 'Field updates', exact: true }).click();
+  await page.getByLabel(/^(Language|Taal)$/).selectOption('en-GB');
+  await page.getByRole('navigation', { name: 'Work areas', exact: true }).getByRole('button', { name: 'Field updates', exact: true }).click();
   const fieldWorkspace = page.getByTestId('field-workspace');
   const assurance = page.getByTestId('field-assurance-workspace');
   await expect(fieldWorkspace).toBeVisible();
@@ -2779,7 +2838,7 @@ test('operations distinguishes checksummed exports from restorable local backups
       evidenceFile: {
         name: 'browser-backup-proof.jpg',
         mimeType: 'image/jpeg',
-        buffer: Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from('browser backup proof')])
+        buffer: jpegFixture('browser backup proof')
       },
       jobId: retained.job.id,
       category: 'field_photo',
@@ -2987,6 +3046,7 @@ test('owner applies an exact safe automation draft and runs the durable cycle', 
     await route.continue();
   });
   await page.goto('/');
+  await page.getByLabel(/^(Language|Taal)$/).selectOption('en-GB');
   await page.getByRole('button', { name: 'Operations' }).click();
   await expect(page.getByTestId('storage-readiness')).toContainText('local / verified');
   await expect(page.getByTestId('audit-integrity-readiness')).toContainText('verified /');
@@ -3089,17 +3149,18 @@ test('client portal records an inbound message and approval-gated selection resp
   await expect(page.getByText('Awaiting internal review')).toBeVisible();
   await expect(page.getByText('Selection: Lichtgrijs')).toBeVisible();
 
-  await page.getByLabel('Subject').fill('Afstemming bestratingskeuze');
-  await page.getByLabel('Message').fill('Kunt u bevestigen wanneer de grijze steenkeuze wordt beoordeeld?');
-  await page.getByRole('button', { name: 'Send message' }).click();
-  await expect(page.getByText('Your message was added to the project record.')).toBeVisible();
+  const conversation = page.getByRole('region', { name: 'Client conversation', exact: true });
+  const message = 'Kunt u bevestigen wanneer de grijze steenkeuze wordt beoordeeld?';
+  await conversation.getByLabel('Message', { exact: true }).fill(message);
+  await conversation.getByRole('button', { name: 'Send message', exact: true }).click();
+  await expect(conversation.getByText('Message received.', { exact: true })).toBeVisible();
 
-  const detailResponse = await request.get(`/api/ledger/jobs/${intake.job.id}`);
-  expect(detailResponse.ok()).toBeTruthy();
-  const detail = await detailResponse.json();
-  expect(detail.job.communications.some(item =>
+  const conversationResponse = await request.get(`/api/ledger/jobs/${intake.job.id}/conversations/${access.access.id}`);
+  expect(conversationResponse.ok()).toBeTruthy();
+  const retainedConversation = await conversationResponse.json();
+  expect(retainedConversation.messages.some(item =>
     item.direction === 'inbound'
-    && item.subject === 'Afstemming bestratingskeuze'
+    && item.body === message
     && item.status === 'received'
   )).toBeTruthy();
 

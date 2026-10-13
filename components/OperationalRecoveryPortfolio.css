@@ -1,0 +1,42 @@
+.recovery-portfolio { display: grid; gap: 16px; }
+.recovery-portfolio-heading, .recovery-portfolio-toolbar, .recovery-portfolio-jobline {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+}
+.recovery-portfolio-heading h2 { margin: 0; font-size: 1.2rem; }
+.recovery-portfolio-heading p:last-child { margin: 5px 0 0; color: var(--text-muted, #68736f); }
+.recovery-portfolio-heading .eyebrow { margin: 0 0 4px; }
+.recovery-portfolio-toolbar { flex-wrap: wrap; border-bottom: 1px solid var(--border, #dce3df); padding-bottom: 12px; }
+.recovery-portfolio-count { color: var(--text-muted, #68736f); font-size: .85rem; }
+.recovery-portfolio-list { display: grid; }
+.recovery-portfolio-row {
+  display: grid; grid-template-columns: 34px minmax(0, 1fr) minmax(145px, 190px) 36px;
+  align-items: center; gap: 12px; padding: 14px 2px; border-bottom: 1px solid var(--border, #e2e7e4);
+}
+.recovery-portfolio-row:last-child { border-bottom: 0; }
+.recovery-portfolio-status { display: grid; place-items: center; width: 30px; aspect-ratio: 1; color: #28755f; background: #e6f2ec; border-radius: 50%; }
+.recovery-portfolio-status.is-urgent { color: #a44225; background: #faece6; }
+.recovery-portfolio-main, .recovery-portfolio-meta { min-width: 0; display: grid; gap: 4px; }
+.recovery-portfolio-main p, .recovery-portfolio-main small { margin: 0; overflow-wrap: anywhere; }
+.recovery-portfolio-main p { color: var(--text-muted, #68736f); font-size: .88rem; }
+.recovery-portfolio-main small { color: var(--text-muted, #68736f); }
+.recovery-portfolio-main .recovery-portfolio-impact { color: var(--text, #26332e); font-size: .84rem; line-height: 1.45; }
+.recovery-portfolio-main .recovery-portfolio-warning { color: #a44225; font-weight: 650; }
+.recovery-portfolio-jobline { justify-content: flex-start; flex-wrap: wrap; }
+.recovery-triage-badge { display: inline-flex; align-items: center; min-height: 24px; padding: 2px 8px; border: 1px solid transparent; border-radius: 4px; font-size: .76rem; font-weight: 650; }
+.recovery-triage-badge.is-immediate { color: #8b2f1b; background: #faece6; border-color: #e9b9a8; }
+.recovery-triage-badge.is-today { color: #6f4b08; background: #fbf3dc; border-color: #e4d08e; }
+.recovery-triage-badge.is-plan { color: #245b77; background: #e8f2f7; border-color: #b8d2df; }
+.recovery-triage-badge.is-review { color: #40574c; background: #edf2ee; border-color: #ccd8d0; }
+.recovery-portfolio-main .recovery-portfolio-next-action { color: var(--text, #26332e); font-weight: 600; }
+.recovery-portfolio-meta { font-size: .84rem; }
+.recovery-portfolio-meta span { color: var(--text-muted, #68736f); }
+.recovery-portfolio-meta strong + span { margin-top: 4px; }
+.recovery-portfolio-empty { display: grid; gap: 4px; padding: 20px 4px; }
+.recovery-portfolio-empty span, .recovery-portfolio-note, .recovery-portfolio-error { color: var(--text-muted, #68736f); }
+.recovery-portfolio-error { color: #a44225; }
+@media (max-width: 720px) {
+  .recovery-portfolio-row { grid-template-columns: 30px minmax(0, 1fr) 36px; gap: 9px; }
+  .recovery-portfolio-meta { grid-column: 2; grid-template-columns: auto minmax(0, 1fr); align-items: baseline; gap: 4px 8px; }
+  .recovery-portfolio-meta strong + span { margin-top: 0; }
+  .recovery-portfolio-row > .table-action { grid-column: 3; grid-row: 1 / span 2; }
+}

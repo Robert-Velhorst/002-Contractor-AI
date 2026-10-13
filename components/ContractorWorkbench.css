@@ -1,0 +1,31 @@
+.contractor-workbench { min-width: 0; padding: 18px 0; border-block: 1px solid var(--border, #dce3e0); }
+.workbench-heading, .workbench-state, .workbench-pagination, .workbench-actions { display: flex; align-items: center; gap: 12px; }
+.workbench-heading { justify-content: space-between; margin-bottom: 16px; }
+.workbench-heading h2 { margin: 0; font-size: 19px; }
+.workbench-filters { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.4fr); gap: 12px; }
+.workbench-filters label { display: grid; gap: 6px; min-width: 0; font-size: 13px; }
+.workbench-filters select, .workbench-filters input { width: 100%; min-width: 0; height: 40px; border: 1px solid #cbd5d1; border-radius: 4px; background: #fff; padding: 8px; color: #24342d; }
+.workbench-search span { display: flex; gap: 6px; }
+.workbench-counts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin: 20px 0 12px; }
+.workbench-counts dt { color: #53655d; font-size: 13px; }
+.workbench-counts dd { font-size: 22px; margin: 4px 0 0; font-weight: 600; }
+.workbench-scope, .workbench-copy small { color: #53655d; font-size: 12px; line-height: 1.5; }
+.workbench-row { display: grid; grid-template-columns: 30px minmax(0, 1fr) auto; gap: 12px; align-items: start; padding: 16px 0; border-bottom: 1px solid #dce3e0; }
+.workbench-copy { min-width: 0; overflow-wrap: anywhere; }
+.workbench-copy p { margin: 6px 0; font-size: 14px; line-height: 1.5; }
+.workbench-flags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.workbench-actions { flex-wrap: wrap; justify-content: flex-end; max-width: 250px; }
+.workbench-actions button { min-height: 40px; }
+.workbench-pagination { justify-content: flex-end; margin-top: 14px; flex-wrap: wrap; }
+.workbench-pagination span { margin-right: auto; font-size: 13px; }
+.workbench-state { padding: 18px 0; overflow-wrap: anywhere; }
+.workbench-message { color: #24593d; }
+.today-schedule-grid { grid-template-columns: minmax(0, 1fr); }
+@media (max-width: 700px) {
+  .workbench-filters { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .workbench-search { grid-column: 1 / -1; }
+  .workbench-counts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .workbench-row { grid-template-columns: 26px minmax(0, 1fr); }
+  .workbench-actions { grid-column: 2; justify-content: flex-start; max-width: none; }
+  .workbench-actions .secondary-button { white-space: normal; text-align: left; }
+}

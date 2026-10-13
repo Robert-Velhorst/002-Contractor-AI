@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
+const crypto = require('node:crypto');
 const { ContractorOperatingLedger } = require('../operating-ledger');
 
 function fixture(t, suffix = 'governed') {
@@ -90,6 +91,81 @@ function acknowledgement(worker, suffix) {
   };
 }
 
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (value && typeof value === 'object') return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(',')}}`;
+  return JSON.stringify(value);
+}
+
+function sha256Json(value) {
+  return crypto.createHash('sha256').update(canonicalJson(value), 'utf8').digest('hex');
+}
+
+test('task-linked safety-plan scope is frozen into approval and cannot name tasks outside its JHA', t => {
+  const { ledger, job, jhaId } = fixture(t, 'task-scope');
+  const coveredTask = ledger.addTask(job.id, { title: 'Fit the new door frame' });
+  const otherCoveredTask = ledger.addTask(job.id, { title: 'Install the adjacent trim' });
+  const taskJha = ledger.createJhaRecord(job.id, {
+    title: 'Frame and trim installation', status: 'approved', riskLevel: 'medium',
+    hazards: ['Manual handling'], controls: ['Use a two-person lift'],
+    linkedTaskIds: [coveredTask.id, otherCoveredTask.id]
+  });
+  ledger.resolveApproval(taskJha.approval.id, { status: 'approved', reason: 'Task hazards and controls reviewed.' });
+  const payload = planPayload(taskJha.id, 'task-scope-001', { linkedTaskIds: [coveredTask.id] });
+  const created = ledger.createPreTaskPlan(job.id, payload, { actor: 'office_operator' });
+
+  assert.deepEqual(created.plan.linkedTaskIds, [coveredTask.id]);
+  assert.deepEqual(created.plan.snapshot.linkedTaskIds, [coveredTask.id]);
+  assert.equal(created.plan.snapshot.format, 'contractor-ai-pre-task-plan/v2');
+  assert.equal(ledger.createPreTaskPlan(job.id, payload).replayed, true);
+  assert.throws(
+    () => ledger.createPreTaskPlan(job.id, planPayload(taskJha.id, 'task-scope-invalid', { linkedTaskIds: [jhaId] })),
+    error => error.code === 'pre_task_plan_task_scope_invalid' && error.statusCode === 409
+  );
+
+  const retained = ledger.db.prepare('SELECT data_json FROM pre_task_plans WHERE id = ?').get(created.plan.id);
+  const data = JSON.parse(retained.data_json);
+  data.linkedTaskIds = [otherCoveredTask.id];
+  ledger.db.prepare('UPDATE pre_task_plans SET data_json = ? WHERE id = ?').run(JSON.stringify(data), created.plan.id);
+  assert.equal(ledger.getPreTaskPlan(created.plan.id).definitionIntegrityValid, false);
+});
+
+test('legacy version-one pre-task approvals remain readable and can still resolve without inferred task scope', t => {
+  const { ledger, job, jhaId } = fixture(t, 'legacy-plan-format');
+  const created = ledger.createPreTaskPlan(job.id, planPayload(jhaId, 'legacy-v1-001'));
+  const row = ledger.db.prepare('SELECT * FROM pre_task_plans WHERE id = ?').get(created.plan.id);
+  const data = JSON.parse(row.data_json);
+  data.format = 'contractor-ai-pre-task-plan/v1';
+  delete data.linkedTaskIds;
+  delete data.linkedSources.jha.linkedTaskIds;
+  const linked = ledger.preTaskPlanLinkedSources(job.id, {
+    jhaId: row.jha_id,
+    workPermitId: row.work_permit_id,
+    sdsSheetIds: JSON.parse(row.sds_sheet_ids_json)
+  });
+  data.linkedSources = linked.basis;
+  data.linkedSourcesHash = linked.hash;
+  const v1Row = { ...row, data_json: JSON.stringify(data) };
+  const basis = ledger.preTaskPlanDefinitionBasis(v1Row);
+  const sourceHash = sha256Json(basis);
+  const oldSnapshot = JSON.parse(row.snapshot_json);
+  const snapshot = { ...basis, sourceHash, requestedStatus: oldSnapshot.requestedStatus, retainedAt: oldSnapshot.retainedAt };
+  const snapshotHash = sha256Json(snapshot);
+  ledger.db.prepare('UPDATE pre_task_plans SET data_json = ?, source_hash = ?, snapshot_hash = ?, snapshot_json = ? WHERE id = ?')
+    .run(JSON.stringify(data), sourceHash, snapshotHash, JSON.stringify(snapshot), row.id);
+  const approvalDataRow = ledger.db.prepare('SELECT data_json FROM approvals WHERE id = ?').get(created.approval.id);
+  const approvalData = JSON.parse(approvalDataRow.data_json);
+  Object.assign(approvalData, { sourceHash, snapshotHash, linkedSourcesHash: linked.hash });
+  ledger.db.prepare('UPDATE approvals SET data_json = ? WHERE id = ?').run(JSON.stringify(approvalData), created.approval.id);
+
+  const legacyPlan = ledger.getPreTaskPlan(row.id);
+  assert.equal(legacyPlan.definitionIntegrityValid, true);
+  assert.equal(legacyPlan.prerequisitesCurrent, true);
+  assert.deepEqual(legacyPlan.linkedTaskIds, []);
+  ledger.resolveApproval(created.approval.id, { status: 'approved', reason: 'Legacy plan snapshot verified.' });
+  assert.equal(ledger.getPreTaskPlan(row.id).status, 'approved_waiting_acknowledgement');
+});
+
 test('pre-task plans require source-current approval and every frozen crew acknowledgement before activation', t => {
   const { ledger, job, workers, jhaId } = fixture(t, 'lifecycle');
   const payload = planPayload(jhaId, 'lifecycle-001', { responsibleWorkerId: workers[0].id });
@@ -155,7 +231,7 @@ test('pre-task plans require source-current approval and every frozen crew ackno
   assert.equal(ledger.verifyAuditIntegrity().valid, true);
   const diagnostics = ledger.diagnose();
   assert.equal(diagnostics.valid, true, JSON.stringify(diagnostics.issues));
-  assert.equal(diagnostics.migrations.currentVersion, '072_operator_locale_preferences');
+  assert.equal(diagnostics.migrations.currentVersion, '097_durable_evidence_storage_reservations');
   assert.equal(diagnostics.counts.preTaskPlans, 1);
   assert.equal(diagnostics.counts.preTaskPlanAttendees, 2);
 });
@@ -228,6 +304,6 @@ test('pre-task plans survive a restart with exact snapshots and acknowledgement 
   assert.equal(retained.prerequisitesCurrent, true);
   assert.equal(retained.attendanceSummary.acknowledged, 1);
   assert.equal(retained.attendees.find(attendee => attendee.workerId === workers[0].id).integrityValid, true);
-  assert.equal(restarted.migrationStatus().currentVersion, '072_operator_locale_preferences');
+  assert.equal(restarted.migrationStatus().currentVersion, '097_durable_evidence_storage_reservations');
   restarted.close();
 });

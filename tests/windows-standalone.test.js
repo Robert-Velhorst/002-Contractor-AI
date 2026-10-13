@@ -6,7 +6,76 @@ const path = require('node:path');
 
 const { applyStandaloneEnvironment, ensureStandaloneConfig, STANDALONE_CONFIG_FORMAT } = require('../standalone-runtime');
 const { startupSummary } = require('../standalone-launcher');
-const { isReusableRuntimeLockError, runtimeFiles } = require('../scripts/build-windows-standalone');
+const { assertPackageDataAbsent, isReusableRuntimeLockError, removeStagedWebBuild, resolvePackageTarget, runtimeFiles, withStagedWebBuild } = require('../scripts/build-windows-standalone');
+
+test('staged web output is cleaned after success and failure without hiding the build error', () => {
+  let successDirectory;
+  const result = withStagedWebBuild(directory => {
+    successDirectory = directory;
+    fs.writeFileSync(path.join(directory, 'index.html'), 'successful build fixture');
+    return 'finished';
+  });
+  assert.equal(result, 'finished');
+  assert.equal(fs.existsSync(successDirectory), false);
+  let failedDirectory;
+  const failure = new Error('synthetic build failure');
+  assert.throws(() => withStagedWebBuild(directory => {
+    failedDirectory = directory;
+    fs.writeFileSync(path.join(directory, 'index.html'), 'partial build fixture');
+    throw failure;
+  }), error => error === failure);
+  assert.equal(fs.existsSync(failedDirectory), false);
+});
+
+test('web build cleanup removes only guarded generated staging output', t => {
+  const release = path.resolve(__dirname, '..', 'release');
+  resolvePackageTarget(path.join(release, '.contractor-web-build-fixture'));
+  fs.mkdirSync(release, { recursive: true });
+  const staging = fs.mkdtempSync(path.join(release, '.contractor-web-build-'));
+  t.after(() => fs.rmSync(staging, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(staging, 'dist'));
+  fs.writeFileSync(path.join(staging, 'dist', 'index.html'), '<html></html>');
+  assert.throws(() => removeStagedWebBuild(path.join(release, 'ContractorAI-windows-x64')), /unexpected web build staging/);
+  assert.throws(() => removeStagedWebBuild(os.tmpdir()), /direct child directories/);
+  fs.writeFileSync(path.join(staging, 'runtime.json'), 'synthetic private configuration');
+  assert.throws(() => removeStagedWebBuild(staging), /operator data or private configuration/);
+  assert.equal(fs.readFileSync(path.join(staging, 'runtime.json'), 'utf8'), 'synthetic private configuration');
+  fs.unlinkSync(path.join(staging, 'runtime.json'));
+  removeStagedWebBuild(staging);
+  assert.equal(fs.existsSync(staging), false);
+});
+
+test('Windows release candidates remain inside the release directory without replacing the default target', () => {
+  const release = path.resolve(__dirname, '..', 'release');
+  assert.equal(resolvePackageTarget(path.join(release, 'ContractorAI-windows-x64-candidate')), path.join(release, 'ContractorAI-windows-x64-candidate'));
+  assert.equal(resolvePackageTarget('release/ContractorAI-windows-x64'), path.join(release, 'ContractorAI-windows-x64'));
+  for (const unsafe of [release, path.dirname(release), 'release/../data', 'release/nested/candidate', os.tmpdir()]) {
+    assert.throws(() => resolvePackageTarget(unsafe), /direct child directories/);
+  }
+});
+
+test('Windows package selection rejects junctions even when their targets do not exist', t => {
+  const release = path.resolve(__dirname, '..', 'release');
+  const junction = path.join(release, 'redirected-candidate');
+  t.mock.method(fs, 'existsSync', () => false);
+  t.mock.method(fs, 'lstatSync', filename => ({ isSymbolicLink: () => filename === junction }));
+  assert.throws(() => resolvePackageTarget(junction), /symbolic link or junction/);
+});
+
+test('package rebuild refuses retained operator data or identity keys before any cleanup', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'contractor-package-data-guard-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  for (const name of ['registry.sqlite', '.env.identity', '.ENV.RECOVERY', 'identity-companies.json', 'data', 'ledger.sqlite.authority.json', 'source.authority-key.json']) {
+    const directory = path.join(root, name.replaceAll('.', '-'));
+    fs.mkdirSync(directory);
+    fs.writeFileSync(path.join(directory, name), 'must survive');
+    assert.throws(() => assertPackageDataAbsent(directory), /operator data or private configuration/);
+    assert.equal(fs.readFileSync(path.join(directory, name), 'utf8'), 'must survive');
+  }
+  const generated = path.join(root, 'clean'); fs.mkdirSync(generated);
+  fs.writeFileSync(path.join(generated, 'BUILD.json'), '{}');
+  assert.doesNotThrow(() => assertPackageDataAbsent(generated));
+});
 
 test('Windows package rebuild recognizes both common locked-runtime errors', () => {
   assert.equal(isReusableRuntimeLockError({ code: 'EBUSY' }, 'win32'), true);
@@ -47,8 +116,32 @@ test('Windows package contract includes the standalone, tunnel, HAI, and canonic
   for (const required of [
     'server.js',
     'backup-manifest.js',
+    'company-authority.js',
+    'company-handover.js',
+    'backup-evidence.js',
+    'scripts/company-handover.js',
+    'docs/COMPANY_HANDOVER.md',
+    'docs/adr/0003-company-authority-handover.md',
     'operating-ledger.js',
     'runtime-lock.js',
+    'identity-registry.js',
+    'identity-runtime.js',
+    'identity-server.js',
+    'identity-oidc-adapter.js',
+    'identity-recovery.js',
+    'work-context.js',
+    'work-delivery.js',
+    'work-balance.js',
+    'client-date-commitments.js',
+    'docs/WORK_BALANCE.md',
+    'asset-history.js',
+    'inspection-coverage.js',
+    'client-delivery.js',
+    'docs/SHARED_WORK_MODEL.md',
+    'scripts/identity-maintenance.js',
+    'docs/IDENTITY_RECOVERY.md',
+    'docs/adr/0002-registry-recovery-does-not-restore-access.md',
+    'scripts/runtime-healthcheck.js',
     'standalone-launcher.js',
     'standalone-runtime.js',
     'hai-connector.js',

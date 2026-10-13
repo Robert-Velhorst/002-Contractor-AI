@@ -10,7 +10,7 @@ function organizationSave(page) {
 test('owner completes persistent business setup in guided steps on a mobile viewport', async ({ page, request }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto('/');
-  await expect(page.getByRole('heading', { name: 'Today' })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, exact: true, name: 'Today' })).toBeVisible();
 
   const setupPrompt = page.getByTestId('first-run-setup');
   await expect(setupPrompt.getByRole('heading', { name: 'Complete the business identity' })).toBeVisible();

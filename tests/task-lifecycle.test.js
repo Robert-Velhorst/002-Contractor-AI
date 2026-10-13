@@ -80,11 +80,13 @@ test('retained tasks support scoped start, block, completion, and cancellation l
     body: JSON.stringify({
       title: 'Install retained task control',
       priority: 'high',
+      requiredTrade: 'Timmerman',
       assigneeId: fieldWorkerId,
       dueAt: '2026-07-20T15:00:00.000Z'
     })
   });
   assert.equal(assignedTask.response.status, 201);
+  assert.equal(assignedTask.body.task.data.requiredTrade, 'Timmerman');
 
   const foreignTask = await request(baseUrl, `/api/ledger/jobs/${encodeURIComponent(jobId)}/tasks`, ownerToken, {
     method: 'POST',

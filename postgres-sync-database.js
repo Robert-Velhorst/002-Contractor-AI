@@ -45,6 +45,15 @@ function normalizeAdvisoryLockKey(value) {
   return key;
 }
 
+function assertPostgresSchemaPath(schemas) {
+  if (!Array.isArray(schemas) || schemas[0] !== 'public'
+      || schemas.some(schema => schema !== 'public' && schema !== 'pg_catalog')) {
+    throw Object.assign(new Error('Contractor.AI PostgreSQL connections require public as the only application schema.'), {
+      code: 'postgres_schema_unsupported'
+    });
+  }
+}
+
 function translateSql(sql) {
   let translated = String(sql || '')
     .replace(/^\s*PRAGMA[^;]+;?\s*$/gmi, '')
@@ -82,7 +91,15 @@ class PostgresSyncDatabase {
     this.responseSignal = new Int32Array(this.responseBuffer, 0, 2);
     this.worker.unref();
     this.worker.on('error', () => {});
-    this.query('SELECT 1 AS connected');
+    try {
+      const schemas = this.query('SELECT pg_catalog.current_schemas(false)::pg_catalog.text[] AS schemas').rows[0]?.schemas;
+      assertPostgresSchemaPath(schemas);
+      // Pin the namespace used by every unqualified table read and migration.
+      this.query("SELECT pg_catalog.set_config('search_path', 'public', false)");
+    } catch (error) {
+      this.close();
+      throw error;
+    }
   }
 
   request(request) {
@@ -168,6 +185,7 @@ class PostgresSyncDatabase {
 
 module.exports = {
   PostgresSyncDatabase,
+  assertPostgresSchemaPath,
   normalizeAdvisoryLockKey,
   resolvePostgresConnectionOptions,
   translateParameters,

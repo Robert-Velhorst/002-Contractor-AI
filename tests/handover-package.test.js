@@ -366,6 +366,107 @@ test('handover APIs enforce roles, readiness, immutable download, delivery appro
   assert.equal(delivered.response.status, 200);
   assert.equal(delivered.body.communication.status, 'sent');
 
+  const portalAccess = await apiRequest(baseUrl, `/api/ledger/jobs/${jobId}/client-portal-access`, {
+    method: 'POST', headers: headers('office', true), body: JSON.stringify({ label: 'Handover review test' })
+  });
+  assert.equal(portalAccess.response.status, 201);
+  const portalApproval = await apiRequest(baseUrl, `/api/ledger/approvals/${portalAccess.body.access.approval.id}/resolve`, {
+    method: 'POST', headers: headers('approver', true), body: JSON.stringify({ status: 'approved', reason: 'Client access checked.' })
+  });
+  assert.equal(portalApproval.response.status, 200);
+  const portalHeaders = { Authorization: `Bearer ${portalAccess.body.access.portalToken}` };
+  const portal = await apiRequest(baseUrl, '/api/client-portal', { headers: portalHeaders });
+  assert.equal(portal.response.status, 200);
+  assert.equal(portal.body.portal.completionReview.available, true);
+  const download = await fetch(`${baseUrl}/api/client-portal/handover-package`, { headers: portalHeaders });
+  assert.equal(download.status, 200);
+  assert.equal(download.headers.get('cache-control'), 'private, no-store');
+  assert.match(await download.text(), /API completed handover project/);
+  const baselineJob = portal.body.job;
+  const completionPayload = {
+    sourceHash: portal.body.portal.completionReview.sourceHash,
+    entryKey: 'handover-review-key-0001', outcome: 'accepted_with_items',
+    respondentName: 'Client Representative', authorityConfirmed: true, note: 'One paint touch-up remains in the hallway.'
+  };
+  const completion = await apiRequest(baseUrl, '/api/client-portal/completion-review', {
+    method: 'POST', headers: { ...portalHeaders, 'Content-Type': 'application/json' }, body: JSON.stringify(completionPayload)
+  });
+  assert.equal(completion.response.status, 201, JSON.stringify(completion.body));
+  assert.equal(completion.body.changesJobStatus, false);
+  assert.equal(completion.body.changesContractValue, false);
+  assert.equal(completion.body.externalCommitments, 0);
+  assert.equal(completion.body.response.status, 'received_unreviewed');
+  const replayedCompletion = await apiRequest(baseUrl, '/api/client-portal/completion-review', {
+    method: 'POST', headers: { ...portalHeaders, 'Content-Type': 'application/json' }, body: JSON.stringify(completionPayload)
+  });
+  assert.equal(replayedCompletion.response.status, 201);
+  assert.equal(replayedCompletion.body.replayed, true);
+  const conflictingReplay = await apiRequest(baseUrl, '/api/client-portal/completion-review', {
+    method: 'POST', headers: { ...portalHeaders, 'Content-Type': 'application/json' }, body: JSON.stringify({ ...completionPayload, note: 'A different statement.' })
+  });
+  assert.equal(conflictingReplay.response.status, 409);
+  assert.equal(conflictingReplay.body.error.code, 'client_completion_replay_conflict');
+  const fieldResponseRead = await apiRequest(baseUrl, `/api/ledger/jobs/${jobId}/client-completion-reviews`, { headers: headers('field') });
+  assert.equal(fieldResponseRead.response.status, 403);
+  const officeResponses = await apiRequest(baseUrl, `/api/ledger/jobs/${jobId}/client-completion-reviews`, { headers: headers('office') });
+  assert.equal(officeResponses.response.status, 200);
+  assert.equal(officeResponses.body.responses.length, 1);
+  assert.equal(officeResponses.body.responses[0].sourceCurrent, true);
+  assert.equal(officeResponses.body.responses[0].status, 'received_unreviewed');
+  assert.equal(officeResponses.body.responses[0].officeReviewStatus, 'received_unreviewed');
+  assert.equal(officeResponses.body.responses[0].note, completionPayload.note);
+  const fieldCloseout = await apiRequest(baseUrl, `/api/ledger/jobs/${jobId}/closeout-assessment`, { headers: headers('field') });
+  assert.equal(fieldCloseout.response.status, 403);
+  const officeCloseout = await apiRequest(baseUrl, `/api/ledger/jobs/${jobId}/closeout-assessment`, { headers: headers('office') });
+  assert.equal(officeCloseout.response.status, 200);
+  assert.equal(officeCloseout.body.assessment.sections.client.state, 'office_review_required');
+  assert.equal(officeCloseout.body.assessment.determinations.legalAcceptance, 'not_determined');
+  const officeReviewPayload = {
+    entryKey: 'office-review-key-0001', disposition: 'follow_up_required',
+    note: 'Create and assign a punch item for the hallway touch-up.'
+  };
+  const officeReviewPath = `/api/ledger/jobs/${jobId}/client-completion-reviews/${completion.body.response.id}/reviews`;
+  const fieldReview = await apiRequest(baseUrl, officeReviewPath, {
+    method: 'POST', headers: headers('field', true), body: JSON.stringify(officeReviewPayload)
+  });
+  assert.equal(fieldReview.response.status, 403);
+  const officeReview = await apiRequest(baseUrl, officeReviewPath, {
+    method: 'POST', headers: headers('office', true), body: JSON.stringify(officeReviewPayload)
+  });
+  assert.equal(officeReview.response.status, 201, JSON.stringify(officeReview.body));
+  assert.equal(officeReview.body.action.disposition, 'follow_up_required');
+  assert.equal(officeReview.body.action.sourceCurrent, true);
+  assert.equal(officeReview.body.changesJobStatus, false);
+  const replayedOfficeReview = await apiRequest(baseUrl, officeReviewPath, {
+    method: 'POST', headers: headers('office', true), body: JSON.stringify(officeReviewPayload)
+  });
+  assert.equal(replayedOfficeReview.response.status, 201);
+  assert.equal(replayedOfficeReview.body.replayed, true);
+  const conflictingOfficeReview = await apiRequest(baseUrl, officeReviewPath, {
+    method: 'POST', headers: headers('office', true), body: JSON.stringify({
+      ...officeReviewPayload, disposition: 'no_follow_up_recorded'
+    })
+  });
+  assert.equal(conflictingOfficeReview.response.status, 409);
+  assert.equal(conflictingOfficeReview.body.error.code, 'client_completion_review_replay_conflict');
+  const mismatchedEscalation = await apiRequest(baseUrl, officeReviewPath, {
+    method: 'POST', headers: headers('office', true), body: JSON.stringify({
+      entryKey: 'office-review-key-escalate', disposition: 'escalate_not_accepted', note: 'Try to escalate an acceptance.'
+    })
+  });
+  assert.equal(mismatchedEscalation.response.status, 409);
+  assert.equal(mismatchedEscalation.body.error.code, 'client_completion_escalation_mismatch');
+  const reviewedResponses = await apiRequest(baseUrl, `/api/ledger/jobs/${jobId}/client-completion-reviews`, { headers: headers('office') });
+  assert.equal(reviewedResponses.body.responses[0].reviewActions.length, 1);
+  assert.equal(reviewedResponses.body.responses[0].reviewActions[0].note, officeReviewPayload.note);
+  assert.equal(reviewedResponses.body.responses[0].officeReviewStatus, 'reviewed');
+  const reviewedCloseout = await apiRequest(baseUrl, `/api/ledger/jobs/${jobId}/closeout-assessment`, { headers: headers('office') });
+  assert.equal(reviewedCloseout.body.assessment.sections.client.state, 'accepted_with_items');
+  assert.equal(reviewedCloseout.body.assessment.sections.client.latestDisposition, 'follow_up_required');
+  assert.ok(reviewedCloseout.body.assessment.warnings.some(warning => warning.code === 'client_follow_up_required'));
+  const freshPortal = await apiRequest(baseUrl, '/api/client-portal', { headers: portalHeaders });
+  assert.equal(freshPortal.body.job.status, baselineJob.status);
+
   const clients = await apiRequest(baseUrl, '/api/ledger/client-success?mode=all&limit=100', { headers: headers('office') });
   assert.equal(clients.response.status, 200);
   const clientRow = clients.body.jobs.find(job => job.jobId === jobId);
@@ -377,9 +478,41 @@ test('handover APIs enforce roles, readiness, immutable download, delivery appro
   const exported = await apiRequest(baseUrl, '/api/operations/export', { headers: headers('owner') });
   assert.equal(exported.response.status, 200);
   assert.equal(exported.body.handoverPackages.length, 1);
+  assert.equal(exported.body.clientCompletionReviews.length, 1);
+  assert.equal(exported.body.clientCompletionReviews[0].id, completion.body.response.id);
+  assert.equal(exported.body.clientCompletionReviewActions.length, 1);
+  assert.equal(exported.body.clientCompletionReviewActions[0].id, officeReview.body.action.id);
   const validation = await apiRequest(baseUrl, '/api/operations/exports/validate', {
     method: 'POST', headers: headers('owner', true), body: JSON.stringify(exported.body)
   });
   assert.equal(validation.response.status, 200, JSON.stringify(validation.body));
   assert.equal(validation.body.counts.handoverPackages, 1);
+  assert.equal(validation.body.counts.clientCompletionReviews, 1);
+  assert.equal(validation.body.counts.clientCompletionReviewActions, 1);
+
+  const changedEvidence = await apiRequest(baseUrl, `/api/ledger/jobs/${jobId}/field-reports`, {
+    method: 'POST', headers: headers('office', true),
+    body: JSON.stringify({ status: 'draft', reportDate: '2026-07-16', workCompleted: 'Additional completion evidence after client response.' })
+  });
+  assert.equal(changedEvidence.response.status, 201);
+  const stalePortal = await apiRequest(baseUrl, '/api/client-portal', { headers: portalHeaders });
+  assert.equal(stalePortal.body.portal.completionReview.available, false);
+  assert.equal(stalePortal.body.portal.completionReview.response.id, completion.body.response.id);
+  assert.equal(stalePortal.body.portal.completionReview.sourceCurrent, false);
+  const staleCloseout = await apiRequest(baseUrl, `/api/ledger/jobs/${jobId}/closeout-assessment`, { headers: headers('office') });
+  assert.equal(staleCloseout.body.assessment.sections.client.state, 'response_source_changed');
+  const staleReviewWithoutConfirmation = await apiRequest(baseUrl, officeReviewPath, {
+    method: 'POST', headers: headers('office', true), body: JSON.stringify({
+      entryKey: 'office-review-key-stale1', disposition: 'no_follow_up_recorded', note: 'No new action is required.'
+    })
+  });
+  assert.equal(staleReviewWithoutConfirmation.response.status, 409);
+  assert.equal(staleReviewWithoutConfirmation.body.error.code, 'client_completion_source_stale');
+  const staleReview = await apiRequest(baseUrl, officeReviewPath, {
+    method: 'POST', headers: headers('office', true), body: JSON.stringify({
+      entryKey: 'office-review-key-stale1', disposition: 'no_follow_up_recorded', note: 'No new action is required.', confirmStaleSource: true
+    })
+  });
+  assert.equal(staleReview.response.status, 201);
+  assert.equal(staleReview.body.action.sourceCurrent, false);
 });

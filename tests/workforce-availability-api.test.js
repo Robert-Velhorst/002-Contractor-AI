@@ -123,3 +123,90 @@ test('availability API keeps assignment approval blocked until cancellation appr
   const diagnostics = await request(baseUrl, '/api/ledger/debug');
   assert.equal(diagnostics.body.diagnostics.valid, true);
 });
+
+test('assignment replacement API retains old coverage until the approval route resolves it', async t => {
+  const server = app.listen(0);
+  await new Promise(resolve => server.once('listening', resolve));
+  t.after(async () => { await new Promise(resolve => server.close(resolve)); });
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  const suffix = Date.now();
+  const startsAt = new Date(Date.now() + 30 * 86_400_000).toISOString();
+  const endsAt = new Date(Date.parse(startsAt) + 6 * 3_600_000).toISOString();
+  const createWorker = async name => (await request(baseUrl, '/api/ledger/workers', {
+    method: 'POST', body: JSON.stringify({ name: `${name} ${suffix}`, role: 'Installer', status: 'available' })
+  })).body.worker;
+  const original = await createWorker('Replacement API original');
+  const candidate = await createWorker('Replacement API candidate');
+  const periodResult = await request(baseUrl, `/api/ledger/workers/${encodeURIComponent(original.id)}/availability`, {
+    method: 'POST', body: JSON.stringify({ periodType: 'unavailable', title: 'Capacity change', startsAt, endsAt })
+  });
+  const jobResult = await request(baseUrl, '/api/ledger/intake', {
+    method: 'POST', body: JSON.stringify({ title: `Replacement API job ${suffix}`, clientName: `Replacement API client ${suffix}`, status: 'scheduled', scheduledStart: startsAt, scheduledEnd: endsAt })
+  });
+  const jobId = jobResult.body.job.id;
+  const assignmentResult = await request(baseUrl, `/api/ledger/jobs/${encodeURIComponent(jobId)}/assignments`, {
+    method: 'POST', body: JSON.stringify({ workerId: original.id, role: 'Installer', scheduledStart: startsAt, scheduledEnd: endsAt })
+  });
+  const assignment = assignmentResult.body.assignment;
+  const proposal = await request(baseUrl, `/api/ledger/jobs/${encodeURIComponent(jobId)}/assignments/${encodeURIComponent(assignment.id)}/replacement`, {
+    method: 'POST', body: JSON.stringify({ workerId: candidate.id, availabilityPeriodId: periodResult.body.period.id, reason: 'Current worker has a confirmed capacity conflict.' })
+  });
+  assert.equal(proposal.response.status, 201);
+  assert.equal(proposal.body.assignment.status, 'pending_approval');
+  assert.equal(proposal.body.job.assignments.find(item => item.id === assignment.id).status, 'pending_approval');
+  const decision = await request(baseUrl, `/api/ledger/approvals/${encodeURIComponent(proposal.body.approval.id)}/resolve`, {
+    method: 'POST', body: JSON.stringify({ status: 'approved', resolvedBy: 'forged_different_identity' })
+  });
+  assert.equal(decision.response.status, 200);
+  const finalJob = await request(baseUrl, `/api/ledger/jobs/${encodeURIComponent(jobId)}`);
+  assert.equal(finalJob.body.job.assignments.find(item => item.id === assignment.id).status, 'released');
+  assert.equal(finalJob.body.job.assignments.find(item => item.id === proposal.body.assignment.id).status, 'planned');
+});
+
+test('coordinated availability replacement API creates one portfolio approval and resolves assignments together', async t => {
+  const server = app.listen(0);
+  await new Promise(resolve => server.once('listening', resolve));
+  t.after(async () => { await new Promise(resolve => server.close(resolve)); });
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  const suffix = Date.now();
+  const startsAt = new Date(Date.now() + 45 * 86_400_000).toISOString();
+  const endsAt = new Date(Date.parse(startsAt) + 6 * 3_600_000).toISOString();
+  const createWorker = async name => (await request(baseUrl, '/api/ledger/workers', {
+    method: 'POST', body: JSON.stringify({ name: `${name} ${suffix}`, role: 'Installer', status: 'available' })
+  })).body.worker;
+  const original = await createWorker('Coordinated API original');
+  const candidate = await createWorker('Coordinated API replacement');
+  const periodResult = await request(baseUrl, `/api/ledger/workers/${encodeURIComponent(original.id)}/availability`, {
+    method: 'POST', body: JSON.stringify({ periodType: 'unavailable', title: 'Capacity change', startsAt, endsAt })
+  });
+  const jobResult = await request(baseUrl, '/api/ledger/intake', {
+    method: 'POST', body: JSON.stringify({ title: `Coordinated API job ${suffix}`, clientName: `Coordinated API client ${suffix}`, status: 'scheduled', scheduledStart: startsAt, scheduledEnd: endsAt })
+  });
+  const jobId = jobResult.body.job.id;
+  const assignmentResult = await request(baseUrl, `/api/ledger/jobs/${encodeURIComponent(jobId)}/assignments`, {
+    method: 'POST', body: JSON.stringify({ workerId: original.id, role: 'Installer', scheduledStart: startsAt, scheduledEnd: endsAt })
+  });
+  const assignment = assignmentResult.body.assignment;
+  const proposal = await request(baseUrl, `/api/ledger/workers/${encodeURIComponent(original.id)}/availability/${encodeURIComponent(periodResult.body.period.id)}/replacement-plan`, {
+    method: 'POST', body: JSON.stringify({ assignments: [{ assignmentId: assignment.id, workerId: candidate.id }], reason: 'Operational worker availability requires coordinated coverage.' })
+  });
+  assert.equal(proposal.response.status, 201);
+  assert.equal(proposal.body.approval.targetType, 'assignment_replacement_plan');
+  assert.equal(proposal.body.approval.jobId, null);
+  const replay = await request(baseUrl, `/api/ledger/workers/${encodeURIComponent(original.id)}/availability/${encodeURIComponent(periodResult.body.period.id)}/replacement-plan`, {
+    method: 'POST', body: JSON.stringify({ assignments: [{ assignmentId: assignment.id, workerId: candidate.id }], reason: 'Operational worker availability requires coordinated coverage.' })
+  });
+  assert.equal(replay.response.status, 201);
+  assert.equal(replay.body.replayed, true);
+  assert.equal(replay.body.approval.id, proposal.body.approval.id);
+  assert.equal(replay.body.planId, proposal.body.planId);
+  const beforeDecision = await request(baseUrl, `/api/ledger/jobs/${encodeURIComponent(jobId)}`);
+  assert.equal(beforeDecision.body.job.assignments.find(item => item.id === assignment.id).status, 'pending_approval');
+  const decision = await request(baseUrl, `/api/ledger/approvals/${encodeURIComponent(proposal.body.approval.id)}/resolve`, {
+    method: 'POST', body: JSON.stringify({ status: 'approved', resolvedBy: 'coordinated_api_approver' })
+  });
+  assert.equal(decision.response.status, 200);
+  const finalJob = await request(baseUrl, `/api/ledger/jobs/${encodeURIComponent(jobId)}`);
+  assert.equal(finalJob.body.job.assignments.find(item => item.id === assignment.id).status, 'released');
+  assert.equal(finalJob.body.job.assignments.find(item => item.workerId === candidate.id).status, 'planned');
+});

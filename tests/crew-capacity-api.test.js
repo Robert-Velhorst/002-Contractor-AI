@@ -85,11 +85,15 @@ test('crew-capacity API governs profiles, allocations, approval, export, and rea
       effectiveFrom: windowStart,
       referenceDate: windowStart,
       timezone: 'Europe/Amsterdam',
-      dailyHours: { sunday: 0, monday: 8, tuesday: 8, wednesday: 8, thursday: 8, friday: 8, saturday: 0 }
+      dailyHours: { sunday: 0, monday: 8, tuesday: 8, wednesday: 8, thursday: 8, friday: 8, saturday: 0 },
+      workingWindows: Object.fromEntries(['monday', 'tuesday', 'wednesday', 'thursday', 'friday'].map(day => [day, [{ start: '08:00', end: '12:00' }, { start: '13:00', end: '17:00' }]]))
     })
   });
   assert.equal(profile.response.status, 200, JSON.stringify(profile.body));
   assert.equal(profile.body.profile.integrityValid, true);
+  assert.equal(profile.body.profile.hasWorkingTimeWindows, true);
+  assert.deepEqual(profile.body.profile.workingWindows.monday, [{ start: '08:00', end: '12:00' }, { start: '13:00', end: '17:00' }]);
+  assert.equal(profile.body.profile.snapshot.format, 'contractor-ai-crew-capacity-profile/v3');
 
   const allocation = await request(baseUrl, '/api/ledger/crew-capacity/allocations', {
     method: 'POST',
@@ -136,7 +140,7 @@ test('crew-capacity API governs profiles, allocations, approval, export, and rea
   assert.equal(operationalExport.body.crewLookaheadPlans.length, 1);
   const diagnostics = await request(baseUrl, '/api/ledger/debug');
   assert.equal(diagnostics.body.diagnostics.valid, true, JSON.stringify(diagnostics.body.diagnostics.issues));
-  assert.equal(diagnostics.body.diagnostics.migrations.currentVersion, '072_operator_locale_preferences');
+  assert.equal(diagnostics.body.diagnostics.migrations.currentVersion, '097_durable_evidence_storage_reservations');
   assert.equal(diagnostics.body.diagnostics.counts.crewCapacityProfiles, 1);
   assert.equal(diagnostics.body.diagnostics.counts.crewCapacityAllocations, 1);
   assert.equal(diagnostics.body.diagnostics.counts.crewLookaheadPlans, 1);

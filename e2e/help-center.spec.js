@@ -1,0 +1,36 @@
+const { test, expect } = require('@playwright/test')
+const AxeBuilder = require('@axe-core/playwright').default
+
+test('help center connects contractor, field, and client workflows in desktop and mobile layouts', async ({ page }, testInfo) => {
+  const errors = []
+  page.on('pageerror', error => errors.push(error.message))
+  await page.setViewportSize({ width: 1440, height: 960 })
+  await page.goto('/')
+  await expect(page).toHaveTitle('Contractor.AI')
+  await page.getByLabel(/^(Language|Taal)$/).selectOption('en-GB')
+  await expect(page.getByLabel('Language', { exact: true })).toHaveValue('en-GB')
+  const navigation = page.getByRole('navigation', { name: 'Work areas' })
+  await navigation.getByRole('button', { name: 'Help', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Practical help', exact: true })).toBeVisible()
+
+  await page.getByRole('tab', { name: 'Field worker', exact: true }).click()
+  await expect(page.getByText('Start checks, safety, and quality', { exact: true })).toBeVisible()
+  await page.getByRole('tab', { name: 'Client', exact: true }).click()
+  const clientTopic = page.locator('.help-topic').filter({ hasText: 'Confirm a choice or change' })
+  await clientTopic.locator('summary').click()
+  await expect(clientTopic.getByText('A date, price, or scope changes only after an authorized person processes and confirms the decision.')).toBeVisible()
+
+  const accessibility = await new AxeBuilder({ page }).include('.help-center').analyze()
+  expect(accessibility.violations).toEqual([])
+  await page.screenshot({ path: testInfo.outputPath('help-desktop.png'), fullPage: false })
+  await page.getByLabel('Language', { exact: true }).selectOption('nl-NL')
+  await expect(page.getByLabel('Taal', { exact: true })).toHaveValue('nl-NL')
+  await expect(page.getByRole('heading', { name: 'Praktische hulp', exact: true })).toBeVisible()
+  await page.setViewportSize({ width: 390, height: 844 })
+  await expect(page.locator('.side-nav')).not.toBeVisible()
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true)
+  await page.getByRole('searchbox', { name: 'Hulp doorzoeken' }).fill('versienummer')
+  await expect(page.getByText('Een keuze of wijziging bevestigen', { exact: true })).toBeVisible()
+  await page.screenshot({ path: testInfo.outputPath('help-mobile.png'), fullPage: false })
+  expect(errors).toEqual([])
+})

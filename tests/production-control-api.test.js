@@ -73,6 +73,23 @@ test('production API enforces office baselines, scoped field capture, replay, an
     body: JSON.stringify({ workerId: tokens.field_worker.workerId, role: 'Installer', status: 'assigned' })
   });
   assert.equal(assignment.response.status, 201, JSON.stringify(assignment.body));
+  const peerWorkerId = 'worker-production-peer';
+  const peerWorker = await request(baseUrl, '/api/ledger/workers', tokens.office_operator, {
+    method: 'POST', body: JSON.stringify({ id: peerWorkerId, name: 'Peer production worker', role: 'Finisher', status: 'available', hourlyRate: 74 })
+  });
+  assert.equal(peerWorker.response.status, 201, JSON.stringify(peerWorker.body));
+  const peerAssignment = await request(baseUrl, `/api/ledger/jobs/${jobId}/assignments`, tokens.office_operator, {
+    method: 'POST', body: JSON.stringify({ workerId: peerWorkerId, role: 'Finisher', status: 'assigned' })
+  });
+  assert.equal(peerAssignment.response.status, 201, JSON.stringify(peerAssignment.body));
+  const ownTask = await request(baseUrl, `/api/ledger/jobs/${jobId}/tasks`, tokens.office_operator, {
+    method: 'POST', body: JSON.stringify({ title: 'Install finish area', assigneeId: tokens.field_worker.workerId })
+  });
+  assert.equal(ownTask.response.status, 201, JSON.stringify(ownTask.body));
+  const peerTask = await request(baseUrl, `/api/ledger/jobs/${jobId}/tasks`, tokens.office_operator, {
+    method: 'POST', body: JSON.stringify({ title: 'Install peer trim', assigneeId: peerWorkerId })
+  });
+  assert.equal(peerTask.response.status, 201, JSON.stringify(peerTask.body));
 
   const deniedBaseline = await request(baseUrl, `/api/ledger/jobs/${jobId}/production-baselines`, tokens.field_worker.token, {
     method: 'POST', body: JSON.stringify({ lines: [] })
@@ -81,7 +98,11 @@ test('production API enforces office baselines, scoped field capture, replay, an
   const prepared = await request(baseUrl, `/api/ledger/jobs/${jobId}/production-baselines`, tokens.office_operator, {
     method: 'POST',
     body: JSON.stringify({
-      lines: [{ lineKey: 'installed-area', costCode: 'LAB-AREA', description: 'Installed finish area', unit: 'm2', plannedQuantity: 80, plannedLaborHours: 64 }]
+      lines: [
+        { lineKey: 'installed-area', taskId: ownTask.body.task.id, costCode: 'LAB-AREA', description: 'Installed finish area', unit: 'm2', plannedQuantity: 80, plannedLaborHours: 64 },
+        { lineKey: 'peer-trim', taskId: peerTask.body.task.id, costCode: 'LAB-TRIM', description: 'Installed peer trim', unit: 'm', plannedQuantity: 20, plannedLaborHours: 16 },
+        { lineKey: 'unlinked-line', costCode: 'LAB-UNLINKED', description: 'Unlinked production scope', unit: 'pcs', plannedQuantity: 30, plannedLaborHours: 12 }
+      ]
     })
   });
   assert.equal(prepared.response.status, 201, JSON.stringify(prepared.body));
@@ -100,6 +121,24 @@ test('production API enforces office baselines, scoped field capture, replay, an
   assert.equal(fieldRead.body.production.activeBaseline.data, undefined);
   assert.equal(fieldRead.body.production.activeBaseline.snapshotHash, undefined);
   assert.equal(fieldRead.body.production.sourceHash, undefined);
+  assert.deepEqual(fieldRead.body.production.activeBaseline.snapshot.lines.map(line => line.lineKey), ['installed-area']);
+  assert.equal(fieldRead.body.production.activeBaseline.snapshot.lines[0].plannedLaborHours, undefined);
+  assert.equal(fieldRead.body.production.activeBaseline.snapshot.lines[0].costCode, undefined);
+  assert.deepEqual(fieldRead.body.production.entries, []);
+  const fieldJobDetail = await request(baseUrl, `/api/ledger/jobs/${jobId}`, tokens.field_worker.token);
+  assert.equal(fieldJobDetail.response.status, 200, JSON.stringify(fieldJobDetail.body));
+  assert.deepEqual(fieldJobDetail.body.job.productionControl.activeBaseline.snapshot.lines.map(line => line.lineKey), ['installed-area']);
+  assert.deepEqual(fieldJobDetail.body.job.productionBaselines.map(item => item.id), [prepared.body.baseline.id]);
+  assert.equal(JSON.stringify(fieldJobDetail.body.job.productionControl).includes('peer-trim'), false);
+
+  const hiddenPeerLine = await request(baseUrl, `/api/ledger/jobs/${jobId}/production-entries`, tokens.field_worker.token, {
+    method: 'POST', body: JSON.stringify({ entryKey: 'production-api-peer-line-0001', baselineId: prepared.body.baseline.id, lineKey: 'peer-trim', workDate: '2026-07-16', quantity: 1, crewHours: 1, note: 'Should not be visible to this position.' })
+  });
+  assert.equal(hiddenPeerLine.response.status, 403);
+  const hiddenUnlinkedLine = await request(baseUrl, `/api/ledger/jobs/${jobId}/production-entries`, tokens.field_worker.token, {
+    method: 'POST', body: JSON.stringify({ entryKey: 'production-api-unlinked-0001', baselineId: prepared.body.baseline.id, lineKey: 'unlinked-line', workDate: '2026-07-16', quantity: 1, crewHours: 1, note: 'Unlinked scope must remain blocked.' })
+  });
+  assert.equal(hiddenUnlinkedLine.response.status, 403);
 
   const payload = {
     entryKey: 'production-api-field-0001',
@@ -121,6 +160,9 @@ test('production API enforces office baselines, scoped field capture, replay, an
   assert.equal(recorded.body.entry.entryKey, undefined);
   assert.equal(recorded.body.entry.entryFingerprint, undefined);
   assert.equal(recorded.body.production.summary.performanceFactor, 0.5333);
+  assert.deepEqual(recorded.body.production.entries.map(entry => entry.id), [recorded.body.entry.id]);
+  assert.equal(JSON.stringify(recorded.body.production).includes('Peer production worker'), false);
+  assert.equal(recorded.body.production.lines.some(line => line.lineKey === 'peer-trim'), false);
   const replay = await request(baseUrl, `/api/ledger/jobs/${jobId}/production-entries`, tokens.field_worker.token, {
     method: 'POST', body: JSON.stringify(payload)
   });
@@ -132,6 +174,16 @@ test('production API enforces office baselines, scoped field capture, replay, an
   });
   assert.equal(conflict.response.status, 409);
   assert.equal(conflict.body.error.code, 'production_entry_key_reused');
+
+  const peerProduction = await request(baseUrl, `/api/ledger/jobs/${jobId}/production-entries`, tokens.office_operator, {
+    method: 'POST', body: JSON.stringify({ baselineId: prepared.body.baseline.id, lineKey: 'peer-trim', workDate: '2026-07-16', quantity: 5, crewHours: 10, note: 'Peer crew output retained.', workerId: peerWorkerId, workerName: 'Peer production worker', entryKey: 'production-api-peer-office-0001' })
+  });
+  assert.equal(peerProduction.response.status, 201, JSON.stringify(peerProduction.body));
+  const fieldReadWithPeerData = await request(baseUrl, `/api/ledger/jobs/${jobId}/production`, tokens.field_worker.token);
+  assert.equal(fieldReadWithPeerData.response.status, 200, JSON.stringify(fieldReadWithPeerData.body));
+  assert.deepEqual(fieldReadWithPeerData.body.production.entries.map(entry => entry.id), [recorded.body.entry.id]);
+  assert.deepEqual(fieldReadWithPeerData.body.production.lines.map(line => line.lineKey), ['installed-area']);
+  assert.equal(JSON.stringify(fieldReadWithPeerData.body.production).includes('Peer production worker'), false);
 
   const deniedReversal = await request(baseUrl, `/api/ledger/jobs/${jobId}/production-entries/${recorded.body.entry.id}/reversal`, tokens.field_worker.token, {
     method: 'POST', body: JSON.stringify({ reason: 'Field role cannot reverse retained production.' })
@@ -149,8 +201,8 @@ test('production API enforces office baselines, scoped field capture, replay, an
 
   const ownerDetail = await request(baseUrl, `/api/ledger/jobs/${jobId}`, tokens.owner);
   assert.equal(ownerDetail.response.status, 200, JSON.stringify(ownerDetail.body));
-  assert.equal(ownerDetail.body.job.productionEntries[0].status, 'reversed');
-  assert.equal(ownerDetail.body.job.productionControl.summary.crewHours, 0);
+  assert.equal(ownerDetail.body.job.productionEntries.find(entry => entry.id === recorded.body.entry.id).status, 'reversed');
+  assert.equal(ownerDetail.body.job.productionControl.summary.crewHours, 10);
   assert.ok(ownerDetail.body.job.audit.some(event => event.action === 'record_production_output' && event.actor === 'role:field_worker'));
 
   const capabilities = await request(baseUrl, '/api/operations/capabilities', tokens.owner);

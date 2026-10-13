@@ -14,6 +14,7 @@ test('dashboard recovers automatically from a transient initial API failure', as
   await page.goto('/');
 
   await expect.poll(() => sessionAttempts, { timeout: 10_000 }).toBeGreaterThanOrEqual(2);
+  await page.getByLabel(/^(Language|Taal)$/).selectOption('en-GB');
   await expect(page.getByRole('button', { name: 'Field updates', exact: true })).toBeVisible({ timeout: 15_000 });
   await expect(page.getByText('Failed to fetch', { exact: true })).toHaveCount(0);
 });

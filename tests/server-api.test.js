@@ -1,4 +1,5 @@
 const test = require('node:test');
+const { jpegFixture, oversizedPng } = require('./image-fixtures');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -299,7 +300,7 @@ test('multipart field upload stores local evidence and links ledger document', a
 
   const evidenceForm = (notes = 'Before photo uploaded from the job site.') => {
     const form = new FormData();
-    form.append('evidenceFile', new Blob([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from('fake image bytes for regression')], { type: 'image/jpeg' }), 'real-site-photo.jpg');
+    form.append('evidenceFile', new Blob([jpegFixture('valid site image for regression')], { type: 'image/jpeg' }), 'real-site-photo.jpg');
     form.append('category', 'field_photo');
     form.append('jobId', jobId);
     form.append('riskLevel', 'low');
@@ -369,6 +370,19 @@ test('multipart field upload stores local evidence and links ledger document', a
   const unsafeBody = await unsafeResponse.json();
   assert.equal(unsafeResponse.status, 415);
   assert.equal(unsafeBody.error.code, 'upload_signature_mismatch');
+  const filesBeforeInvalidImages = fs.readdirSync(process.env.UPLOAD_DIR).length;
+  for (const [bytes, mime, filename, code] of [
+    [oversizedPng(), 'image/png', 'huge.png', 'image_dimensions_exceeded'],
+    [Buffer.from([0xff, 0xd8, 0xff, 0xe0]), 'image/jpeg', 'truncated.jpg', 'invalid_image_content']
+  ]) {
+    const invalid = new FormData();
+    invalid.set('jobId', jobId);
+    invalid.set('evidenceFile', new Blob([bytes], { type: mime }), filename);
+    const response = await fetch(`${baseUrl}/api/ledger/upload`, { method: 'POST', body: invalid });
+    assert.equal(response.status, 415);
+    assert.equal((await response.json()).error.code, code);
+  }
+  assert.equal(fs.readdirSync(process.env.UPLOAD_DIR).length, filesBeforeInvalidImages);
 
   const fakeDocxForm = new FormData();
   fakeDocxForm.append(
@@ -403,7 +417,7 @@ test('multipart field upload stores local evidence and links ledger document', a
 
   const filesBeforeUnknownJob = fs.readdirSync(process.env.UPLOAD_DIR).length;
   const unknownJobForm = new FormData();
-  unknownJobForm.append('evidenceFile', new Blob([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from('orphan evidence')], { type: 'image/jpeg' }), 'orphan-photo.jpg');
+  unknownJobForm.append('evidenceFile', new Blob([jpegFixture('orphan evidence')], { type: 'image/jpeg' }), 'orphan-photo.jpg');
   unknownJobForm.append('jobId', 'job_not_present');
   const unknownJobResponse = await fetch(`${baseUrl}/api/ledger/upload`, { method: 'POST', body: unknownJobForm });
   const unknownJobBody = await unknownJobResponse.json();
@@ -635,6 +649,9 @@ test('operating ledger persists intake, approvals, audit, and autonomous control
   assert.equal(commandPlan.body.summary.externalCommitments, 0);
   assert.deepEqual(commandPlan.body.scope, {
     jobLimit: 12,
+    readinessJobLimit: 12,
+    eligibleJobs: 1,
+    completeAudit: false,
     consideredJobs: 1,
     jobIds: [commandJobId]
   });
@@ -840,9 +857,10 @@ test('operating ledger persists intake, approvals, audit, and autonomous control
   assert.ok(jobDetail.body.job.invoices.some(item => item.approvalId === invoice.body.invoice.approvalId));
   assert.ok(jobDetail.body.job.audit.some(event => event.action === 'resolve_approved'));
 
+  const weatherTarget = new Date(Date.now() + 30 * 60 * 1000).toISOString();
   const weather = await request(baseUrl, '/api/ledger/weather/assess', {
     method: 'POST',
-    body: JSON.stringify({ jobId, condition: 'rain_risk', precipitationPercent: 72 })
+    body: JSON.stringify({ jobId, condition: 'rain_risk', precipitationPercent: 72, forecastAt: weatherTarget, plannedStart: weatherTarget })
   });
   assert.equal(weather.response.status, 201);
   assert.equal(weather.body.weather.precipitationPercent, 72);
@@ -853,11 +871,11 @@ test('operating ledger persists intake, approvals, audit, and autonomous control
   assert.ok(weather.body.nextActions.some(action => action.type === 'request_schedule_approval'));
   assert.ok(weather.body.nextAction?.type);
   assert.ok(weather.body.job.weather.some(item => item.id === weather.body.weather.id));
-  assert.ok(weather.body.dispatch.weatherRisks >= 1);
+  assert.equal(weather.body.dispatch.weatherRisks, 0, 'A forecast for a different planned window must not affect dispatch readiness.');
 
   const schedule = await request(baseUrl, '/api/ledger/schedule/recommend', {
     method: 'POST',
-    body: JSON.stringify({ jobId, plannedStart: '2026-07-01T08:00:00.000Z' })
+    body: JSON.stringify({ jobId, plannedStart: weatherTarget })
   });
   assert.equal(schedule.response.status, 200);
   assert.equal(schedule.body.recommendation.requiresApproval, true);
@@ -1383,6 +1401,8 @@ test('operating ledger persists intake, approvals, audit, and autonomous control
   assert.ok(closeout.body.closeout.completion.approval.id);
   assert.equal(closeout.body.closeout.completion.approval.targetType, 'job_update');
   assert.equal(closeout.body.closeout.completion.proposedPatch.status, 'completed');
+  assert.equal(closeout.body.closeout.completion.approval.decision.preview.completionReadiness.ready, false);
+  assert.ok(closeout.body.closeout.completion.approval.decision.preview.completionReadiness.blockers.length > 0);
   assert.notEqual(closeout.body.job.status, 'completed');
   assert.ok(closeout.body.job.qualityChecks.length >= 1);
   assert.ok(closeout.body.job.safetyChecks.length >= 1);
@@ -1394,13 +1414,13 @@ test('operating ledger persists intake, approvals, audit, and autonomous control
     method: 'POST',
     body: JSON.stringify({ status: 'approved', resolvedBy: 'Closeout Test', reason: 'Completion verified before closeout.' })
   });
-  assert.equal(closeoutCompletionApproval.response.status, 200);
-  assert.equal(closeoutCompletionApproval.body.approval.status, 'approved');
+  assert.equal(closeoutCompletionApproval.response.status, 409);
+  assert.equal(closeoutCompletionApproval.body.error.code, 'job_completion_not_ready');
 
   const closeoutCompletedDetail = await request(baseUrl, `/api/ledger/jobs/${jobId}`);
   assert.equal(closeoutCompletedDetail.response.status, 200);
-  assert.equal(closeoutCompletedDetail.body.job.status, 'completed');
-  assert.equal(closeoutCompletedDetail.body.job.progressPercent, 100);
+  assert.notEqual(closeoutCompletedDetail.body.job.status, 'completed');
+  assert.equal(closeoutCompletedDetail.body.job.approvals.find(item => item.id === closeout.body.closeout.completion.approval.id).status, 'pending');
 
   const qualitySignoff = await request(baseUrl, `/api/ledger/jobs/${jobId}/quality-checks`, {
     method: 'POST',
@@ -1684,7 +1704,7 @@ test('operating ledger persists intake, approvals, audit, and autonomous control
   assert.ok(debug.body.dashboard.metrics.jhas >= 1);
   assert.ok(debug.body.dashboard.metrics.sdsSheets >= 1);
   assert.ok(debug.body.dashboard.metrics.siteAccessLogs >= 1);
-  assert.equal(debug.body.dashboard.metrics.dispatchReadyJobs, 0);
+  assert.ok(debug.body.dashboard.metrics.dispatchReadyJobs >= 1);
   assert.ok(debug.body.dashboard.metrics.budgetLines >= 1);
   assert.ok(debug.body.dashboard.metrics.purchaseOrders >= 1);
   assert.ok(debug.body.dashboard.metrics.drawRequests >= 1);
@@ -1924,6 +1944,16 @@ test('operating ledger persists intake, approvals, audit, and autonomous control
   assert.equal(lowRiskJobUpdate.body.status, 'updated');
   assert.equal(lowRiskJobUpdate.body.requiresApproval, false);
   assert.equal(lowRiskJobUpdate.body.job.title, 'Ledger-only edited dashboard merge job');
+
+  const completionWorkDetail = await request(baseUrl, `/api/ledger/jobs/${ledgerOnlyIntake.body.job.id}`);
+  assert.equal(completionWorkDetail.response.status, 200);
+  for (const task of completionWorkDetail.body.job.tasks.filter(item => !['completed', 'cancelled'].includes(item.status))) {
+    const taskCompletion = await request(baseUrl, `/api/ledger/jobs/${ledgerOnlyIntake.body.job.id}/lifecycle/task/${task.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'completed', notes: 'Verified completion for the job update regression.' })
+    });
+    assert.equal(taskCompletion.response.status, 200, JSON.stringify(taskCompletion.body));
+  }
 
   const completionProposal = await request(baseUrl, `/api/ledger/jobs/${ledgerOnlyIntake.body.job.id}`, {
     method: 'PUT',

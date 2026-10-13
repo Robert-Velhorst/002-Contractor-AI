@@ -20,6 +20,7 @@ const STATUS_NL = Object.freeze({
   cancelled: 'geannuleerd',
   chained: 'gekoppeld',
   checked_out: 'uitgegeven',
+  'checked out': 'uitgegeven',
   closed: 'gesloten',
   completed: 'voltooid',
   conflict: 'conflict',
@@ -276,6 +277,34 @@ export function toLocalDateTimeInput(value) {
 export function toIsoDateTime(value) {
   const parsed = new Date(value)
   return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString()
+}
+
+export function toIsoDateTimeInTimeZone(value, timeZone) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(String(value || ''))
+  if (!match) throw new Error('Enter a valid local date and time.')
+  const [, year, month, day, hour, minute] = match.map(Number)
+  const desired = Date.UTC(year, month - 1, day, hour, minute)
+  const formatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone, year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+  })
+  let candidate = desired
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const parts = Object.fromEntries(formatter.formatToParts(new Date(candidate))
+      .filter(part => part.type !== 'literal').map(part => [part.type, Number(part.value)]))
+    const actual = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second)
+    const correction = desired - actual
+    if (correction === 0) return new Date(candidate).toISOString()
+    candidate += correction
+  }
+  throw new Error('This local time does not exist because the clock moves forward in the selected time zone.')
+}
+
+export function maxWeeklyAvailabilityDate(startValue) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(startValue || '').slice(0, 10))) return undefined
+  const latest = new Date(`${String(startValue).slice(0, 10)}T00:00:00.000Z`)
+  latest.setUTCDate(latest.getUTCDate() + 366)
+  return latest.toISOString().slice(0, 10)
 }
 
 export function futureDateInput(days) {

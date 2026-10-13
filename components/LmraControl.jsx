@@ -365,7 +365,11 @@ export default function LmraControl({
               <span className={`status status-${assessment.readyForHazardousWork ? 'active' : 'attention'}`}>
                 {assessment.readyForHazardousWork ? t('ready') : t(formatStatus(assessment.outcome))}
               </span>
-              <small>{assessment.readyForHazardousWork ? t('until {time}', { time: formatDateTime(assessment.validUntil) }) : assessment.expired ? t('expired') : t('review required')}</small>
+              <small>{assessment.readyForHazardousWork
+                ? t('until {time}', { time: formatDateTime(assessment.validUntil) })
+                : assessment.isLatestForWorkerPlan === false ? t('Superseded assessment')
+                  : assessment.outcome === 'stop_work' ? t('Reassessment required')
+                    : assessment.expired ? t('expired') : t('review required')}</small>
             </div>
           </div>
         ))}

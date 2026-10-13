@@ -9,6 +9,10 @@ export default [
       'dist',
       'release',
       'tmp',
+      'test-results',
+      'playwright-report',
+      'android/.gradle',
+      'android/**/build',
       'node_modules',
       'uploads',
       '**/*.html',
@@ -20,12 +24,13 @@ export default [
     ]
   },
   {
-    files: ['**/*.{js,jsx}'],
+    files: ['**/*.{js,jsx,mjs}'],
     languageOptions: {
-      ecmaVersion: 2020,
+      ecmaVersion: 2022,
       globals: {
         ...globals.browser,
         ...globals.node,
+        AggregateError: 'readonly',
       },
       parserOptions: {
         ecmaVersion: 'latest',

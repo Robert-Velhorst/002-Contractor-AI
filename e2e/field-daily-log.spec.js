@@ -1,6 +1,6 @@
 const { test, expect } = require('@playwright/test');
 
-async function dailyCycleFixture(request, label) {
+async function dailyCycleFixture(request, label, { overdueCheckIn = false } = {}) {
   const suffix = `${label}-${Date.now()}`;
   const workerResponse = await request.post('/api/ledger/workers', {
     data: { name: `Browser daily crew ${suffix}`, role: 'Carpenter', status: 'available', hourlyRate: 58 }
@@ -19,12 +19,35 @@ async function dailyCycleFixture(request, label) {
   });
   expect(intakeResponse.ok()).toBeTruthy();
   const job = (await intakeResponse.json()).job;
+  const assignmentWindow = overdueCheckIn ? {
+    scheduledStart: new Date(Date.now() - 45 * 60_000).toISOString(),
+    scheduledEnd: new Date(Date.now() + 6 * 60 * 60_000).toISOString()
+  } : {};
   const assignmentResponse = await request.post(`/api/ledger/jobs/${job.id}/assignments`, {
-    data: { workerId: worker.id, role: 'Carpenter', status: 'assigned' }
+    data: { workerId: worker.id, role: 'Carpenter', status: overdueCheckIn ? 'scheduled' : 'assigned', ...assignmentWindow }
   });
   expect(assignmentResponse.ok()).toBeTruthy();
   return { worker, job, suffix };
 }
+
+test('released huddle with an unrecorded start appears as an office check, not an absence claim', async ({ page, request }) => {
+  const { worker, job } = await dailyCycleFixture(request, 'missing-checkin', { overdueCheckIn: true });
+  await page.goto('/');
+  await page.getByLabel(/^(Language|Taal)$/).selectOption('en-GB');
+  await page.getByRole('button', { name: 'Field updates', exact: true }).click();
+  await retainStartHuddle(page, job, worker);
+  await page.getByRole('button', { name: 'Today', exact: true }).click();
+  const workbench = page.getByTestId('contractor-workbench');
+  await workbench.getByRole('searchbox').fill(worker.name);
+  await workbench.getByRole('button', { name: 'Search work', exact: true }).click();
+  await expect(workbench.getByText(`${worker.name} has no recorded site check-in 30 minutes after the planned start on ${job.title}. Confirm the situation; no absence is assumed.`)).toBeVisible();
+  await expect(workbench.getByText('Check required', { exact: true })).toBeVisible();
+
+  page.once('dialog', dialog => dialog.accept());
+  await workbench.getByRole('button', { name: 'Confirm verified unavailability', exact: true }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'Verified unavailability recorded for this shift.' })).toBeVisible();
+  await expect(page.getByText(`${worker.name} has no recorded site check-in 30 minutes after the planned start on ${job.title}. Confirm the situation; no absence is assumed.`)).toHaveCount(0);
+});
 
 async function retainStartHuddle(page, job, worker) {
   const form = page.getByTestId('daily-start-huddle-form');

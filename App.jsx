@@ -1,4 +1,6 @@
-import { createElement, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { companyApiUrl, companyFetch } from './company-request.mjs'
+import { companyHeaders } from './company-scope.mjs'
 import {
   Activity,
   Archive,
@@ -9,11 +11,11 @@ import {
   BriefcaseBusiness,
   Building2,
   CalendarDays,
-  CalendarOff,
   Check,
   ChevronRight,
   ClipboardCheck,
   ClipboardList,
+  CircleHelp,
   CloudOff,
   FileDown,
   FileUp,
@@ -30,18 +32,13 @@ import {
   LoaderCircle,
   LockKeyhole,
   LogOut,
-  MailCheck,
   MapPin,
   MessageSquareText,
   Menu,
   PackageCheck,
-  Pencil,
   Plus,
   ReceiptEuro,
   RefreshCw,
-  Ruler,
-  Search,
-  Send,
   ShieldCheck,
   Target,
   Timer,
@@ -72,26 +69,71 @@ import {
   RESOURCE_ACTION_LABELS,
   roundDisplay,
   setDashboardLocale,
-  shortHash,
   toIsoDateTime,
+  toIsoDateTimeInTimeZone,
   toLocalDateTimeInput,
 } from './dashboard-format'
-import { appText, normalizeLocale, SUPPORTED_LOCALES } from './locale'
+import { appText, normalizeLocale, preferredOperatorLocale, SUPPORTED_LOCALES } from './locale'
 import {
   browserDraftStorage,
   clearSessionDraftScope,
+  removeSessionDraft,
   useSessionDraftRecovery,
 } from './draft-recovery'
 import Empty from './components/EmptyState'
-import './App.css'
+import LazyControlBoundary from './components/LazyControlBoundary'
+import DialogLoading from './components/DialogLoading'
+import DialogBoundary from './components/DialogBoundary'
+import DeferredActionDialog from './components/DeferredActionDialog'
+import { FINANCE_ACTION_LABELS } from './finance-actions'
+import JobRegisterSearch from './components/JobRegisterSearch'
+import IntakeDialog from './components/IntakeDialog'
 
-const ResourcesWorkspace = lazy(() => import('./components/ResourcesWorkspace'))
+
+import DashboardNavigation from './components/DashboardNavigation'
+import TodayAgenda from './components/TodayAgenda'
+import Metric from './components/DashboardMetric'
+import { DossierSections, DossierSection } from './components/DossierSections'
+import './App.css'
+import './dashboard-design.css'
+import {
+loadResources, loadHelp, loadClients, loadAutomation, loadCapabilitySetup,
+  loadPipeline, loadSchedule, loadDispatch,
+  loadFinance, loadPerformance, loadRecovery, preloadDashboardSection,
+  loadFinanceActionDialog, loadResourceActionDialog, loadOperatorActionDialogs,
+  loadCloseoutRegister, loadCommercialControl, loadDayworkControl,
+  loadFieldAssuranceWorkspace, loadFieldRiskControl, loadInspectionChecklistControl,
+  loadNonconformanceControl, loadPhotoEvidenceControl, loadProductionControl,
+  loadProjectControls, loadTakeoffControl, loadWorkPlanControl,
+} from './dashboard-chunks'
+
+const ResourcesWorkspace = lazy(loadResources)
+const PipelineWorkspace = lazy(loadPipeline)
+const PortfolioScheduleWorkspace = lazy(loadSchedule)
+const DispatchWorkspace = lazy(loadDispatch)
+const AVAILABILITY_TIME_ZONES = ['Europe/Amsterdam', 'Europe/Brussels', 'Europe/Berlin', 'Europe/Paris', 'Europe/London', 'Europe/Dublin', 'Europe/Madrid', 'Europe/Rome', 'Europe/Warsaw', 'Europe/Athens', 'UTC']
+const HelpCenter = lazy(loadHelp)
+const WorkBoardOffice = lazy(() => import('./components/WorkBoardOffice'))
+const ContractorWorkbench = lazy(() => import('./components/ContractorWorkbench'))
+const ContractorReviewControl = lazy(() => import('./components/ContractorReviewControl'))
+const WorkContextControl = lazy(() => import('./components/WorkContextControl'))
+const WorkDeliveryControl = lazy(() => import('./components/WorkDeliveryControl'))
+const AssetHistoryControl = lazy(() => import('./components/AssetHistoryControl'))
+const InspectionCoverageControl = lazy(() => import('./components/InspectionCoverageControl'))
+const ClientDeliveryControl = lazy(() => import('./components/ClientDeliveryControl'))
+const WorkBalanceControl = lazy(() => import('./components/WorkBalanceControl'))
+const OperationalRecoveryControl = lazy(() => import('./components/OperationalRecoveryControl'))
+const OfficeConversations = lazy(() => import('./components/Conversation').then(module => ({ default: module.OfficeConversations })))
+const ClientConversationInbox = lazy(() => import('./components/ClientConversationInbox'))
+const OpportunityEditor = lazy(() => import('./components/OpportunityEditor'))
+const FieldWorkPack = lazy(() => import('./components/FieldWorkPack'))
+const OperationalRecoveryPortfolio = lazy(loadRecovery)
 const AuditHistory = lazy(() => import('./components/AuditHistory'))
-const CashFlowForecastControl = lazy(() => import('./components/CashFlowForecastControl'))
-const PerformanceScorecard = lazy(() => import('./components/PerformanceScorecard'))
+const FinanceWorkspace = lazy(loadFinance)
+const FinanceActionDialog = lazy(loadFinanceActionDialog)
+const ResourceActionDialog = lazy(loadResourceActionDialog)
+const PerformanceScorecard = lazy(loadPerformance)
 const FrameworkWorkspace = lazy(() => import('./components/FrameworkWorkspace'))
-const MarketFitControl = lazy(() => import('./components/MarketFitControl'))
-const BidDecisionControl = lazy(() => import('./components/BidDecisionControl'))
 const SiteSurveyControl = lazy(() => import('./components/SiteSurveyControl'))
 const PreTaskPlanControl = lazy(() => import('./components/PreTaskPlanControl'))
 const LmraControl = lazy(() => import('./components/LmraControl'))
@@ -105,23 +147,66 @@ const OrganizationOnboarding = lazy(() => import('./components/OrganizationOnboa
 const AutomationSafetyDialog = lazy(() => import('./components/AutomationSafetyDialog'))
 const QaResetDialog = lazy(() => import('./components/QaResetDialog'))
 const TeamAccessControl = lazy(() => import('./components/TeamAccessControl'))
+const CompanyMembershipControl = lazy(() => import('./components/CompanyMembershipControl'))
 const PrivacyRequestsControl = lazy(() => import('./components/PrivacyRequestsControl'))
-const loadJobWorkspaceControls = () => import('./components/JobWorkspaceControls')
-const AutomationControl = lazy(() => loadJobWorkspaceControls().then((module) => ({ default: module.AutomationControl })))
-const CapabilitySetupControl = lazy(() => loadJobWorkspaceControls().then((module) => ({ default: module.CapabilitySetupControl })))
-const ClientsWorkspace = lazy(() => loadJobWorkspaceControls().then((module) => ({ default: module.ClientsWorkspace })))
-const CloseoutRegister = lazy(() => loadJobWorkspaceControls().then((module) => ({ default: module.CloseoutRegister })))
-const CommercialControl = lazy(() => loadJobWorkspaceControls().then((module) => ({ default: module.CommercialControl })))
-const DayworkControl = lazy(() => loadJobWorkspaceControls().then((module) => ({ default: module.DayworkControl })))
-const FieldAssuranceWorkspace = lazy(() => loadJobWorkspaceControls().then((module) => ({ default: module.FieldAssuranceWorkspace })))
-const FieldRiskControl = lazy(() => loadJobWorkspaceControls().then((module) => ({ default: module.FieldRiskControl })))
-const InspectionChecklistControl = lazy(() => loadJobWorkspaceControls().then((module) => ({ default: module.InspectionChecklistControl })))
-const NonconformanceControl = lazy(() => loadJobWorkspaceControls().then((module) => ({ default: module.NonconformanceControl })))
-const PhotoEvidenceControl = lazy(() => loadJobWorkspaceControls().then((module) => ({ default: module.PhotoEvidenceControl })))
-const ProductionControl = lazy(() => loadJobWorkspaceControls().then((module) => ({ default: module.ProductionControl })))
-const ProjectControls = lazy(() => loadJobWorkspaceControls().then((module) => ({ default: module.ProjectControls })))
-const TakeoffControl = lazy(() => loadJobWorkspaceControls().then((module) => ({ default: module.TakeoffControl })))
-const WorkPlanControl = lazy(() => loadJobWorkspaceControls().then((module) => ({ default: module.WorkPlanControl })))
+const AutomationControl = lazy(loadAutomation)
+const CapabilitySetupControl = lazy(loadCapabilitySetup)
+const ClientsWorkspace = lazy(loadClients)
+const CloseoutRegister = lazy(loadCloseoutRegister)
+const CommercialControl = lazy(loadCommercialControl)
+const DayworkControl = lazy(loadDayworkControl)
+const FieldAssuranceWorkspace = lazy(loadFieldAssuranceWorkspace)
+const FieldRiskControl = lazy(loadFieldRiskControl)
+const InspectionChecklistControl = lazy(loadInspectionChecklistControl)
+const NonconformanceControl = lazy(loadNonconformanceControl)
+const PhotoEvidenceControl = lazy(loadPhotoEvidenceControl)
+const ProductionControl = lazy(loadProductionControl)
+const ProjectControls = lazy(loadProjectControls)
+const TakeoffControl = lazy(loadTakeoffControl)
+const WorkPlanControl = lazy(loadWorkPlanControl)
+
+const JobLifecycleModalDialog = lazy(() => loadOperatorActionDialogs().then(module => ({ default: module.JobLifecycleModalDialog })))
+const WorkerEditorDialog = lazy(() => loadOperatorActionDialogs().then(module => ({ default: module.WorkerEditorDialog })))
+const WorkerRetirementModalDialog = lazy(() => loadOperatorActionDialogs().then(module => ({ default: module.WorkerRetirementModalDialog })))
+const CredentialEditorDialog = lazy(() => loadOperatorActionDialogs().then(module => ({ default: module.CredentialEditorDialog })))
+const QualificationRequirementEditorDialog = lazy(() => loadOperatorActionDialogs().then(module => ({ default: module.QualificationRequirementEditorDialog })))
+const QualificationRetirementModalDialog = lazy(() => loadOperatorActionDialogs().then(module => ({ default: module.QualificationRetirementModalDialog })))
+const AvailabilityEditorDialog = lazy(() => loadOperatorActionDialogs().then(module => ({ default: module.AvailabilityEditorDialog })))
+const AvailabilityCancellationModalDialog = lazy(() => loadOperatorActionDialogs().then(module => ({ default: module.AvailabilityCancellationModalDialog })))
+const EquipmentEditorDialog = lazy(() => loadOperatorActionDialogs().then(module => ({ default: module.EquipmentEditorDialog })))
+const EquipmentCheckoutModalDialog = lazy(() => loadOperatorActionDialogs().then(module => ({ default: module.EquipmentCheckoutModalDialog })))
+const EquipmentReturnModalDialog = lazy(() => loadOperatorActionDialogs().then(module => ({ default: module.EquipmentReturnModalDialog })))
+const EquipmentInspectionModalDialog = lazy(() => loadOperatorActionDialogs().then(module => ({ default: module.EquipmentInspectionModalDialog })))
+const EquipmentMaintenanceModalDialog = lazy(() => loadOperatorActionDialogs().then(module => ({ default: module.EquipmentMaintenanceModalDialog })))
+const EquipmentRetirementModalDialog = lazy(() => loadOperatorActionDialogs().then(module => ({ default: module.EquipmentRetirementModalDialog })))
+const TradePartnerEditorDialog = lazy(() => loadOperatorActionDialogs().then(module => ({ default: module.TradePartnerEditorDialog })))
+const TradePartnerRetirementModalDialog = lazy(() => loadOperatorActionDialogs().then(module => ({ default: module.TradePartnerRetirementModalDialog })))
+const ApprovalReviewModalDialog = lazy(() => loadOperatorActionDialogs().then(module => ({ default: module.ApprovalReviewModalDialog })))
+const ClientEditorModalDialog = lazy(() => loadOperatorActionDialogs().then(module => ({ default: module.ClientEditorModalDialog })))
+const TakeoffCreateModalDialog = lazy(() => loadOperatorActionDialogs().then(module => ({ default: module.TakeoffCreateModalDialog })))
+const TakeoffItemModalDialog = lazy(() => loadOperatorActionDialogs().then(module => ({ default: module.TakeoffItemModalDialog })))
+const TakeoffRemoveModalDialog = lazy(() => loadOperatorActionDialogs().then(module => ({ default: module.TakeoffRemoveModalDialog })))
+const TakeoffConvertModalDialog = lazy(() => loadOperatorActionDialogs().then(module => ({ default: module.TakeoffConvertModalDialog })))
+const CommercialDraftModalDialog = lazy(() => loadOperatorActionDialogs().then(module => ({ default: module.CommercialDraftModalDialog })))
+const CommercialAcceptanceModalDialog = lazy(() => loadOperatorActionDialogs().then(module => ({ default: module.CommercialAcceptanceModalDialog })))
+const CommercialDeliveryModalDialog = lazy(() => loadOperatorActionDialogs().then(module => ({ default: module.CommercialDeliveryModalDialog })))
+const TaskActionModalDialog = lazy(() => loadOperatorActionDialogs().then(module => ({ default: module.TaskActionModalDialog })))
+const OpportunityActivityModalDialog = lazy(() => loadOperatorActionDialogs().then(module => ({ default: module.OpportunityActivityModalDialog })))
+const BidPackageModalDialog = lazy(() => loadOperatorActionDialogs().then(module => ({ default: module.BidPackageModalDialog })))
+const BidReturnModalDialog = lazy(() => loadOperatorActionDialogs().then(module => ({ default: module.BidReturnModalDialog })))
+const BidSelectionModalDialog = lazy(() => loadOperatorActionDialogs().then(module => ({ default: module.BidSelectionModalDialog })))
+const BidCommitmentModalDialog = lazy(() => loadOperatorActionDialogs().then(module => ({ default: module.BidCommitmentModalDialog })))
+const BidOrderPackageModalDialog = lazy(() => loadOperatorActionDialogs().then(module => ({ default: module.BidOrderPackageModalDialog })))
+const BidOrderDeliveryModalDialog = lazy(() => loadOperatorActionDialogs().then(module => ({ default: module.BidOrderDeliveryModalDialog })))
+const BidAddParticipantsModalDialog = lazy(() => loadOperatorActionDialogs().then(module => ({ default: module.BidAddParticipantsModalDialog })))
+const MaterialReceiptModalDialog = lazy(() => loadOperatorActionDialogs().then(module => ({ default: module.MaterialReceiptModalDialog })))
+const MaterialReceiptReversalDialog = lazy(() => loadOperatorActionDialogs().then(module => ({ default: module.MaterialReceiptReversalDialog })))
+const InvoiceDraftModalDialog = lazy(() => loadOperatorActionDialogs().then(module => ({ default: module.InvoiceDraftModalDialog })))
+const ClientLifecycleModalDialog = lazy(() => loadOperatorActionDialogs().then(module => ({ default: module.ClientLifecycleModalDialog })))
+const FinanceOrderDeliveryModalDialog = lazy(() => loadOperatorActionDialogs().then(module => ({ default: module.FinanceOrderDeliveryModalDialog })))
+const EnvironmentalReversalModalDialog = lazy(() => loadOperatorActionDialogs().then(module => ({ default: module.EnvironmentalReversalModalDialog })))
+const FieldAssuranceModalDialog = lazy(() => loadOperatorActionDialogs().then(module => ({ default: module.FieldAssuranceModalDialog })))
+const ResourcePlannerDialog = lazy(() => loadOperatorActionDialogs().then(module => ({ default: module.ResourcePlannerDialog })))
 
 const navItems = [
   ['today', LayoutDashboard],
@@ -130,32 +215,17 @@ const navItems = [
   ['schedule', CalendarDays],
   ['approvals', ClipboardCheck],
   ['dispatch', MapPin],
+  ['recovery', TriangleAlert],
   ['resources', Wrench],
   ['finance', ReceiptEuro],
   ['performance', Activity],
   ['clients', BadgeCheck],
   ['field', HardHat],
   ['operations', Gauge],
+  ['help', CircleHelp],
 ]
 
 const EQUIPMENT_EDITABLE_STATUSES = new Set(['available', 'in_use', 'maintenance', 'inspection_due', 'inactive', 'lost'])
-const FINANCE_ACTION_LABELS = {
-  create_credit_note: 'Credit invoice',
-  record_purchase_order_delivery: 'Record order delivery',
-  record_supplier_invoice: 'Supplier invoice',
-  record_supplier_payment: 'Supplier payment',
-  record_payment_reconciliation: 'Record payment',
-  record_payment_follow_up: 'Payment follow-up',
-  prepare_finance_handoff: 'Finance handoff',
-  review_cost_evidence: 'Review cost evidence',
-  record_time_expense: 'Record costs',
-  request_expense_reversal: 'Reverse expense',
-  create_budget_line: 'Budget baseline',
-  prepare_cost_forecast: 'Freeze forecast',
-  create_billing_milestone: 'Billing milestone',
-  create_draw_request: 'Progress draw',
-  request_lien_waiver: 'Waiver request',
-}
 const TRANSIENT_REQUEST_RETRY_DELAYS_MS = [250, 750]
 
 function isTransientRequestError(error) {
@@ -163,11 +233,12 @@ function isTransientRequestError(error) {
   return /failed to fetch|networkerror|network request failed|load failed|fetch failed/i.test(String(error?.message || ''))
 }
 
-async function retryTransientRequest(operation) {
+async function retryTransientRequest(operation, signal) {
   for (let attempt = 0; ; attempt += 1) {
     try {
       return await operation()
     } catch (error) {
+      if (signal?.aborted) throw error
       const delay = TRANSIENT_REQUEST_RETRY_DELAYS_MS[attempt]
       if (!isTransientRequestError(error) || delay === undefined) throw error
       await new Promise((resolve) => window.setTimeout(resolve, delay))
@@ -178,7 +249,7 @@ async function retryTransientRequest(operation) {
 async function api(path, options = {}) {
   const request = async () => {
     const headers = options.body ? { 'Content-Type': 'application/json', ...(options.headers || {}) } : options.headers
-    const response = await fetch(path, {
+    const response = await companyFetch(path, {
       ...options,
       credentials: 'same-origin',
       headers,
@@ -192,10 +263,11 @@ async function api(path, options = {}) {
     }
     return payload
   }
-  return String(options.method || 'GET').toUpperCase() === 'GET' ? retryTransientRequest(request) : request()
+  return String(options.method || 'GET').toUpperCase() === 'GET' ? retryTransientRequest(request, options.signal) : request()
 }
 
 async function recordFieldEvidence({
+  operatorScope,
   id,
   jobId,
   notes,
@@ -219,10 +291,10 @@ async function recordFieldEvidence({
     payload.append('caption', notes)
     payload.append('photoEvidenceEntryKey', id || createFieldEvidenceDraftId())
   }
-  const response = await fetch('/api/ledger/upload', {
+  const response = await companyFetch('/api/ledger/upload', {
     method: 'POST',
     credentials: 'same-origin',
-    headers: { 'Idempotency-Key': id || createFieldEvidenceDraftId() },
+    headers: { 'Idempotency-Key': id || createFieldEvidenceDraftId(), ...(operatorScope ? companyHeaders(operatorScope) : {}) },
     body: payload,
   })
   const result = await response.json().catch(() => ({}))
@@ -245,7 +317,7 @@ function emptyFieldEvidenceDraft() {
   }
 }
 
-async function recordFieldOperation({ id, type, jobId, payload }) {
+async function recordFieldOperation({ id, type, jobId, payload, operatorScope }) {
   const inspectionId = type === 'inspection_checklist' ? String(payload?.inspectionId || '') : ''
   const attendanceSessionId = type === 'attendance_check_out' ? String(payload?.sessionId || '') : ''
   const custodySessionId = type === 'equipment_return' ? String(payload?.custodySessionId || '') : ''
@@ -316,6 +388,7 @@ async function recordFieldOperation({ id, type, jobId, payload }) {
   delete requestPayload.locationId
   return api(`/api/ledger/jobs/${encodeURIComponent(jobId)}/${route}`, {
     method: 'POST',
+    headers: operatorScope ? companyHeaders(operatorScope) : {},
     body: JSON.stringify(requestPayload),
   })
 }
@@ -407,6 +480,7 @@ function emptyMaterialReceiptDraft(plan = null) {
     deliveredAt: toLocalDateTimeInput(new Date()),
     receivedBy: '',
     location: '',
+    stockDestination: 'job_site',
     finalDelivery: plan?.summary?.remainingLines === lines.length && lines.length > 0,
     notes: '',
     lines: lines.length ? lines : [emptyMaterialReceiptLine()],
@@ -511,7 +585,11 @@ function emptyTaskDraft() {
     dueAt: futureDateInput(1),
     assigneeId: '',
     durationHours: '8',
+    requiredCrewRequirements: [{ role: '', count: '1' }],
+    supervisorWorkerIds: [],
+    workersPerSupervisor: '',
     predecessorTaskId: '',
+    materialRequirementIds: [],
   }
 }
 
@@ -534,6 +612,10 @@ function emptyQuoteDraft(job = null) {
 function emptyChangeOrderDraft(job = null, supersedes = null) {
   const referenceQuote = (job?.quotes || []).find((quote) => quote.status === 'accepted')
   const formalControl = supersedes?.formalControl || {}
+  const clientResponse = supersedes?.data?.clientResponse || null
+  const revisionOrigin = supersedes?.snapshot?.revisionOrigin || null
+  const clientRevisionDecision = clientResponse?.decision || revisionOrigin?.decision || ''
+  const clientRevisionNote = clientResponse?.note || revisionOrigin?.note || ''
   return {
     entryKey: createFieldEvidenceDraftId(),
     quoteId: referenceQuote?.id || '',
@@ -566,6 +648,10 @@ function emptyChangeOrderDraft(job = null, supersedes = null) {
           costCode: item.costCode || 'change_order',
         }))
       : [{ description: '', quantity: '1', unitPrice: '', costCode: 'change_order' }],
+    clientRevisionRequest: ['changes_requested', 'rejected'].includes(clientRevisionDecision)
+      ? clientRevisionNote
+      : '',
+    clientRevisionDecision,
   }
 }
 
@@ -623,6 +709,7 @@ function emptyResourceActionDraft() {
     costCode: 'labor',
     materialStatus: 'available',
     availableQuantity: '',
+    expectedAvailableAt: '',
     location: '',
     reference: '',
     supplier: '',
@@ -783,30 +870,6 @@ function emptyInvoiceDraft() {
   }
 }
 
-function emptyOpportunityDraft(opportunity = null) {
-  return {
-    clientName: opportunity?.client?.name || '',
-    company: opportunity?.client?.company || '',
-    email: opportunity?.client?.email || '',
-    phone: opportunity?.client?.phone || '',
-    title: opportunity?.title || '',
-    stage: opportunity?.stage || 'new',
-    service: opportunity?.service || '',
-    sourceChannel: opportunity?.sourceChannel || 'manual',
-    description: opportunity?.description || '',
-    address: opportunity?.address || '',
-    city: opportunity?.city || '',
-    postalCode: opportunity?.postalCode || '',
-    country: opportunity?.country || 'NL',
-    clientSegment: opportunity?.data?.clientSegment || '',
-    estimatedValue: opportunity ? String(opportunity.estimatedValue || '') : '',
-    probabilityPercent: opportunity ? String(opportunity.probabilityPercent ?? 10) : '10',
-    targetDecisionAt: toLocalDateTimeInput(opportunity?.targetDecisionAt),
-    nextFollowUpAt: toLocalDateTimeInput(opportunity?.nextFollowUpAt),
-    ownerName: opportunity?.ownerName || '',
-    lostReason: opportunity?.lostReason || '',
-  }
-}
 
 function emptyOpportunityActivityDraft() {
   return {
@@ -880,14 +943,29 @@ function emptyWorkerAvailabilityDraft(worker = null) {
   startsAt.setHours(8, 0, 0, 0)
   const endsAt = new Date(startsAt)
   endsAt.setHours(17, 0, 0, 0)
+  const reviewAt = new Date(startsAt)
+  reviewAt.setDate(reviewAt.getDate() + 3)
   return {
     workerId: worker?.id || '',
     periodType: 'leave',
     title: '',
     startsAt: toLocalDateTimeInput(startsAt.toISOString()),
     endsAt: toLocalDateTimeInput(endsAt.toISOString()),
+    returnUnknown: false,
+    reviewAt: toLocalDateTimeInput(reviewAt.toISOString()).slice(0, 10),
+    repeatWeekly: false,
+    recurrenceDays: [startsAt.getDay()],
+    recurrenceUntil: '',
+    recurrenceTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Europe/Amsterdam',
     notes: '',
   }
+}
+
+function workerAvailabilityReviewMinimum(startsAt) {
+  if (!startsAt) return undefined
+  const minimum = new Date(startsAt)
+  minimum.setDate(minimum.getDate() + 1)
+  return toLocalDateTimeInput(minimum.toISOString()).slice(0, 10)
 }
 
 function workPermitBlockerText(blocker, t) {
@@ -1126,12 +1204,15 @@ function reconcileApprovalResolution(data, approvalId, dashboard = null) {
   }
 }
 
+const requestSectionData = api
 async function loadSectionPatch(section, resourceView = 'workforce', fieldScoped = false, viewContext = {}) {
+  const api = (path, options = {}) => requestSectionData(path, { ...options, signal: viewContext.signal })
+  if (section === 'help') return {}
   if (section === 'today' && !fieldScoped) {
     const [organization, scheduler, capabilities] = await Promise.all([
       api('/api/ledger/organization').catch(() => null),
       api('/api/ledger/scheduler').catch(() => null),
-      api('/api/operations/capabilities').catch(() => null),
+      viewContext.operatorRole === 'owner' ? api('/api/operations/capabilities').catch(() => null) : Promise.resolve(null),
     ])
     return {
       organization: organization?.organization || null,
@@ -1160,10 +1241,10 @@ async function loadSectionPatch(section, resourceView = 'workforce', fieldScoped
   }
   if (section === 'jobs') {
     const [jobs, templates] = await Promise.all([
-      api('/api/ledger/jobs?limit=100'),
+      viewContext.jobsResult ? Promise.resolve(viewContext.jobsResult) : api('/api/ledger/jobs?limit=100'),
       api('/api/ledger/inspection-templates'),
     ])
-    return { jobs: jobs.jobs || [], inspectionTemplates: templates.templates || [] }
+    return { jobs: jobs.jobs || [], jobRegisterPagination: jobs.pagination || null, inspectionTemplates: templates.templates || [] }
   }
   if (section === 'schedule') {
     const lastPlannerParameters = new URLSearchParams()
@@ -1254,6 +1335,9 @@ async function loadSectionPatch(section, resourceView = 'workforce', fieldScoped
       workerSummary: workers.summary || {},
     }
   }
+  if (section === 'recovery') {
+    return { recoveryPortfolio: await api('/api/ledger/operational-recovery?limit=200') }
+  }
   if (section === 'performance') {
     const [result, catalog, frameworks] = await Promise.all([
       api('/api/ledger/performance-scorecard'),
@@ -1295,18 +1379,20 @@ async function loadSectionPatch(section, resourceView = 'workforce', fieldScoped
     }
   }
   if (section === 'operations') {
-    const [templates, scheduler, organization, backups, capabilities, archivedJobs, operatorRegister, workers, operatorScopeJobs, privacyRequests, clientDirectory] = await Promise.all([
+    const [templates, scheduler, organization, backups, capabilities, archivedJobs, operatorRegister, workers, operatorScopeJobs, privacyRequests, clientDirectory, health, readiness] = await Promise.all([
       api('/api/ledger/inspection-templates'),
       api('/api/ledger/scheduler').catch(() => null),
       api('/api/ledger/organization'),
       api('/api/operations/backups').catch(() => ({ backups: [] })),
-      api('/api/operations/capabilities').catch(() => null),
+      viewContext.operatorRole === 'owner' ? api('/api/operations/capabilities').catch(() => null) : Promise.resolve(null),
       api('/api/ledger/jobs?archiveOnly=true&limit=100').catch(() => ({ jobs: [] })),
       api('/api/operations/operators'),
       api('/api/ledger/workers?limit=500'),
       api('/api/ledger/jobs?limit=500'),
       api('/api/operations/privacy/requests?status=all&limit=500'),
       api('/api/ledger/clients?limit=500'),
+      api('/api/health'),
+      api('/api/readiness').catch(() => ({ status: 'unavailable' })),
     ])
     return {
       inspectionTemplates: templates.templates || [],
@@ -1321,33 +1407,50 @@ async function loadSectionPatch(section, resourceView = 'workforce', fieldScoped
       clientDirectory,
       workers: workers.workers || [],
       workerSummary: workers.summary || {},
+      health,
+      readiness,
     }
   }
   return {}
 }
 
-function Metric({ icon, label, value, hint, tone = 'default' }) {
-  return (
-    <article className={`metric metric-${tone}`}>
-      <span className="metric-icon">{createElement(icon, { size: 18 })}</span>
-      <div>
-        <p>{label}</p>
-        <strong>{value}</strong>
-        <small>{hint}</small>
-      </div>
-    </article>
-  )
-}
 
 function localizedNextActionMessage(item, jobs, t) {
   const jobTitle = item.jobTitle
     || item.title
     || jobs.find((job) => job.id === item.jobId)?.title
     || t('This job')
+  if (item.type === 'review_operational_recovery') {
+    if (item.integrityFailure) return t('A recovery record failed its integrity check. Review the retained case before relying on its contents.')
+    const owner = item.owner || t('the assigned owner')
+    if (item.followUpType === 'recovery_case') {
+      return item.overdue
+        ? t('Recovery case for {job} is overdue. {owner} should review current evidence.', { job: jobTitle, owner })
+        : t('Recovery case for {job} is due within seven days. {owner} should check the latest source before acting.', { job: jobTitle, owner })
+    }
+    if (item.followUpType === 'supplier_response') return item.overdue
+      ? t('Supplier follow-up for {job} is overdue. Review the delivery evidence and record the outcome.', { job: jobTitle })
+      : t('Supplier follow-up for {job} is due within seven days. Check the latest delivery evidence.', { job: jobTitle })
+    if (item.followUpType === 'supplier_delivery') return item.overdue
+      ? t('Supplier delivery review for {job} is overdue. Confirm actual receipt before updating availability.', { job: jobTitle })
+      : t('Supplier delivery for {job} is expected within seven days. Confirm actual receipt before updating availability.', { job: jobTitle })
+    if (item.followUpType === 'client_response') return item.overdue
+      ? t('Customer follow-up for {job} is overdue. Review new inbound messages before acting.', { job: jobTitle })
+      : t('Customer follow-up for {job} is due within seven days. Review new inbound messages before acting.', { job: jobTitle })
+    if (item.followUpType === 'contract_review') return item.overdue
+      ? t('Contract milestone follow-up for {job} is overdue. Recheck the current commitment and source.', { job: jobTitle })
+      : t('Contract milestone follow-up for {job} is due within seven days. Recheck the current commitment and source.', { job: jobTitle })
+  }
   if (item.type === 'assign_worker') {
     return t('{job} needs a worker assignment.', { job: jobTitle })
   }
   if (item.type === 'review_daily_cycle') {
+    if (item.actionKind === 'worker_checkin_missing') {
+      return t('{worker} has no recorded site check-in 30 minutes after the planned start on {job}. Confirm the situation; no absence is assumed.', {
+        worker: item.workerName || t('The assigned worker'),
+        job: jobTitle,
+      })
+    }
     if (item.actionKind === 'end_of_day_missing') {
       return t('{job} has an open {status} daily cycle and needs a retained end-of-day plan-versus-actual report.', {
         job: jobTitle,
@@ -1370,701 +1473,11 @@ function localizedNextActionMessage(item, jobs, t) {
   return item.message || ''
 }
 
-function localizedFinanceActionLabel(action, t) {
-  if (!action) return t('Finance records are stable.')
-  if (action.type === 'draft_invoice' && action.billingMilestoneId) {
-    return action.billingMilestoneSequence
-      ? t('Draft milestone {sequence} invoice', { sequence: action.billingMilestoneSequence })
-      : t('Draft milestone invoice')
-  }
-  return t(action.label || FINANCE_ACTION_LABELS[action.type] || 'Finance records are stable.')
-}
 
-function localizedCostForecastWarning(warning, t, formatCurrency) {
-  const count = Number(warning?.count
-    ?? warning?.costCodes?.length
-    ?? warning?.timeLogIds?.length
-    ?? warning?.expenseIds?.length
-    ?? warning?.supplierInvoiceIds?.length
-    ?? 0)
-  if (warning?.code === 'reported_cost_totals_differ') {
-    return count === 1
-      ? t('{count} budget line has reported actual or commitment totals that differ from linked ledger evidence.', { count })
-      : t('{count} budget lines have reported actual or commitment totals that differ from linked ledger evidence.', { count })
-  }
-  if (warning?.code === 'unbudgeted_costs_present') {
-    return count === 1
-      ? t('{count} cost code contains actual or committed cost without an approved budget.', { count })
-      : t('{count} cost codes contain actual or committed cost without an approved budget.', { count })
-  }
-  if (warning?.code === 'labor_awaiting_timesheet_approval') {
-    return count === 1
-      ? t('{count} time log remains unreviewed until its exact source lines are covered by an approved weekly timesheet.', { count })
-      : t('{count} time logs remain unreviewed until their exact source lines are covered by approved weekly timesheets.', { count })
-  }
-  if (warning?.code === 'expense_evidence_unreviewed') {
-    return count === 1
-      ? t('{count} expense record is included in EAC but excluded from approved actual cost until governed receipt review is complete.', { count })
-      : t('{count} expense records are included in EAC but excluded from approved actual cost until governed receipt review is complete.', { count })
-  }
-  if (warning?.code === 'supplier_invoice_unreviewed') {
-    return count === 1
-      ? t('{count} supplier invoice is included in EAC but excluded from approved actual cost until approval is complete.', { count })
-      : t('{count} supplier invoices are included in EAC but excluded from approved actual cost until approval is complete.', { count })
-  }
-  if (warning?.code === 'purchase_commitment_unreviewed') {
-    return t('{amount} of retained purchase-order exposure is included in EAC but is not recognized as an approved commitment.', {
-      amount: formatCurrency(Number(warning.amount || 0)),
-    })
-  }
-  return warning?.message || ''
-}
 
-function LazyControlBoundary({ label, mode = 'section', children }) {
-  const className = mode === 'job' ? 'loading job-workspace-loading' : 'loading section-loading'
-  return (
-    <Suspense fallback={<div className={className} role="status"><LoaderCircle className="spin" size={16} /> Loading {label}</div>}>
-      {children}
-    </Suspense>
-  )
-}
 
-const PIPELINE_STAGES = ['new', 'qualifying', 'site_visit', 'estimating', 'proposal', 'negotiating', 'won', 'lost', 'archived']
 
-function BidPackageWorkspace({
-  text,
-  bidPackages,
-  selectedBidPackage,
-  canCoordinate,
-  canApprove,
-  submitting,
-  onCreate,
-  onSelect,
-  onAddBidders,
-  onRecordReturn,
-  onRequestSelection,
-  onReviewApproval,
-  onPrepareCommitment,
-  onReviewCommitment,
-  onPrepareOrderPackage,
-  onReviewOrderDelivery,
-  onRecordOrderDelivery,
-}) {
-  const t = text || ((value) => value)
-  const [query, setQuery] = useState('')
-  const [status, setStatus] = useState('open')
-  const normalizedQuery = query.trim().toLowerCase()
-  useEffect(() => {
-    if (selectedBidPackage?.status === 'selected') setStatus('selected')
-  }, [selectedBidPackage?.id, selectedBidPackage?.status])
-  const rows = useMemo(
-    () =>
-      bidPackages.filter((bidPackage) => {
-        const statusMatches =
-          status === 'all' ||
-          (status === 'open'
-            ? !['selected', 'closed', 'cancelled'].includes(bidPackage.status)
-            : bidPackage.status === status)
-        return statusMatches && (!normalizedQuery || JSON.stringify(bidPackage).toLowerCase().includes(normalizedQuery))
-      }),
-    [bidPackages, normalizedQuery, status],
-  )
 
-  return (
-    <>
-      <section className="panel bid-register" data-testid="bid-package-workspace">
-        <div className="panel-heading pipeline-heading">
-          <div>
-            <h2>{t('Bid package register')}</h2>
-            <p>{t('Compare retained trade-partner returns before a preferred bidder enters approval.')}</p>
-          </div>
-          {canCoordinate ? (
-            <button className="primary-button" onClick={onCreate}>
-              <Plus size={16} />
-              {t('New bid package')}
-            </button>
-          ) : null}
-        </div>
-        <div className="pipeline-toolbar">
-          <label className="search-control">
-            <Search size={15} />
-            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t('Search package, client, trade or bidder')} />
-          </label>
-          <div className="pipeline-stage-tabs bid-status-tabs" role="group" aria-label={t('Filter bid packages by status')}>
-            {['open', 'under_review', 'pending_selection_approval', 'selected', 'all'].map((option) => (
-              <button key={option} className={status === option ? 'active' : ''} onClick={() => setStatus(option)}>
-                {t(String(option).replaceAll('_', ' '))}
-              </button>
-            ))}
-          </div>
-        </div>
-        {rows.length ? (
-          <div className="bid-package-list">
-            {rows.map((bidPackage) => (
-              <article className={`bid-package-row ${selectedBidPackage?.id === bidPackage.id ? 'bid-package-row-selected' : ''}`} key={bidPackage.id}>
-                <button className="bid-package-main" onClick={() => onSelect(bidPackage)} aria-label={t('Open bid package {number}', { number: bidPackage.packageNumber })}>
-                  <span className="bid-package-icon"><ClipboardList size={17} /></span>
-                  <span>
-                    <span className="pipeline-title">
-                      <strong>{bidPackage.packageNumber} / {bidPackage.title}</strong>
-                      <span className={`status status-${bidPackage.status}`}>{t(String(bidPackage.status || 'draft').replaceAll('_', ' '))}</span>
-                    </span>
-                    <small>{bidPackage.client?.name || t('Client pending')} / {bidPackage.trade} / {bidPackage.opportunity?.title || t('Opportunity pending')}</small>
-                  </span>
-                </button>
-                <dl className="bid-package-values">
-                  <div><dt>{t('Due')}</dt><dd className={bidPackage.flags?.overdue ? 'pipeline-overdue' : ''}>{bidPackage.dueAt ? formatDate(bidPackage.dueAt) : t('Not set')}</dd></div>
-                  <div><dt>{t('Returns')}</dt><dd>{bidPackage.comparison?.returned || 0} / {bidPackage.comparison?.invited || 0}</dd></div>
-                  <div><dt>{t('Lowest')}</dt><dd>{bidPackage.comparison?.returned ? currency.format(bidPackage.comparison.lowestTotal || 0) : t('Pending')}</dd></div>
-                </dl>
-                <button className="icon-button table-action" aria-label={t('Open bid package details for {number}', { number: bidPackage.packageNumber })} onClick={() => onSelect(bidPackage)}>
-                  <ArrowUpRight size={16} />
-                </button>
-              </article>
-            ))}
-          </div>
-        ) : (
-          <Empty title={t('No bid packages in this view')} detail={t('Adjust the status filter or retain a new internal tender package.')} />
-        )}
-      </section>
-
-      {selectedBidPackage ? (
-        <section className="panel bid-package-detail" aria-live="polite">
-          <div className="panel-heading">
-            <div>
-              <h2>{selectedBidPackage.packageNumber} / {selectedBidPackage.title}</h2>
-              <p>
-                {selectedBidPackage.trade} / {t(String(selectedBidPackage.status || 'draft').replaceAll('_', ' '))} /{' '}
-                {(selectedBidPackage.comparison?.returned || 0) === 1
-                  ? t('{count} retained return', { count: selectedBidPackage.comparison?.returned || 0 })
-                  : t('{count} retained returns', { count: selectedBidPackage.comparison?.returned || 0 })}
-              </p>
-            </div>
-            <div className="bid-package-heading-actions">
-              {canCoordinate && ['draft', 'open_for_returns', 'under_review'].includes(selectedBidPackage.status) ? (
-                <button className="secondary-button" onClick={() => onAddBidders(selectedBidPackage)}>
-                  <Users size={15} /> {t('Add bidders')}
-                </button>
-              ) : null}
-              {selectedBidPackage.approvalId && selectedBidPackage.status === 'pending_selection_approval' && canApprove ? (
-                <button className="primary-button" onClick={() => onReviewApproval(selectedBidPackage)}>
-                  <ShieldCheck size={15} /> {t('Review approval')}
-                </button>
-              ) : null}
-              {selectedBidPackage.status === 'selected' && canCoordinate && (!selectedBidPackage.commitment || selectedBidPackage.flags?.commitmentRejected) ? (
-                <button
-                  className="primary-button"
-                  disabled={!selectedBidPackage.jobId || submitting}
-                  title={selectedBidPackage.jobId ? t('Prepare the selected return for purchasing approval') : t('Convert the opportunity to a job first')}
-                  onClick={() => onPrepareCommitment(selectedBidPackage)}
-                >
-                  <ReceiptEuro size={15} /> {selectedBidPackage.flags?.commitmentRejected ? t('Revise commitment') : selectedBidPackage.jobId ? t('Prepare commitment') : t('Job required')}
-                </button>
-              ) : null}
-              {selectedBidPackage.commitment?.status === 'pending_approval' && canApprove ? (
-                <button className="primary-button" onClick={() => onReviewCommitment(selectedBidPackage)}>
-                  <ShieldCheck size={15} /> {t('Review commitment')}
-                </button>
-              ) : null}
-              {selectedBidPackage.flags?.orderPackageReady && canCoordinate ? (
-                <button className="primary-button" disabled={submitting} onClick={() => onPrepareOrderPackage(selectedBidPackage)}>
-                  <PackageCheck size={15} /> {t('Prepare order package')}
-                </button>
-              ) : null}
-              {selectedBidPackage.flags?.orderDeliveryApprovalPending && canApprove ? (
-                <button className="primary-button" disabled={submitting} onClick={() => onReviewOrderDelivery(selectedBidPackage)}>
-                  <ShieldCheck size={15} /> {t('Review transmission')}
-                </button>
-              ) : null}
-              {selectedBidPackage.flags?.orderDeliveryApproved && canCoordinate ? (
-                <button className="primary-button" disabled={submitting} onClick={() => onRecordOrderDelivery(selectedBidPackage)}>
-                  <MailCheck size={15} /> {t('Record delivery receipt')}
-                </button>
-              ) : null}
-              <button className="icon-button" aria-label={t('Close bid package detail')} onClick={() => onSelect(null)}><X size={17} /></button>
-            </div>
-          </div>
-          <div className="bid-package-summary">
-            <div><span>{t('Scope')}</span><strong>{selectedBidPackage.scope}</strong></div>
-            <div><span>{t('Comparison')}</span><strong>{selectedBidPackage.comparison?.returned ? t('{lowest} to {highest}', { lowest: currency.format(selectedBidPackage.comparison.lowestTotal), highest: currency.format(selectedBidPackage.comparison.highestTotal) }) : t('No returns retained')}</strong></div>
-            <div>
-              <span>{t('Control')}</span>
-              <strong>
-                {selectedBidPackage.flags?.orderIssued
-                  ? t('Order issued with verified provider receipt')
-                  : selectedBidPackage.flags?.orderDeliveryApproved
-                    ? t('Transmission approved; provider receipt required')
-                    : selectedBidPackage.flags?.orderDeliveryApprovalPending
-                      ? t('Order package retained; transmission approval pending')
-                      : selectedBidPackage.commitment?.status === 'ready_to_order'
-                        ? t('Purchasing envelope approved; no award sent')
-                  : selectedBidPackage.commitment?.status === 'pending_approval'
-                    ? t('Commitment approval pending; no award sent')
-                    : selectedBidPackage.flags?.commitmentRejected
-                      ? t('Commitment rejected; retained for revision')
-                      : selectedBidPackage.status === 'selected'
-                        ? t('Preferred bidder retained; no commitment prepared')
-                        : t('Internal only; no invitations sent')}
-              </strong>
-            </div>
-          </div>
-          {selectedBidPackage.commitment ? (
-            <div className={`bid-commitment ${selectedBidPackage.commitment.integrityValid ? '' : 'bid-commitment-invalid'}`} data-testid="bid-commitment">
-              <div className="bid-commitment-heading">
-                <div>
-                  <span className="eyebrow">{t('Purchasing commitment')}</span>
-                  <strong>{selectedBidPackage.commitment.purchaseOrder.supplier}</strong>
-                </div>
-                <div className="bid-commitment-tags">
-                  <span className={`status status-${selectedBidPackage.commitment.status}`}>{t(String(selectedBidPackage.commitment.status || 'pending_approval').replaceAll('_', ' '))}</span>
-                  <span className={`tag ${selectedBidPackage.commitment.integrityValid ? 'tag-green' : 'tag-red'}`}>
-                    {selectedBidPackage.commitment.integrityValid ? t('Source verified') : t('Integrity failed')}
-                  </span>
-                </div>
-              </div>
-              <dl className="bid-commitment-values">
-                <div><dt>{t('Net envelope')}</dt><dd>{currency.format(selectedBidPackage.commitment.purchaseOrder.amount || 0)}</dd></div>
-                <div><dt>{t('Required by')}</dt><dd>{formatDate(selectedBidPackage.commitment.purchaseOrder.requiredBy)}</dd></div>
-                <div><dt>{t('Cost code')}</dt><dd>{selectedBidPackage.commitment.purchaseOrder.data?.source?.terms?.costCode || 'SUBCONTRACT'}</dd></div>
-                <div><dt>{t('Hash')}</dt><dd><code>{shortHash(selectedBidPackage.commitmentHash)}</code></dd></div>
-              </dl>
-              <p>
-                {selectedBidPackage.commitment.orderIssued
-                  ? t('The retained order was issued only after transmission approval and a configured provider receipt. No payment or subcontract signature was performed.')
-                  : <>{selectedBidPackage.commitment.spendAuthorized
-                    ? t('The exact internal spend envelope is approved and ready for a separate ordering action.')
-                    : t('Approval is required before this exact internal spend envelope becomes ready to order.')}{' '}
-                    {t('No supplier contact, award, order transmission, subcontract signature, or payment occurred.')}</>}
-              </p>
-              {selectedBidPackage.commitment.issuePackage ? (
-                <div className="bid-order-package" data-testid="bid-order-package">
-                  <div>
-                    <span className="eyebrow">{t('Controlled order package')}</span>
-                    <strong>{selectedBidPackage.commitment.issuePackage.issueReference}</strong>
-                    <small>
-                      {selectedBidPackage.commitment.issuePackage.communication?.data?.recipient || t('Supplier recipient retained')} / {t(String(selectedBidPackage.commitment.issuePackage.transportStatus || 'draft').replaceAll('_', ' '))}
-                    </small>
-                  </div>
-                  <div className="bid-order-package-actions">
-                    <span className={`tag ${selectedBidPackage.commitment.orderIssued ? 'tag-green' : 'tag-amber'}`}>
-                      {selectedBidPackage.commitment.orderIssued ? t('Provider receipt retained') : t(String(selectedBidPackage.commitment.issuePackage.communicationStatus || 'draft').replaceAll('_', ' '))}
-                    </span>
-                    <a
-                      className="secondary-button"
-                      aria-label={t('Download purchase order {reference}', { reference: selectedBidPackage.commitment.issuePackage.issueReference })}
-                      href={`/api/ledger/documents/${encodeURIComponent(selectedBidPackage.commitment.issuePackage.htmlDocumentId)}/issue-package`}
-                      download
-                    >
-                      <FileDown size={15} /> {t('Order')}
-                    </a>
-                    <a
-                      className="secondary-button"
-                      aria-label={t('Download purchase order UBL {reference}', { reference: selectedBidPackage.commitment.issuePackage.issueReference })}
-                      href={`/api/ledger/documents/${encodeURIComponent(selectedBidPackage.commitment.issuePackage.ublDocumentId)}/issue-package`}
-                      download
-                    >
-                      <FileDown size={15} /> UBL
-                    </a>
-                  </div>
-                </div>
-              ) : null}
-            </div>
-          ) : null}
-          <div className="bid-participant-list">
-            {selectedBidPackage.participants.map((participant) => {
-              const canEditReturn = canCoordinate && ['open_for_returns', 'under_review'].includes(selectedBidPackage.status)
-              const canSelect = canCoordinate && participant.status === 'returned' && ['open_for_returns', 'under_review'].includes(selectedBidPackage.status)
-              return (
-                <article className="bid-participant-row" key={participant.id}>
-                  <div className="bid-participant-copy">
-                    <span className="pipeline-title">
-                      <strong>{participant.partner?.name || t('Trade partner unavailable')}</strong>
-                      <span className={`status status-${participant.status}`}>{t(String(participant.status || 'internal_invite').replaceAll('_', ' '))}</span>
-                    </span>
-                    <small>{t(String(participant.partner?.compliance?.status || 'needs_review').replaceAll('_', ' '))} {t('compliance')} / {participant.data?.deliveryStatus === 'not_sent' ? t('internal invite only') : t('retained record')}</small>
-                    {participant.evidenceReference ? <p>{t('Evidence')}: {participant.evidenceReference}</p> : null}
-                  </div>
-                  <dl className="bid-participant-values">
-                    <div><dt>{t('Total')}</dt><dd>{participant.status === 'internal_invite' ? t('Awaiting return') : currency.format(participant.total || 0)}</dd></div>
-                    <div><dt>{t('Duration')}</dt><dd>{participant.durationDays === null ? t('Not retained') : t('{count} days', { count: participant.durationDays })}</dd></div>
-                    <div><dt>{t('Valid until')}</dt><dd>{participant.validUntil ? formatDate(participant.validUntil) : t('Not retained')}</dd></div>
-                  </dl>
-                  <div className="bid-participant-actions">
-                    {canEditReturn && ['internal_invite', 'returned'].includes(participant.status) ? (
-                      <button className="secondary-button" disabled={submitting} onClick={() => onRecordReturn(selectedBidPackage, participant)}>
-                        <ReceiptEuro size={15} /> {participant.status === 'returned' ? t('Update return') : t('Record return')}
-                      </button>
-                    ) : null}
-                    {canSelect ? (
-                      <button className="primary-button" disabled={submitting || participant.partner?.compliance?.compliant !== true} onClick={() => onRequestSelection(selectedBidPackage, participant)}>
-                        <ShieldCheck size={15} /> {t('Request selection approval')}
-                      </button>
-                    ) : null}
-                    {participant.status === 'selected' ? <span className="tag tag-green">{t('Preferred / no award sent')}</span> : null}
-                  </div>
-                </article>
-              )
-            })}
-          </div>
-        </section>
-      ) : null}
-    </>
-  )
-}
-
-function PipelineWorkspace({
-  locale,
-  text,
-  view,
-  onViewChange,
-  opportunities,
-  forecast,
-  marketFit,
-  bidDecisions,
-  bidPackages,
-  bidSummary,
-  selectedBidPackage,
-  selectedOpportunity,
-  canCoordinate,
-  canManagePolicy,
-  canApprove,
-  submitting,
-  onCreate,
-  onEdit,
-  onSelect,
-  onFollowUp,
-  onCompleteActivity,
-  onConvert,
-  onRequestMarketFitPolicy,
-  onRetainMarketFitAssessment,
-  onRequestBidDecisionPolicy,
-  onRequestBidDecision,
-  onPlanSiteSurvey,
-  onUploadSiteSurveyEvidence,
-  onSubmitSiteSurvey,
-  onReviewSiteSurveyApproval,
-  onOpenJob,
-  onCreateBidPackage,
-  onSelectBidPackage,
-  onAddBidders,
-  onRecordBidReturn,
-  onRequestBidSelection,
-  onReviewBidApproval,
-  onPrepareBidCommitment,
-  onReviewBidCommitment,
-  onPrepareBidOrderPackage,
-  onReviewBidOrderDelivery,
-  onRecordBidOrderDelivery,
-}) {
-  const t = text || ((value) => value)
-  const [query, setQuery] = useState('')
-  const [stage, setStage] = useState('open')
-  const normalizedQuery = query.trim().toLowerCase()
-  const rows = useMemo(
-    () =>
-      opportunities.filter((opportunity) => {
-        const stageMatches =
-          stage === 'all' ||
-          (stage === 'open'
-            ? !['won', 'lost', 'archived'].includes(opportunity.stage)
-            : opportunity.stage === stage)
-        return stageMatches && (!normalizedQuery || JSON.stringify(opportunity).toLowerCase().includes(normalizedQuery))
-      }),
-    [normalizedQuery, opportunities, stage],
-  )
-  const summary = forecast?.summary || {}
-  const tenderSummary = bidSummary || {}
-
-  return (
-    <section className="page-grid pipeline-workspace" data-testid="pipeline-workspace">
-      <div className="metrics-grid pipeline-metrics">
-        {view === 'opportunities' ? (
-          <>
-            <Metric icon={Target} label="Open opportunities" value={summary.open || 0} hint={`${summary.total || 0} retained leads`} />
-            <Metric icon={ReceiptEuro} label="Weighted forecast" value={currency.format(summary.weightedValue || 0)} hint={`${currency.format(summary.estimatedValue || 0)} unweighted`} tone="green" />
-            <Metric icon={Timer} label="Follow-ups due" value={summary.overdueFollowUps || 0} hint="Internal action required" tone={summary.overdueFollowUps ? 'amber' : 'green'} />
-            <Metric icon={BriefcaseBusiness} label="Converted" value={summary.converted || 0} hint={`${summary.won || 0} verified wins`} tone="blue" />
-          </>
-        ) : (
-          <>
-            <Metric icon={ClipboardList} label={t('Bid packages')} value={tenderSummary.total || 0} hint={t('{count} internal bidders', { count: tenderSummary.invited || 0 })} />
-            <Metric icon={ReceiptEuro} label={t('Returns retained')} value={tenderSummary.returns || 0} hint={t('Comparable evidence')} tone="green" />
-            <Metric icon={Timer} label={t('Overdue')} value={tenderSummary.overdue || 0} hint={t('Return deadline passed')} tone={tenderSummary.overdue ? 'amber' : 'green'} />
-            <Metric icon={ShieldCheck} label={t('Selections')} value={tenderSummary.selected || 0} hint={t('{count} awaiting approval', { count: tenderSummary.pendingApproval || 0 })} tone="blue" />
-          </>
-        )}
-      </div>
-
-      <div className="pipeline-view-tabs" role="tablist" aria-label={t('Preconstruction views')}>
-        <button role="tab" aria-selected={view === 'opportunities'} className={view === 'opportunities' ? 'active' : ''} onClick={() => onViewChange('opportunities')}>
-          <Target size={15} /> {t('Opportunities')}
-        </button>
-        <button role="tab" aria-selected={view === 'bids'} className={view === 'bids' ? 'active' : ''} onClick={() => onViewChange('bids')}>
-          <ClipboardList size={15} /> {t('Bid packages')}
-        </button>
-      </div>
-
-      {view === 'opportunities' ? (
-        <>
-
-      <LazyControlBoundary label="market-fit controls">
-        <MarketFitControl
-          locale={locale}
-          marketFit={marketFit}
-          canManagePolicy={canManagePolicy}
-          canCoordinate={canCoordinate}
-          submitting={submitting}
-          onRequestPolicy={onRequestMarketFitPolicy}
-          onRetainAssessment={onRetainMarketFitAssessment}
-        />
-      </LazyControlBoundary>
-
-      <LazyControlBoundary label="bid/no-bid controls">
-        <BidDecisionControl
-          locale={locale}
-          bidDecisions={bidDecisions}
-          canManagePolicy={canManagePolicy}
-          canCoordinate={canCoordinate}
-          submitting={submitting}
-          onRequestPolicy={onRequestBidDecisionPolicy}
-          onRequestDecision={onRequestBidDecision}
-        />
-      </LazyControlBoundary>
-
-      <section className="panel pipeline-panel">
-        <div className="panel-heading pipeline-heading">
-          <div>
-            <h2>Preconstruction pipeline</h2>
-            <p>Qualify demand before work enters planning, resources, or finance.</p>
-          </div>
-          {canCoordinate ? (
-            <button className="primary-button" onClick={onCreate}>
-              <Plus size={16} />
-              New opportunity
-            </button>
-          ) : null}
-        </div>
-        <div className="pipeline-toolbar">
-          <label className="search-control">
-            <Search size={15} />
-            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search client, scope or location" />
-          </label>
-          <div className="pipeline-stage-tabs" role="group" aria-label="Filter opportunities by stage">
-            {['open', 'proposal', 'negotiating', 'won', 'lost', 'all'].map((option) => (
-              <button key={option} className={stage === option ? 'active' : ''} onClick={() => setStage(option)}>
-                {formatStatus(option)}
-              </button>
-            ))}
-          </div>
-        </div>
-        {rows.length ? (
-          <div className="pipeline-list">
-            {rows.map((opportunity) => {
-              const overdue =
-                opportunity.nextFollowUpAt &&
-                Date.parse(opportunity.nextFollowUpAt) <= Date.now() &&
-                !['won', 'lost', 'archived'].includes(opportunity.stage)
-              return (
-                <article
-                  className={`pipeline-row ${selectedOpportunity?.id === opportunity.id ? 'pipeline-row-selected' : ''}`}
-                  key={opportunity.id}
-                >
-                  <button className="pipeline-row-main" onClick={() => onSelect(opportunity)} aria-label={`Open ${opportunity.title}`}>
-                    <span className={`pipeline-stage-marker pipeline-stage-${opportunity.stage}`} aria-hidden="true" />
-                    <span className="pipeline-copy">
-                      <span className="pipeline-title">
-                        <strong>{opportunity.title}</strong>
-                        <span className={`status status-${opportunity.stage}`}>{formatStatus(opportunity.stage)}</span>
-                      </span>
-                      <small>
-                        {opportunity.client?.name || 'Client pending'} / {opportunity.service || 'Service pending'} /{' '}
-                        {opportunity.city || opportunity.address || 'Location pending'}
-                      </small>
-                    </span>
-                  </button>
-                  <dl className="pipeline-values">
-                    <div>
-                      <dt>Value</dt>
-                      <dd>{currency.format(opportunity.estimatedValue || 0)}</dd>
-                    </div>
-                    <div>
-                      <dt>Weighted</dt>
-                      <dd>{currency.format(opportunity.weightedValue || 0)}</dd>
-                    </div>
-                    <div>
-                      <dt>Follow-up</dt>
-                      <dd className={overdue ? 'pipeline-overdue' : ''}>
-                        {opportunity.nextFollowUpAt ? formatDate(opportunity.nextFollowUpAt) : 'Not planned'}
-                      </dd>
-                    </div>
-                  </dl>
-                  <div className="pipeline-actions">
-                    {canCoordinate ? (
-                      <button className="secondary-button" onClick={() => onEdit(opportunity)}>
-                        <Pencil size={15} />
-                        Edit
-                      </button>
-                    ) : null}
-                    {canCoordinate && !['won', 'lost', 'archived'].includes(opportunity.stage) ? (
-                      <button className="secondary-button" onClick={() => onFollowUp(opportunity)}>
-                        <MessageSquareText size={15} />
-                        Follow-up
-                      </button>
-                    ) : null}
-                    {opportunity.convertedJobId ? (
-                      <button className="icon-button table-action" aria-label={`Open linked job for ${opportunity.title}`} onClick={() => onOpenJob(opportunity)}>
-                        <ArrowUpRight size={16} />
-                      </button>
-                    ) : canCoordinate && !['won', 'lost', 'archived'].includes(opportunity.stage) ? (
-                      <button className="primary-button" disabled={submitting} onClick={() => onConvert(opportunity)}>
-                        <BriefcaseBusiness size={15} />
-                        Create job
-                      </button>
-                    ) : null}
-                  </div>
-                </article>
-              )
-            })}
-          </div>
-        ) : (
-          <Empty title="No opportunities in this view" detail="Adjust the stage filter or retain a new qualified inquiry." />
-        )}
-      </section>
-
-      {selectedOpportunity ? (
-        <section className="panel pipeline-detail" aria-live="polite">
-          <div className="panel-heading">
-            <div>
-              <h2>{selectedOpportunity.title}</h2>
-              <p>
-                {selectedOpportunity.client?.name || 'Client pending'} / {formatStatus(selectedOpportunity.stage)} /{' '}
-                {selectedOpportunity.probabilityPercent}% probability
-              </p>
-            </div>
-            <button className="icon-button" aria-label="Close opportunity detail" onClick={() => onSelect(null)}>
-              <X size={17} />
-            </button>
-          </div>
-          <div className="pipeline-detail-grid">
-            <div>
-              <span>Owner</span>
-              <strong>{selectedOpportunity.ownerName || 'Unassigned'}</strong>
-            </div>
-            <div>
-              <span>Decision target</span>
-              <strong>{selectedOpportunity.targetDecisionAt ? formatDate(selectedOpportunity.targetDecisionAt) : 'Not set'}</strong>
-            </div>
-            <div>
-              <span>Source</span>
-              <strong>{formatStatus(selectedOpportunity.sourceChannel)}</strong>
-            </div>
-            <div>
-              <span>Linked job</span>
-              <strong>{selectedOpportunity.convertedJob?.title || 'Not converted'}</strong>
-            </div>
-          </div>
-          {selectedOpportunity.marketFit ? (
-            <div className={`pipeline-market-fit status-${selectedOpportunity.marketFit.recommendation || 'review'}`}>
-              <Target size={15} />
-              <strong>{formatStatus(selectedOpportunity.marketFit.recommendation || 'review')}</strong>
-              <span>
-                {selectedOpportunity.marketFit.score !== null && selectedOpportunity.marketFit.score !== undefined && Number.isFinite(Number(selectedOpportunity.marketFit.score))
-                  ? `${selectedOpportunity.marketFit.score}% fit`
-                  : 'Policy setup required'}
-                {selectedOpportunity.marketFit.evidenceGaps?.length ? ` / ${selectedOpportunity.marketFit.evidenceGaps.length} evidence gap(s)` : ''}
-              </span>
-            </div>
-          ) : null}
-          {selectedOpportunity.bidDecision ? (
-            <div className={`pipeline-market-fit status-${selectedOpportunity.bidDecision.evaluation?.recommendation || 'review'}`}>
-              <ClipboardCheck size={15} />
-              <strong>{formatStatus(selectedOpportunity.bidDecision.currentDecision?.proposedDecision || selectedOpportunity.bidDecision.pendingDecision?.proposedDecision || 'review')}</strong>
-              <span>
-                {selectedOpportunity.bidDecision.evaluation?.score !== null && selectedOpportunity.bidDecision.evaluation?.score !== undefined && Number.isFinite(Number(selectedOpportunity.bidDecision.evaluation.score))
-                  ? `${selectedOpportunity.bidDecision.evaluation.score}% pursuit score`
-                  : 'Scorecard evidence required'}
-                {selectedOpportunity.bidDecision.pendingDecision ? ' / approval pending' : ''}
-                {selectedOpportunity.bidDecision.stale ? ' / evidence stale' : ''}
-              </span>
-            </div>
-          ) : null}
-          <LazyControlBoundary label="site survey controls">
-            <SiteSurveyControl
-              locale={locale}
-              opportunity={selectedOpportunity}
-              canCoordinate={canCoordinate}
-              canApprove={canApprove}
-              submitting={submitting}
-              onPlan={onPlanSiteSurvey}
-              onUploadEvidence={onUploadSiteSurveyEvidence}
-              onSubmit={onSubmitSiteSurvey}
-              onReviewApproval={onReviewSiteSurveyApproval}
-            />
-          </LazyControlBoundary>
-          {selectedOpportunity.description ? <p className="pipeline-description">{selectedOpportunity.description}</p> : null}
-          <div className="pipeline-activity-heading">
-            <div>
-              <h3>Activity</h3>
-              <p>Internal notes and follow-up drafts; no external delivery occurs here.</p>
-            </div>
-            {canCoordinate && !['won', 'lost', 'archived'].includes(selectedOpportunity.stage) ? (
-              <button className="secondary-button" onClick={() => onFollowUp(selectedOpportunity)}>
-                <Plus size={15} />
-                Add activity
-              </button>
-            ) : null}
-          </div>
-          {selectedOpportunity.activities?.length ? (
-            <div className="pipeline-activity-list">
-              {selectedOpportunity.activities.map((activity) => (
-                <div className="pipeline-activity" key={activity.id}>
-                  <span className={`status status-${activity.status}`}>{formatStatus(activity.status)}</span>
-                  <div>
-                    <strong>{activity.summary}</strong>
-                    <small>
-                      {formatStatus(activity.activityType)} / {activity.dueAt ? `due ${formatDate(activity.dueAt)}` : formatDate(activity.createdAt)}
-                    </small>
-                    {activity.notes ? <p>{activity.notes}</p> : null}
-                  </div>
-                  {canCoordinate && !['completed', 'cancelled'].includes(activity.status) ? (
-                    <button className="secondary-button" disabled={submitting} onClick={() => onCompleteActivity(selectedOpportunity, activity)}>
-                      <Check size={15} />
-                      Complete
-                    </button>
-                  ) : null}
-                </div>
-              ))}
-            </div>
-          ) : (
-            <Empty title="No retained activity" detail="Add the next internal follow-up or qualification note." />
-          )}
-        </section>
-      ) : null}
-        </>
-      ) : (
-        <BidPackageWorkspace
-          text={t}
-          bidPackages={bidPackages}
-          selectedBidPackage={selectedBidPackage}
-          canCoordinate={canCoordinate}
-          canApprove={canApprove}
-          submitting={submitting}
-          onCreate={onCreateBidPackage}
-          onSelect={onSelectBidPackage}
-          onAddBidders={onAddBidders}
-          onRecordReturn={onRecordBidReturn}
-          onRequestSelection={onRequestBidSelection}
-          onReviewApproval={onReviewBidApproval}
-          onPrepareCommitment={onPrepareBidCommitment}
-          onReviewCommitment={onReviewBidCommitment}
-          onPrepareOrderPackage={onPrepareBidOrderPackage}
-          onReviewOrderDelivery={onReviewBidOrderDelivery}
-          onRecordOrderDelivery={onRecordBidOrderDelivery}
-        />
-      )}
-    </section>
-  )
-}
 
 function ApprovalQueueItem({ item, submitting, onReview }) {
   const decision = item.decision || {}
@@ -2095,928 +1508,11 @@ function ApprovalQueueItem({ item, submitting, onReview }) {
   )
 }
 
-function DispatchWorkspace({
-  dispatch,
-  jobs,
-  canCoordinate,
-  canApprove,
-  submitting,
-  onPrepare,
-  onControl,
-  onReviewWorkforce,
-  onReviewEquipment,
-  onOpenApprovals,
-  onOpen,
-}) {
-  const rows = dispatch?.jobs || dispatch?.rows || dispatch?.dispatch || EMPTY_LIST
-  const summary = dispatch?.summary || {}
-  return (
-    <section className="panel page-panel dispatch-workspace" data-testid="dispatch-workspace">
-      <div className="panel-heading">
-        <div>
-          <h2>Dispatch readiness</h2>
-          <p>Mobilization stays blocked until assignments, access, safety, equipment, and approval controls are ready.</p>
-        </div>
-        <span className="count-badge">{rows.length}</span>
-      </div>
-      <div className="dispatch-summary" aria-label="Dispatch summary">
-        <div>
-          <span>Ready</span>
-          <strong>{summary.ready || 0}</strong>
-        </div>
-        <div>
-          <span>Needs plan</span>
-          <strong>{summary.needsPlan || 0}</strong>
-        </div>
-        <div>
-          <span>Blocked</span>
-          <strong>{summary.blocked || 0}</strong>
-        </div>
-        <div>
-          <span>Approvals</span>
-          <strong>{summary.pendingApprovals || 0}</strong>
-        </div>
-      </div>
-      <div className="dispatch-list">
-        {rows.map((item) => {
-          const job = jobs.find((candidate) => candidate.id === item.jobId) || {
-            id: item.jobId,
-            title: item.jobTitle || item.title || 'Ledger job',
-          }
-          const controlActions = (item.nextActions || []).filter((action) => action.recordType && action.recordId)
-          const workforceBlocker = (item.blockers || []).find((blocker) =>
-            ['worker_record_missing', 'worker_retirement_pending', 'worker_unavailable', 'worker_conflict'].includes(blocker.type),
-          )
-          const equipmentBlocker = (item.blockers || []).find((blocker) =>
-            ['tool_record_missing', 'tool_retirement_pending', 'tool_inspection_readiness', 'tool_unavailable'].includes(blocker.type),
-          )
-          return (
-            <article className="dispatch-item" key={item.jobId || item.id}>
-              <div className="dispatch-copy">
-                <div className="dispatch-title">
-                  <h3>{item.jobTitle || item.title || 'Ledger job'}</h3>
-                  <span className={`status status-${item.readinessStatus || item.status}`}>
-                    {formatStatus(item.readinessStatus || item.status)}
-                  </span>
-                </div>
-                <p>{item.nextAction || item.summary || item.message || 'Review readiness controls before dispatch.'}</p>
-                <div className="dispatch-flags">
-                  {item.blockers?.length ? (
-                    <span className="tag tag-amber">
-                      {item.blockers.length} blocker{item.blockers.length === 1 ? '' : 's'}
-                    </span>
-                  ) : null}
-                  {item.missing?.length ? (
-                    <span className="tag">
-                      {item.missing.length} plan gap{item.missing.length === 1 ? '' : 's'}
-                    </span>
-                  ) : null}
-                  {item.counts?.activeAssignments ? <span className="tag tag-green">{item.counts.activeAssignments} assigned</span> : null}
-                </div>
-              </div>
-              <div className="dispatch-actions">
-                {item.counts?.pendingApprovals && canApprove ? (
-                  <button
-                    className="secondary-button"
-                    aria-label={`Review approvals for ${job.title}`}
-                    disabled={submitting}
-                    onClick={() =>
-                      onOpenApprovals({
-                        jobId: item.jobId,
-                        jobTitle: job.title,
-                        approvalId: item.nextActions?.find((action) => action.approvalId)?.approvalId || null,
-                      })
-                    }
-                  >
-                    <ShieldCheck size={16} />
-                    Review approval
-                  </button>
-                ) : null}
-                {canCoordinate
-                  ? controlActions.map((action) => {
-                      const actionLabel = action.actionLabel || 'Resolve dispatch control'
-                      return (
-                        <button
-                          key={`${action.type}-${action.recordType}-${action.recordId}`}
-                          className="secondary-button"
-                          aria-label={`${actionLabel} for ${job.title}`}
-                          disabled={submitting}
-                          onClick={() => onControl(item, action)}
-                        >
-                          <ClipboardCheck size={16} />
-                          {actionLabel}
-                        </button>
-                      )
-                    })
-                  : null}
-                {workforceBlocker ? (
-                  <button
-                    className="secondary-button"
-                    aria-label={`Review crew for ${job.title}`}
-                    disabled={submitting}
-                    onClick={() => onReviewWorkforce(workforceBlocker)}
-                  >
-                    <Users size={16} />
-                    Review crew
-                  </button>
-                ) : null}
-                {equipmentBlocker ? (
-                  <button
-                    className="secondary-button"
-                    aria-label={`Review equipment for ${job.title}`}
-                    disabled={submitting}
-                    onClick={() => onReviewEquipment(equipmentBlocker)}
-                  >
-                    <Wrench size={16} />
-                    Review equipment
-                  </button>
-                ) : null}
-                {canCoordinate ? (
-                  <button
-                    className="secondary-button"
-                    aria-label={`Prepare internal pack for ${job.title}`}
-                    disabled={submitting}
-                    onClick={() => onPrepare(item)}
-                  >
-                    <PackageCheck size={16} />
-                    Prepare internal pack
-                  </button>
-                ) : null}
-                <button className="icon-button table-action" aria-label={`Open ${job.title}`} onClick={() => onOpen(job)}>
-                  <ArrowUpRight size={16} />
-                </button>
-              </div>
-            </article>
-          )
-        })}
-        {!rows.length ? (
-          <Empty title="No active dispatch work" detail="Active ledger jobs will appear here with their retained readiness controls." />
-        ) : null}
-      </div>
-    </section>
-  )
-}
 
-const PORTFOLIO_SCHEDULE_FILTERS = [
-  ['all', 'Look-ahead'],
-  ['risk', 'At risk'],
-  ['conflict', 'Conflicts'],
-  ['overdue', 'Overdue'],
-  ['unscheduled', 'Unscheduled'],
-  ['baseline', 'Baselines'],
-]
 
-function PortfolioScheduleWorkspace({ schedule, jobs, canApprove, onOpenApprovals, onOpenDispatch, onOpen }) {
-  const [filter, setFilter] = useState('all')
-  const [query, setQuery] = useState('')
-  const [horizonDays, setHorizonDays] = useState(30)
-  const rows = schedule?.jobs || EMPTY_LIST
-  const referenceAt = schedule?.window?.referenceAt || new Date().toISOString()
-  const referenceMs = Date.parse(referenceAt)
-  const horizonEndMs = referenceMs + horizonDays * 24 * 60 * 60 * 1000
-  const horizonEnd = new Date(horizonEndMs).toISOString()
-  const rowInWindow = useCallback((row) => {
-    const start = Date.parse(row.plannedStart || '')
-    const end = Date.parse(row.plannedEnd || row.targetCompletion || '')
-    return Number.isFinite(start) && Number.isFinite(end) && end >= referenceMs && start <= horizonEndMs
-  }, [horizonEndMs, referenceMs])
-  const rowAtRisk = useCallback((row) => (
-    row.flags?.conflict || row.flags?.overdue || row.flags?.baselineStale || row.flags?.invalidPlan
-  ), [])
-  const visibleRows = useMemo(() => {
-    const search = query.trim().toLowerCase()
-    return rows.filter((row) => {
-      const inWindow = rowInWindow(row)
-      if (filter === 'all' && !(inWindow || rowAtRisk(row) || row.flags?.unscheduled || row.flags?.baselinePending)) return false
-      if (filter === 'risk' && !rowAtRisk(row)) return false
-      if (filter === 'conflict' && !row.flags?.conflict) return false
-      if (filter === 'overdue' && !row.flags?.overdue) return false
-      if (filter === 'unscheduled' && !(row.flags?.unscheduled || row.flags?.invalidPlan)) return false
-      if (filter === 'baseline' && !(row.flags?.baselinePending || row.flags?.baselineStale)) return false
-      if (!search) return true
-      return JSON.stringify({
-        jobTitle: row.jobTitle,
-        clientName: row.clientName,
-        address: row.address,
-        phase: row.phase,
-        tasks: row.tasks?.map((task) => task.title),
-      }).toLowerCase().includes(search)
-    })
-  }, [filter, query, rowAtRisk, rowInWindow, rows])
-  const summary = useMemo(() => rows.reduce((result, row) => {
-    if (rowInWindow(row)) result.inWindow += 1
-    if (row.flags?.conflict) result.conflicts += 1
-    if (row.flags?.overdue) result.overdue += 1
-    if (row.flags?.unscheduled || row.flags?.invalidPlan) result.unscheduled += 1
-    if (row.flags?.baselinePending || row.flags?.baselineStale) result.baselinePending += 1
-    result.openTasks += Number(row.counts?.openTasks || 0)
-    return result
-  }, { inWindow: 0, conflicts: 0, overdue: 0, unscheduled: 0, baselinePending: 0, openTasks: 0 }), [rowInWindow, rows])
-  const timelineTicks = useMemo(() => Array.from({ length: 5 }, (_, index) => (
-    new Date(referenceMs + ((horizonEndMs - referenceMs) * index) / 4).toISOString()
-  )), [horizonEndMs, referenceMs])
 
-  const timelineGeometry = (row) => {
-    const start = Date.parse(row.plannedStart || '')
-    const end = Date.parse(row.plannedEnd || row.targetCompletion || '')
-    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null
-    const span = Math.max(1, horizonEndMs - referenceMs)
-    const left = Math.max(0, Math.min(100, ((start - referenceMs) / span) * 100))
-    const right = Math.max(0, Math.min(100, ((end - referenceMs) / span) * 100))
-    return { left: `${left}%`, width: `${Math.max(2, right - left)}%` }
-  }
 
-  return (
-    <section className="panel page-panel portfolio-schedule" data-testid="portfolio-schedule">
-      <div className="panel-heading portfolio-schedule-heading">
-        <div>
-          <h2>Portfolio schedule</h2>
-          <p>One retained look-ahead across task plans, baselines, overdue work, and current resource conflicts.</p>
-        </div>
-        {summary.conflicts ? (
-          <button className="secondary-button" onClick={onOpenDispatch}>
-            <MapPin size={16} />
-            Review dispatch
-          </button>
-        ) : <span className="count-badge">{visibleRows.length}</span>}
-      </div>
-      <div className="portfolio-schedule-summary" aria-label="Portfolio schedule summary">
-        <div><span>In look-ahead</span><strong>{summary.inWindow}</strong></div>
-        <div><span>Conflicts</span><strong>{summary.conflicts}</strong></div>
-        <div><span>Overdue</span><strong>{summary.overdue}</strong></div>
-        <div><span>Unscheduled</span><strong>{summary.unscheduled}</strong></div>
-        <div><span>Baseline review</span><strong>{summary.baselinePending}</strong></div>
-        <div><span>Open tasks</span><strong>{summary.openTasks}</strong></div>
-      </div>
-      <div className="portfolio-schedule-toolbar">
-        <div className="tab-switch portfolio-schedule-filters" role="tablist" aria-label="Schedule view">
-          {PORTFOLIO_SCHEDULE_FILTERS.map(([key, label]) => (
-            <button
-              key={key}
-              type="button"
-              role="tab"
-              aria-selected={filter === key}
-              className={filter === key ? 'tab-active' : ''}
-              onClick={() => setFilter(key)}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-        <label className="search-control portfolio-schedule-search">
-          <Search size={16} />
-          <span>Search schedule</span>
-          <input
-            type="search"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="Job, client, location, or task"
-          />
-        </label>
-        <label className="portfolio-horizon-control">
-          <span>Horizon</span>
-          <select value={horizonDays} onChange={(event) => setHorizonDays(Number(event.target.value))}>
-            <option value="14">14 days</option>
-            <option value="30">30 days</option>
-            <option value="60">60 days</option>
-            <option value="90">90 days</option>
-            <option value="180">180 days</option>
-          </select>
-        </label>
-      </div>
-      <div className="portfolio-timeline-heading" aria-hidden="true">
-        <span>Job and plan state</span>
-        <div>
-          {timelineTicks.map((tick) => <span key={tick}>{formatDate(tick)}</span>)}
-        </div>
-      </div>
-      <div className="portfolio-schedule-list">
-        {visibleRows.map((item) => {
-          const job = jobs.find((candidate) => candidate.id === item.jobId) || {
-            id: item.jobId,
-            title: item.jobTitle || 'Ledger job',
-          }
-          const geometry = timelineGeometry(item)
-          const visibleTasks = (item.tasks || [])
-            .filter((task) => task.overdue || task.inWindow || rowInWindow({ plannedStart: task.plannedStart, plannedEnd: task.plannedEnd || task.dueAt }))
-            .sort((left, right) => String(left.plannedStart || left.dueAt || '').localeCompare(String(right.plannedStart || right.dueAt || '')))
-            .slice(0, 3)
-          return (
-            <article className={`portfolio-schedule-row schedule-${item.scheduleStatus}`} key={item.jobId}>
-              <div className="portfolio-schedule-copy">
-                <div className="portfolio-schedule-title">
-                  <div>
-                    <h3>{item.jobTitle}</h3>
-                    <p>{item.clientName || 'Client not set'} / {item.address || formatStatus(item.phase)}</p>
-                  </div>
-                  <span className={`status status-${item.scheduleStatus}`}>{formatStatus(item.scheduleStatus)}</span>
-                </div>
-                <div className="portfolio-schedule-flags">
-                  {item.baseline ? (
-                    <span className={item.flags?.baselineStale ? 'tag tag-amber' : 'tag tag-green'}>
-                      Baseline v{item.baseline.versionNumber} {item.flags?.baselineStale ? 'stale' : formatStatus(item.baseline.status)}
-                    </span>
-                  ) : <span className="tag">No baseline</span>}
-                  {item.counts?.criticalTasks ? <span className="tag tag-red">{item.counts.criticalTasks} critical</span> : null}
-                  {item.counts?.overdueTasks ? <span className="tag tag-amber">{item.counts.overdueTasks} overdue</span> : null}
-                  {item.counts?.workerConflicts ? <span className="tag tag-red">Crew conflict</span> : null}
-                  {item.counts?.toolConflicts ? <span className="tag tag-red">Equipment conflict</span> : null}
-                </div>
-                <p className="portfolio-schedule-action">{item.planError?.message || item.nextAction}</p>
-                <div className="portfolio-task-list">
-                  {visibleTasks.map((task) => (
-                    <div key={task.id}>
-                      <span className={task.critical ? 'portfolio-task-critical' : ''}>{task.title}</span>
-                      <small>{task.plannedStart ? `${formatDate(task.plannedStart)} to ${formatDate(task.plannedEnd || task.dueAt)}` : 'Date not retained'}</small>
-                    </div>
-                  ))}
-                </div>
-              </div>
-              <div className="portfolio-timeline-cell">
-                <div className="portfolio-timeline-track">
-                  {geometry ? (
-                    <span
-                      className={`portfolio-timeline-span timeline-${item.scheduleStatus}`}
-                      style={geometry}
-                      title={`${formatDateTime(item.plannedStart)} to ${formatDateTime(item.plannedEnd)}`}
-                    />
-                  ) : <span className="portfolio-timeline-empty">Not scheduled</span>}
-                </div>
-                <div className="portfolio-timeline-dates">
-                  <span>{item.plannedStart ? formatDate(item.plannedStart) : 'No start'}</span>
-                  <span>{item.plannedEnd ? formatDate(item.plannedEnd) : 'No finish'}</span>
-                </div>
-                <div className="portfolio-schedule-actions">
-                  {item.flags?.baselinePending && item.baseline?.approvalId && canApprove ? (
-                    <button
-                      className="secondary-button"
-                      onClick={() => onOpenApprovals({
-                        jobId: item.jobId,
-                        jobTitle: item.jobTitle,
-                        approvalId: item.baseline.approvalId,
-                      })}
-                    >
-                      <ShieldCheck size={15} />
-                      Review baseline
-                    </button>
-                  ) : null}
-                  <button className="secondary-button" onClick={() => onOpen(job)}>
-                    <ArrowUpRight size={15} />
-                    Open job
-                  </button>
-                </div>
-              </div>
-            </article>
-          )
-        })}
-        {!visibleRows.length ? (
-          <Empty
-            title="No schedule rows match"
-            detail={`No retained work matches this filter between ${formatDate(referenceAt)} and ${formatDate(horizonEnd)}.`}
-          />
-        ) : null}
-      </div>
-    </section>
-  )
-}
-
-function FinanceWorkspace({
-  locale,
-  text,
-  finance,
-  cashFlow,
-  jobs,
-  canCoordinate,
-  canApprove,
-  submitting,
-  onDraftInvoice,
-  onPreparePackage,
-  onAction,
-  onOpenApprovals,
-  onOpen,
-  onCashFlowChange,
-}) {
-  const t = text || ((value) => value)
-  const rows = finance?.jobs || EMPTY_LIST
-  const summary = finance?.summary || {}
-  return (
-    <section className="panel page-panel finance-workspace" data-testid="finance-workspace">
-      <div className="panel-heading">
-        <div>
-          <h2>{t('Finance readiness')}</h2>
-          <p>{t('Review source-linked cost forecasts, commitments, receivables, supplier payables, and approval gates.')}</p>
-        </div>
-        <span className="count-badge">{rows.length}</span>
-      </div>
-      <LazyControlBoundary label={t('cash-flow forecast')}>
-        <CashFlowForecastControl
-          locale={locale}
-          cashFlow={cashFlow}
-          jobs={jobs}
-          request={api}
-          canCoordinate={canCoordinate}
-          canApprove={canApprove}
-          onChange={onCashFlowChange}
-          onOpenApprovals={onOpenApprovals}
-        />
-      </LazyControlBoundary>
-      <div className="finance-summary" aria-label={t('Finance summary')}>
-        <div>
-          <span>{t('Invoice ready')}</span>
-          <strong>{summary.invoiceReady || 0}</strong>
-        </div>
-        <div>
-          <span>{t('Planned billing')}</span>
-          <strong>{currency.format(summary.plannedBillingValue || 0)}</strong>
-        </div>
-        <div>
-          <span>{t('Uninvoiced net')}</span>
-          <strong>{currency.format(summary.uninvoicedNetValue ?? summary.uninvoicedValue ?? 0)}</strong>
-        </div>
-        <div>
-          <span>{t('Unpaid')}</span>
-          <strong>{currency.format(summary.unpaidValue || 0)}</strong>
-        </div>
-        <div>
-          <span>{t('Supplier payable')}</span>
-          <strong>{currency.format(summary.supplierPayableValue || 0)}</strong>
-        </div>
-        <div>
-          <span>{t('Forecast cost')}</span>
-          <strong>{currency.format(summary.forecastCostValue || 0)}</strong>
-        </div>
-        <div>
-          <span>{t('Approved actual')}</span>
-          <strong>{currency.format(summary.actualCostValue || 0)}</strong>
-        </div>
-        <div>
-          <span>{t('Unreviewed cost')}</span>
-          <strong>{currency.format(summary.unreviewedCostValue || 0)}</strong>
-        </div>
-        <div>
-          <span>{t('Cost to complete')}</span>
-          <strong>{currency.format(summary.costToCompleteValue || 0)}</strong>
-        </div>
-        <div>
-          <span>{t('Forecast margin')}</span>
-          <strong>{currency.format(summary.forecastMarginValue || 0)}</strong>
-        </div>
-        <div>
-          <span>{t('Approvals')}</span>
-          <strong>{summary.pendingApprovals || 0}</strong>
-        </div>
-      </div>
-      <div className="finance-list">
-        {rows.map((item) => {
-          const job = jobs.find((candidate) => candidate.id === item.jobId) || { id: item.jobId, title: item.jobTitle || t('Ledger job') }
-          const costForecast = item.costForecast || {}
-          const forecastSummary = costForecast.summary || {}
-          const canAct = canCoordinate && !item.flags?.approvalRequired
-          const draftInvoiceAction = canAct ? item.nextActions?.find((action) => action.type === 'draft_invoice') : null
-          const canDraftInvoice = Boolean(draftInvoiceAction) && !item.counts?.draftInvoices
-          const prepareAction = canAct
-            ? item.nextActions?.find((action) =>
-                ['prepare_invoice_package', 'prepare_credit_note_package', 'prepare_purchase_order_package'].includes(action.type),
-              )
-            : null
-          const issuePackage = item.latest?.invoice?.data?.issuePackage
-          const creditNotePackage = item.latest?.creditNote?.data?.issuePackage
-          const purchaseOrderPackage = item.latest?.purchaseOrder?.issuePackage
-          const forecastAction = canAct ? item.nextActions?.find((action) => action.type === 'prepare_cost_forecast') : null
-          const forecastRiskLines = (costForecast.lines || [])
-            .filter((line) => line.overBudget || line.unbudgeted)
-            .sort((left, right) => Number(left.variance || 0) - Number(right.variance || 0))
-            .slice(0, 3)
-          const forecastHistory = (costForecast.snapshots || []).slice(0, 4)
-          const financeActions = canAct
-            ? item.nextActions
-                ?.filter(
-                  (action) =>
-                    action.type !== 'review_finance_approval' &&
-                    action.type !== 'draft_invoice' &&
-                    action.type !== 'prepare_cost_forecast' &&
-                    !['prepare_invoice_package', 'prepare_credit_note_package', 'prepare_purchase_order_package'].includes(action.type) &&
-                    FINANCE_ACTION_LABELS[action.type],
-                )
-            : EMPTY_LIST
-          return (
-            <article className="finance-item" key={item.jobId}>
-              <div className="finance-copy">
-                <div className="finance-title">
-                  <h3>{item.jobTitle || t('Ledger job')}</h3>
-                  <span className={`status status-${item.financeStatus}`}>
-                    {t(String(item.financeStatus || 'stable').replaceAll('_', ' '))}
-                  </span>
-                </div>
-                <p>{localizedFinanceActionLabel(item.nextActions?.[0], t)}</p>
-                <div className="finance-values">
-                  <span>
-                    {t('Contract net')} <strong>{currency.format(item.money?.contractValue || 0)}</strong>
-                  </span>
-                  <span>
-                    {t('Planned billing')} <strong>{currency.format(item.money?.plannedBillingValue || 0)}</strong>
-                  </span>
-                  <span>
-                    {t('Billing due')} <strong>{currency.format(item.money?.dueBillingValue || 0)}</strong>
-                  </span>
-                  <span>
-                    {t('Unpaid gross')} <strong>{currency.format(item.money?.unpaidValue || 0)}</strong>
-                  </span>
-                  <span>
-                    {t('Supplier payable')} <strong>{currency.format(item.money?.supplierPayableValue || 0)}</strong>
-                  </span>
-                  <span>
-                    {t('Cost budget')} <strong>{currency.format(forecastSummary.budget || 0)}</strong>
-                  </span>
-                  <span>
-                    {t('Approved actual')} <strong>{currency.format(forecastSummary.actual || 0)}</strong>
-                  </span>
-                  <span>
-                    {t('Unreviewed cost')} <strong>{currency.format(forecastSummary.unreviewedCost || 0)}</strong>
-                  </span>
-                  <span>
-                    {t('Incurred evidence')} <strong>{currency.format(forecastSummary.incurredCost || 0)}</strong>
-                  </span>
-                  <span>
-                    {t('Issued commitments')} <strong>{currency.format(forecastSummary.externalCommitment || 0)}</strong>
-                  </span>
-                  <span>
-                    {t('Authorized, not issued')} <strong>{currency.format(forecastSummary.authorizedNotIssued || 0)}</strong>
-                  </span>
-                  <span>
-                    {t('Cost to complete')} <strong>{currency.format(forecastSummary.costToComplete || 0)}</strong>
-                  </span>
-                  <span>
-                    EAC <strong>{currency.format(forecastSummary.estimateAtCompletion ?? forecastSummary.forecast ?? 0)}</strong>
-                  </span>
-                  <span>
-                    VAC <strong>{currency.format(forecastSummary.varianceAtCompletion ?? forecastSummary.budgetVariance ?? 0)}</strong>
-                  </span>
-                  <span>
-                    {t('Forecast margin')} <strong>{currency.format(forecastSummary.projectedMargin || 0)}</strong>
-                  </span>
-                </div>
-                {forecastRiskLines.length ? (
-                  <div className="cost-forecast-risks" aria-label={t('{job} cost forecast risks', { job: item.jobTitle })}>
-                    {forecastRiskLines.map((line) => (
-                      <span key={line.costCode}>
-                        <code>{line.costCode}</code>
-                        {line.unbudgeted
-                          ? t('Unbudgeted')
-                          : t('{amount} over', { amount: currency.format(Math.abs(line.variance || 0)) })}
-                      </span>
-                    ))}
-                  </div>
-                ) : null}
-                {(costForecast.lines || []).length ? (
-                  <details className="cost-forecast-detail">
-                    <summary>
-                      <span>{t('Cost-code review')}</span>
-                      <small>
-                        {(costForecast.lines || []).length === 1
-                          ? t('{count} code', { count: (costForecast.lines || []).length })
-                          : t('{count} codes', { count: (costForecast.lines || []).length })}
-                        {' / '}
-                        {t('{count} awaiting source review', { count: forecastSummary.reviewRequiredCostCodes || 0 })}
-                      </small>
-                    </summary>
-                    <div
-                      className="cost-forecast-table-wrap"
-                      tabIndex={0}
-                      aria-label={t('{job} cost forecast table', { job: item.jobTitle })}
-                    >
-                      <table className="cost-forecast-table">
-                        <thead>
-                          <tr>
-                            <th scope="col">{t('Cost code')}</th>
-                            <th scope="col">{t('Budget')}</th>
-                            <th scope="col">{t('Approved')}</th>
-                            <th scope="col">{t('Unreviewed')}</th>
-                            <th scope="col">{t('Commitments')}</th>
-                            <th scope="col">CTC</th>
-                            <th scope="col">EAC</th>
-                            <th scope="col">VAC</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {(costForecast.lines || []).map((line) => (
-                            <tr key={line.costCode}>
-                              <th scope="row">
-                                <code>{line.costCode}</code>
-                                <small>{line.description}</small>
-                              </th>
-                              <td>{currency.format(line.budget || 0)}</td>
-                              <td>{currency.format(line.actual || 0)}</td>
-                              <td className={line.unreviewedExposure > 0 ? 'cost-review-required' : ''}>
-                                {currency.format(line.unreviewedExposure || 0)}
-                              </td>
-                              <td>
-                                {currency.format(
-                                  Number(line.externalCommitment || 0)
-                                  + Number(line.authorizedNotIssued || 0)
-                                  + Number(line.unreviewedCommitment || 0),
-                                )}
-                              </td>
-                              <td>{currency.format(line.costToComplete || 0)}</td>
-                              <td>{currency.format(line.estimateAtCompletion ?? line.forecast ?? 0)}</td>
-                              <td className={line.varianceAtCompletion < 0 ? 'cost-over-budget' : ''}>
-                                {currency.format(line.varianceAtCompletion ?? line.variance ?? 0)}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                    {(costForecast.warnings || []).length ? (
-                      <ul className="cost-forecast-warnings" aria-label={t('{job} cost forecast warnings', { job: item.jobTitle })}>
-                        {(costForecast.warnings || []).map((warning) => (
-                          <li key={warning.code}>{localizedCostForecastWarning(warning, t, value => currency.format(value))}</li>
-                        ))}
-                      </ul>
-                    ) : null}
-                    {forecastHistory.length ? (
-                      <div className="cost-forecast-history" aria-label={t('{job} retained cost forecast history', { job: item.jobTitle })}>
-                        {forecastHistory.map((snapshot) => (
-                          <span key={snapshot.id}>
-                            <strong>{snapshot.forecastNumber}</strong>
-                            <small>{t(formatStatus(snapshot.status))} / {formatDate(snapshot.asOfDate)}</small>
-                          </span>
-                        ))}
-                      </div>
-                    ) : null}
-                    <p className="cost-forecast-policy">
-                      {t('Forecast approval freezes this review only. Timesheets, receipts, supplier invoices, and purchase commitments retain their own approval gates.')}
-                    </p>
-                  </details>
-                ) : null}
-                <div className="finance-flags">
-                  {costForecast.activeSnapshot ? (
-                    <span className={`tag ${costForecast.snapshotCurrent ? 'tag-green' : 'tag-amber'}`}>
-                      {costForecast.activeSnapshot.forecastNumber} {costForecast.snapshotCurrent ? t('current') : t('stale')}
-                    </span>
-                  ) : null}
-                  {costForecast.pendingSnapshot ? (
-                    <span className="tag tag-amber">{t('{number} awaiting approval', { number: costForecast.pendingSnapshot.forecastNumber })}</span>
-                  ) : null}
-                  {forecastSummary.costPerformanceIndex != null ? (
-                    <span className={`tag ${forecastSummary.costPerformanceIndex >= 1 ? 'tag-green' : 'tag-amber'}`}>
-                      CPI {Number(forecastSummary.costPerformanceIndex).toFixed(2)}
-                    </span>
-                  ) : null}
-                  {forecastSummary.unbudgetedCostCodes ? (
-                    <span className="tag tag-amber">
-                      {forecastSummary.unbudgetedCostCodes === 1
-                        ? t('{count} unbudgeted cost code', { count: forecastSummary.unbudgetedCostCodes })
-                        : t('{count} unbudgeted cost codes', { count: forecastSummary.unbudgetedCostCodes })}
-                    </span>
-                  ) : null}
-                  {forecastSummary.reviewRequired ? (
-                    <span className="tag tag-amber">
-                      {t('{amount} awaiting source review', { amount: currency.format(forecastSummary.unreviewedExposure || 0) })}
-                    </span>
-                  ) : null}
-                  {item.counts?.billingMilestones ? (
-                    <span className="tag tag-green">
-                      {item.counts.billingMilestones === 1
-                        ? t('{count} billing milestone', { count: item.counts.billingMilestones })
-                        : t('{count} billing milestones', { count: item.counts.billingMilestones })}
-                    </span>
-                  ) : null}
-                  {item.counts?.dueBillingMilestones ? (
-                    <span className="tag tag-amber">
-                      {item.counts.dueBillingMilestones === 1
-                        ? t('{count} milestone due', { count: item.counts.dueBillingMilestones })
-                        : t('{count} milestones due', { count: item.counts.dueBillingMilestones })}
-                    </span>
-                  ) : null}
-                  {item.money?.creditedValue > 0 ? (
-                    <span className="tag tag-amber">{t('{amount} credited', { amount: currency.format(item.money.creditedValue) })}</span>
-                  ) : null}
-                  {item.money?.pendingCreditValue > 0 ? (
-                    <span className="tag tag-amber">{t('{amount} credit pending', { amount: currency.format(item.money.pendingCreditValue) })}</span>
-                  ) : null}
-                  {item.money?.writtenOffValue > 0 ? (
-                    <span className="tag tag-amber">{t('{amount} written off', { amount: currency.format(item.money.writtenOffValue) })}</span>
-                  ) : null}
-                  {item.money?.pendingPaymentValue > 0 ? (
-                    <span className="tag tag-amber">{t('{amount} client payment pending', { amount: currency.format(item.money.pendingPaymentValue) })}</span>
-                  ) : null}
-                  {item.money?.pendingSupplierPaymentValue > 0 ? (
-                    <span className="tag tag-amber">
-                      {t('{amount} supplier payment pending', { amount: currency.format(item.money.pendingSupplierPaymentValue) })}
-                    </span>
-                  ) : null}
-                  {item.counts?.dueSupplierInvoices ? (
-                    <span className="tag tag-amber">
-                      {item.counts.dueSupplierInvoices === 1
-                        ? t('{count} supplier invoice due', { count: item.counts.dueSupplierInvoices })
-                        : t('{count} supplier invoices due', { count: item.counts.dueSupplierInvoices })}
-                    </span>
-                  ) : null}
-                  {item.counts?.timeLogs ? (
-                    <span className="tag tag-green">
-                      {item.counts.timeLogs === 1
-                        ? t('{count} time log', { count: item.counts.timeLogs })
-                        : t('{count} time logs', { count: item.counts.timeLogs })}
-                    </span>
-                  ) : null}
-                  {item.counts?.expenses ? (
-                    <span className="tag">
-                      {item.counts.expenses === 1
-                        ? t('{count} expense', { count: item.counts.expenses })
-                        : t('{count} expenses', { count: item.counts.expenses })}
-                    </span>
-                  ) : null}
-                  {item.counts?.pendingExpenses ? (
-                    <span className="tag tag-amber">
-                      {item.counts.pendingExpenses === 1
-                        ? t('{count} expense receipt pending', { count: item.counts.pendingExpenses })
-                        : t('{count} expense receipts pending', { count: item.counts.pendingExpenses })}
-                    </span>
-                  ) : null}
-                  {item.latest?.expense ? (
-                    <span className={`tag ${item.latest.expense.status === 'approved' ? 'tag-green' : 'tag-amber'}`}>
-                      {item.latest.expense.receiptReference || t('Expense')} / {t(formatStatus(item.latest.expense.status))}
-                    </span>
-                  ) : null}
-                  {item.latest?.invoice?.data?.structuredExportRequested ? (
-                    <span className={`tag ${item.latest.invoice.data.structuredReadiness?.ready ? 'tag-green' : 'tag-amber'}`}>
-                      UBL {item.latest.invoice.data.structuredReadiness?.ready ? t('ready') : t('incomplete')}
-                    </span>
-                  ) : null}
-                  {issuePackage ? <span className="tag tag-green">{issuePackage.issueReference}</span> : null}
-                  {creditNotePackage ? <span className="tag tag-green">{creditNotePackage.issueReference}</span> : null}
-                  {purchaseOrderPackage ? (
-                    <span className={`tag ${item.latest?.purchaseOrder?.orderIssued ? 'tag-green' : 'tag-amber'}`}>
-                      {purchaseOrderPackage.issueReference} {item.latest?.purchaseOrder?.orderIssued ? t('issued') : t('prepared')}
-                    </span>
-                  ) : null}
-                  {item.counts?.pendingApprovals ? (
-                    <span className="tag tag-amber">
-                      {item.counts.pendingApprovals === 1
-                        ? t('{count} approval', { count: item.counts.pendingApprovals })
-                        : t('{count} approvals', { count: item.counts.pendingApprovals })}
-                    </span>
-                  ) : null}
-                </div>
-              </div>
-              <div className="finance-actions">
-                {item.flags?.approvalRequired && canApprove ? (
-                  <button
-                    className="secondary-button"
-                    disabled={submitting}
-                    onClick={() =>
-                      onOpenApprovals({
-                        jobId: item.jobId,
-                        jobTitle: job.title,
-                        approvalId: item.nextActions?.find((action) => action.approvalId)?.approvalId || null,
-                      })
-                    }
-                  >
-                    <ShieldCheck size={16} />
-                    {t('Review approval')}
-                  </button>
-                ) : null}
-                {canDraftInvoice ? (
-                  <button
-                    className="secondary-button"
-                    aria-label={t('Draft invoice for {job}', { job: job.title })}
-                    disabled={submitting}
-                    onClick={() => onDraftInvoice(item, draftInvoiceAction)}
-                  >
-                    <ReceiptEuro size={16} />
-                    {draftInvoiceAction.billingMilestoneId ? t('Invoice milestone') : t('Draft invoice')}
-                  </button>
-                ) : null}
-                {prepareAction ? (
-                  <button
-                    className="secondary-button"
-                    aria-label={t('Prepare {packageType} package for {job}', {
-                      packageType: t(
-                        prepareAction.type === 'prepare_credit_note_package'
-                          ? 'credit note'
-                          : prepareAction.type === 'prepare_purchase_order_package'
-                            ? 'purchase order'
-                            : 'invoice',
-                      ),
-                      job: job.title,
-                    })}
-                    disabled={submitting}
-                    onClick={() => onPreparePackage(item, prepareAction)}
-                  >
-                    <PackageCheck size={16} />
-                    {prepareAction.type === 'prepare_credit_note_package'
-                      ? t('Prepare credit')
-                      : prepareAction.type === 'prepare_purchase_order_package'
-                        ? t('Prepare order')
-                        : t('Prepare package')}
-                  </button>
-                ) : null}
-                {forecastAction ? (
-                  <button
-                    className="secondary-button"
-                    aria-label={t('{action} for {job}', { action: localizedFinanceActionLabel(forecastAction, t), job: job.title })}
-                    disabled={submitting}
-                    onClick={() => onAction(item, forecastAction)}
-                  >
-                    <Gauge size={16} />
-                    {localizedFinanceActionLabel(forecastAction, t)}
-                  </button>
-                ) : null}
-                {issuePackage?.htmlDocumentId ? (
-                  <a
-                    className="secondary-button"
-                    aria-label={t('Download invoice for {job}', { job: job.title })}
-                    href={`/api/ledger/documents/${encodeURIComponent(issuePackage.htmlDocumentId)}/issue-package`}
-                    download
-                  >
-                    <FileDown size={16} />
-                    {t('Invoice')}
-                  </a>
-                ) : null}
-                {issuePackage?.ublDocumentId ? (
-                  <a
-                    className="secondary-button"
-                    aria-label={t('Download UBL for {job}', { job: job.title })}
-                    href={`/api/ledger/documents/${encodeURIComponent(issuePackage.ublDocumentId)}/issue-package`}
-                    download
-                  >
-                    <FileDown size={16} />
-                    UBL
-                  </a>
-                ) : null}
-                {creditNotePackage?.htmlDocumentId ? (
-                  <a
-                    className="secondary-button"
-                    aria-label={t('Download credit note for {job}', { job: job.title })}
-                    href={`/api/ledger/documents/${encodeURIComponent(creditNotePackage.htmlDocumentId)}/issue-package`}
-                    download
-                  >
-                    <FileDown size={16} />
-                    {t('Credit note')}
-                  </a>
-                ) : null}
-                {creditNotePackage?.ublDocumentId ? (
-                  <a
-                    className="secondary-button"
-                    aria-label={t('Download credit note UBL for {job}', { job: job.title })}
-                    href={`/api/ledger/documents/${encodeURIComponent(creditNotePackage.ublDocumentId)}/issue-package`}
-                    download
-                  >
-                    <FileDown size={16} />
-                    {t('Credit UBL')}
-                  </a>
-                ) : null}
-                {purchaseOrderPackage?.htmlDocumentId ? (
-                  <a
-                    className="secondary-button"
-                    aria-label={t('Download purchase order {reference} for {job}', { reference: purchaseOrderPackage.issueReference, job: job.title })}
-                    href={`/api/ledger/documents/${encodeURIComponent(purchaseOrderPackage.htmlDocumentId)}/issue-package`}
-                    download
-                  >
-                    <FileDown size={16} />
-                    {t('Order')}
-                  </a>
-                ) : null}
-                {purchaseOrderPackage?.ublDocumentId ? (
-                  <a
-                    className="secondary-button"
-                    aria-label={t('Download purchase order UBL {reference} for {job}', { reference: purchaseOrderPackage.issueReference, job: job.title })}
-                    href={`/api/ledger/documents/${encodeURIComponent(purchaseOrderPackage.ublDocumentId)}/issue-package`}
-                    download
-                  >
-                    <FileDown size={16} />
-                    {t('Order UBL')}
-                  </a>
-                ) : null}
-                {financeActions.map((action) => (
-                  <button
-                    className="secondary-button"
-                    key={`${action.type}-${action.creditNoteId || action.supplierInvoiceId || action.purchaseOrderId || action.invoiceId || action.paymentId || action.expenseId || item.jobId}`}
-                    aria-label={t('{action} for {job}', { action: t(FINANCE_ACTION_LABELS[action.type]), job: job.title })}
-                    disabled={submitting}
-                    onClick={() => action.type === 'review_cost_evidence' ? onOpen(job) : onAction(item, action)}
-                  >
-                    <ClipboardCheck size={16} />
-                    {t(FINANCE_ACTION_LABELS[action.type])}
-                  </button>
-                ))}
-                <button className="icon-button table-action" aria-label={t('Open {job}', { job: job.title })} onClick={() => onOpen(job)}>
-                  <ArrowUpRight size={16} />
-                </button>
-              </div>
-            </article>
-          )
-        })}
-        {!rows.length ? (
-          <Empty title={t('No finance work')} detail={t('Active and completed ledger jobs will appear here with their finance readiness state.')} />
-        ) : null}
-      </div>
-    </section>
-  )
-}
-
-function AuthenticationScreen({ checking, error, submitting, onLogin }) {
+function AuthenticationScreen({ checking, error, submitting, onLogin, identity }) {
   const [token, setToken] = useState('')
   const [visible, setVisible] = useState(false)
 
@@ -3051,6 +1547,7 @@ function AuthenticationScreen({ checking, error, submitting, onLogin }) {
                 <p>Use the access key issued for your role.</p>
               </div>
             </div>
+            {identity?.enabled && <div className="auth-form"><a className="primary-button" href={identity.signInUrl}>Inloggen met persoonlijk account</a><a href={identity.accountUrl}>Account aanmaken of herstellen</a></div>}
             <form className="auth-form" onSubmit={submit}>
               <label htmlFor="operator-access-key">Access key</label>
               <div className="auth-input-wrap">
@@ -3093,10 +1590,12 @@ function AuthenticationScreen({ checking, error, submitting, onLogin }) {
 
 function App() {
   const [section, setSection] = useState('today')
+  const [clientConversationTarget, setClientConversationTarget] = useState(null)
   const [pipelineView, setPipelineView] = useState('opportunities')
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
   const [data, setData] = useState(null)
   const [authState, setAuthState] = useState('checking')
+  const [identityConfiguration, setIdentityConfiguration] = useState(null)
   const [authSubmitting, setAuthSubmitting] = useState(false)
   const [authError, setAuthError] = useState('')
   const [error, setError] = useState('')
@@ -3107,7 +1606,6 @@ function App() {
   const [submitting, setSubmitting] = useState(false)
   const [showIntake, setShowIntake] = useState(false)
   const [opportunityEditor, setOpportunityEditor] = useState(null)
-  const [opportunityDraft, setOpportunityDraft] = useState(() => emptyOpportunityDraft())
   const [selectedOpportunity, setSelectedOpportunity] = useState(null)
   const [opportunityActivity, setOpportunityActivity] = useState(null)
   const [opportunityActivityDraft, setOpportunityActivityDraft] = useState(() => emptyOpportunityActivityDraft())
@@ -3126,6 +1624,8 @@ function App() {
   const [approvalReason, setApprovalReason] = useState('')
   const [selectedJobId, setSelectedJobId] = useState(null)
   const [selectedJob, setSelectedJob] = useState(null)
+  const [workContextRevision, setWorkContextRevision] = useState(0)
+  const [scheduleRefreshRevision, setScheduleRefreshRevision] = useState(0)
   const [selectedJobLoading, setSelectedJobLoading] = useState(false)
   const [estimateRates, setEstimateRates] = useState(null)
   const [taskDraft, setTaskDraft] = useState(emptyTaskDraft)
@@ -3214,7 +1714,7 @@ function App() {
   const [scheduleDraft, setScheduleDraft] = useState({ plannedStart: '', plannedEnd: '' })
   const [scheduleReview, setScheduleReview] = useState(null)
   const [weatherDraft, setWeatherDraft] = useState({ condition: 'workable', precipitationPercent: '0', weatherSensitive: false })
-  const [resourceDraft, setResourceDraft] = useState({ workerId: '', toolId: '' })
+  const [resourceDraft, setResourceDraft] = useState({ workerId: '', toolId: '', toolTaskId: '' })
   const [resourceOptions, setResourceOptions] = useState({ workers: [], tools: [] })
   const [communicationDraft, setCommunicationDraft] = useState({ channel: 'email', subject: '', body: '', expectsReply: true })
   const [portalDraft, setPortalDraft] = useState({ label: 'Client job portal', expiresAt: futureDateInput(30), locale: 'nl-NL' })
@@ -3222,7 +1722,6 @@ function App() {
   const [notice, setNotice] = useState(null)
   const [localeSaving, setLocaleSaving] = useState(false)
   const [operatorLocaleOverride, setOperatorLocaleOverride] = useState(null)
-  const [intake, setIntake] = useState({ clientName: '', title: '', service: '', address: '', description: '', priority: 'medium' })
   const [evidence, setEvidence] = useState(() => emptyFieldEvidenceDraft())
   const [fieldPhotoEvidenceSets, setFieldPhotoEvidenceSets] = useState([])
   const [fieldProgress, setFieldProgress] = useState(emptyFieldProgress)
@@ -3281,10 +1780,10 @@ function App() {
   const safetyBriefingLoadSequenceRef = useRef(0)
   const workPermitLoadSequenceRef = useRef(0)
   const lastPlannerWeekRef = useRef('')
-  const resourceViewLoadTimerRef = useRef(null)
+  const sectionRequestRef = useRef(null)
 
   useEffect(() => () => {
-    if (resourceViewLoadTimerRef.current) clearTimeout(resourceViewLoadTimerRef.current)
+    sectionRequestRef.current?.abort()
   }, [])
 
   useEffect(() => {
@@ -3298,12 +1797,20 @@ function App() {
   }, [])
 
   const refresh = useCallback(async () => {
+    sectionRequestRef.current?.abort()
+    sectionRequestRef.current = null
+    sectionLoadSequenceRef.current += 1
+    setSectionLoading(false)
     const sequence = ++fullLoadSequenceRef.current
     setLoading(true)
     setError('')
+    if (sectionRef.current === 'operations') {
+      setData(current => current ? { ...current, health: null, readiness: null } : current)
+    }
     try {
       const sessionResult = await api('/api/session')
       if (sequence !== fullLoadSequenceRef.current) return
+      setIdentityConfiguration(sessionResult.identity || null)
       if (sessionResult.authentication?.required && !sessionResult.authentication.authenticated) {
         setData(null)
         setAuthState('required')
@@ -3313,11 +1820,7 @@ function App() {
       setAuthError('')
       const operator = sessionResult.operator || { role: 'owner', capabilities: {} }
       const fieldScoped = operator.fieldScoped === true
-      const [jobsResult, healthResult, readinessResult] = await Promise.all([
-        api('/api/ledger/jobs?limit=100'),
-        api('/api/health'),
-        api('/api/readiness').catch(() => null),
-      ])
+      const jobsResult = await api('/api/ledger/jobs?limit=100')
       if (sequence !== fullLoadSequenceRef.current) return
       if (fieldScoped) {
         const scopedJobs = jobsResult.jobs || []
@@ -3326,6 +1829,7 @@ function App() {
           session: sessionResult,
           dashboard: fieldScopedDashboard(scopedJobs),
           jobs: scopedJobs,
+          jobRegisterPagination: jobsResult.pagination || null,
           approvals: [],
           dispatch: { rows: [] },
           schedule: { jobs: [], summary: {}, window: null },
@@ -3352,8 +1856,8 @@ function App() {
           safetyMeetings: [],
           workPermits: [],
           inspectionTemplates: [],
-          health: healthResult,
-          readiness: readinessResult,
+          health: null,
+          readiness: null,
           scheduler: null,
           commandPlan: null,
           backups: [],
@@ -3378,6 +1882,7 @@ function App() {
           session: sessionResult,
           dashboard: initialOperatorDashboard(initialJobs),
           jobs: initialJobs,
+          jobRegisterPagination: jobsResult.pagination || null,
           approvals: [],
           dispatch: { rows: [] },
           schedule: { jobs: [], summary: {}, window: null },
@@ -3404,8 +1909,8 @@ function App() {
           safetyMeetings: [],
           workPermits: [],
           inspectionTemplates: [],
-          health: healthResult,
-          readiness: readinessResult,
+          health: null,
+          readiness: null,
           scheduler: null,
           commandPlan: null,
           backups: [],
@@ -3428,7 +1933,9 @@ function App() {
         api('/api/ledger/dashboard'),
         api('/api/ledger/approvals?status=pending&limit=100'),
         loadSectionPatch(currentSection, resourceViewRef.current, fieldScoped, {
+          jobsResult,
           lastPlannerWeekStart: lastPlannerWeekRef.current,
+          operatorRole: operator.role,
         }),
       ])
       if (sequence !== fullLoadSequenceRef.current) return
@@ -3444,9 +1951,8 @@ function App() {
         session: sessionResult,
         dashboard: dashboardResult.dashboard,
         jobs: jobsResult.jobs || [],
+        jobRegisterPagination: jobsResult.pagination || null,
         approvals: approvalsResult.approvals || [],
-        health: healthResult,
-        readiness: readinessResult,
       }))
     } catch (requestError) {
       if (sequence !== fullLoadSequenceRef.current) return
@@ -3466,13 +1972,14 @@ function App() {
 
   const dashboard = data?.dashboard
   const operator = data?.session?.operator || { role: 'owner' }
-  const operatorLocale = normalizeLocale(operatorLocaleOverride || operator.preferences?.locale)
+  const defaultLocale = preferredOperatorLocale(operator.preferences, navigator.languages?.length ? navigator.languages : [navigator.language])
+  const operatorLocale = normalizeLocale(operatorLocaleOverride || defaultLocale, defaultLocale)
   const [operatorTranslator, setOperatorTranslator] = useState(null)
-  const ot = (key, variables = {}) => operatorLocale === 'nl-NL' && operatorTranslator
-    ? operatorTranslator(operatorLocale, key, variables)
+  const ot = (key, variables = {}, englishFallback = key) => operatorLocale === 'nl-NL' && operatorTranslator
+    ? operatorTranslator(operatorLocale, key, variables, englishFallback)
     : Object.entries(variables).reduce(
         (text, [name, value]) => text.replaceAll(`{${name}}`, String(value)),
-        key,
+        englishFallback,
       )
 
   useEffect(() => {
@@ -3491,9 +1998,7 @@ function App() {
     document.documentElement.lang = operatorLocale.slice(0, 2)
   }, [operatorLocale])
   useSessionDraftRecovery({ enabled: draftRecoveryEnabled, scope: outboxScope, name: 'intake-open', value: showIntake, setValue: setShowIntake })
-  useSessionDraftRecovery({ enabled: draftRecoveryEnabled, scope: outboxScope, name: 'intake', value: intake, setValue: setIntake })
   useSessionDraftRecovery({ enabled: draftRecoveryEnabled, scope: outboxScope, name: 'opportunity-editor', value: opportunityEditor, setValue: setOpportunityEditor })
-  useSessionDraftRecovery({ enabled: draftRecoveryEnabled, scope: outboxScope, name: 'opportunity', value: opportunityDraft, setValue: setOpportunityDraft })
   useSessionDraftRecovery({ enabled: draftRecoveryEnabled, scope: outboxScope, name: 'bid-package-open', value: bidPackageEditor, setValue: setBidPackageEditor })
   useSessionDraftRecovery({ enabled: draftRecoveryEnabled, scope: outboxScope, name: 'bid-package', value: bidPackageDraft, setValue: setBidPackageDraft })
   useSessionDraftRecovery({ enabled: draftRecoveryEnabled, scope: outboxScope, name: 'task', value: taskDraft, setValue: setTaskDraft })
@@ -3570,7 +2075,9 @@ function App() {
         : 'checking'
   const recoveryLabel = localRestoreAvailable
     ? 'verified local package'
-    : providerRecovery?.available
+    : operationCapabilities?.restore?.authorityReviewRequired
+      ? ot('reviewed recovery required')
+      : providerRecovery?.available
       ? `${providerRecovery.postgresBackupMode || 'provider backup'} + ${providerRecovery.objectVersioningEnabled ? 'versioned evidence' : 'object recovery pending'}`
       : 'checking'
   const evidenceStorageLabel = evidenceStorageCapability
@@ -3625,7 +2132,7 @@ function App() {
         .filter(
           (assignment) => assignment.workerId && !['released', 'cancelled', 'completed', 'closed', 'rejected'].includes(assignment.status),
         )
-        .map((assignment) => [assignment.workerId, { id: assignment.workerId, name: assignment.workerName || 'Crew member' }]),
+        .map((assignment) => [assignment.workerId, { id: assignment.workerId, name: assignment.workerName || 'Crew member', role: assignment.role || assignment.workerRole || '' }]),
     ).values(),
   )
   const nextActions = dashboard?.nextActions?.slice(0, 6) || []
@@ -3700,6 +2207,7 @@ function App() {
         if (key === 'schedule') return capabilities.schedule
         if (key === 'approvals') return capabilities.approvals
         if (key === 'dispatch') return capabilities.dispatch
+        if (key === 'recovery') return ['owner', 'office_operator'].includes(operator.role)
         if (key === 'resources') return capabilities.resources
         if (key === 'finance') return capabilities.finance
         if (key === 'performance') return capabilities.performance
@@ -3708,14 +2216,14 @@ function App() {
         if (key === 'operations') return capabilities.maintenance
         return true
       }).map(([key, icon]) => [key, appText(operatorLocale, `nav.${key}`), icon]),
-    [capabilities, operatorLocale],
+    [capabilities, operator.role, operatorLocale],
   )
 
   async function refreshOperationsCommandPlan(sequence = sectionLoadSequenceRef.current) {
     setCommandPlanLoading(true)
     setCommandPlanError('')
     try {
-      const commandPlan = await api('/api/ledger/command-plan?limit=100&jobLimit=12')
+      const commandPlan = await api('/api/ledger/command-plan?limit=100&jobLimit=12', { signal: sectionRequestRef.current?.signal })
       if (sequence !== sectionLoadSequenceRef.current || sectionRef.current !== 'operations') return
       setData((current) => current ? { ...current, commandPlan } : current)
     } catch (requestError) {
@@ -3735,15 +2243,27 @@ function App() {
   }
 
   async function refreshSection(next, nextResourceView = resourceViewRef.current) {
-    if (next === 'today') return
+    sectionRequestRef.current?.abort()
     const sequence = ++sectionLoadSequenceRef.current
+    if (next === 'today') {
+      sectionRequestRef.current = null
+      setSectionLoading(false)
+      return
+    }
+    const controller = new AbortController()
+    sectionRequestRef.current = controller
     setSectionLoading(true)
+    if (next === 'operations') {
+      setData(current => current ? { ...current, health: null, readiness: null } : current)
+    }
     setError('')
     try {
       const patch = await loadSectionPatch(next, nextResourceView, fieldScoped, {
+        signal: controller.signal,
         lastPlannerWeekStart: lastPlannerWeekRef.current,
+        operatorRole: operator.role,
       })
-      if (sequence !== sectionLoadSequenceRef.current) return
+      if (sequence !== sectionLoadSequenceRef.current || sectionRef.current !== next || controller.signal.aborted) return
       if (patch.lastPlanner?.week?.weekStart) {
         lastPlannerWeekRef.current = patch.lastPlanner.week.weekStart
       }
@@ -3751,7 +2271,7 @@ function App() {
       setData((current) => current ? { ...current, ...patch } : current)
       if (next === 'operations') void refreshOperationsCommandPlan(sequence)
     } catch (requestError) {
-      if (sequence === sectionLoadSequenceRef.current) setError(requestError.message)
+      if (sequence === sectionLoadSequenceRef.current && !controller.signal.aborted) setError(requestError.message)
     } finally {
       if (sequence === sectionLoadSequenceRef.current) setSectionLoading(false)
     }
@@ -3759,10 +2279,9 @@ function App() {
 
   const selectSection = (next) => {
     if (initialDataLoading && !['today', 'jobs'].includes(next)) return
-    if (resourceViewLoadTimerRef.current) {
-      clearTimeout(resourceViewLoadTimerRef.current)
-      resourceViewLoadTimerRef.current = null
-      setSectionLoading(false)
+    if (sectionRef.current === next) {
+      setMobileNavOpen(false)
+      return
     }
     setApprovalFocus(null)
     sectionRef.current = next
@@ -3774,12 +2293,7 @@ function App() {
     resourceViewRef.current = next
     setResourceView(next)
     if (sectionRef.current !== 'resources') return
-    if (resourceViewLoadTimerRef.current) clearTimeout(resourceViewLoadTimerRef.current)
-    setSectionLoading(true)
-    resourceViewLoadTimerRef.current = setTimeout(() => {
-      resourceViewLoadTimerRef.current = null
-      void refreshSection('resources', next)
-    }, 120)
+    void refreshSection('resources', next)
   }
 
   async function loadTimesheetPeriod(periodStart) {
@@ -3885,6 +2399,10 @@ function App() {
   )
 
   const logoutOperator = useCallback(async () => {
+    sectionRequestRef.current?.abort()
+    sectionRequestRef.current = null
+    sectionLoadSequenceRef.current += 1
+    setSectionLoading(false)
     setSubmitting(true)
     try {
       await api('/api/auth/logout', { method: 'POST' })
@@ -4128,45 +2646,36 @@ function App() {
     }
   }
 
-  async function createIntake(event) {
-    event.preventDefault()
+  async function createIntake(intake) {
     setSubmitting(true)
     try {
       await api('/api/ledger/intake', { method: 'POST', body: JSON.stringify({ ...intake, actor: 'office_operator' }) })
-      setShowIntake(false)
-      setIntake({ clientName: '', title: '', service: '', address: '', description: '', priority: 'medium' })
       notify('New intake saved to the operating ledger.')
-      await refresh()
+      return true
     } catch (requestError) {
       setError(requestError.message)
+      return false
     } finally {
       setSubmitting(false)
     }
   }
 
   function openOpportunityEditor(opportunity = null) {
+    setError('')
+    removeSessionDraft(browserDraftStorage(), outboxScope, 'opportunity')
     setOpportunityEditor({ mode: opportunity ? 'edit' : 'create', opportunity })
-    setOpportunityDraft(emptyOpportunityDraft(opportunity))
   }
 
   function closeOpportunityEditor() {
+    removeSessionDraft(browserDraftStorage(), outboxScope, 'opportunity')
     setOpportunityEditor(null)
-    setOpportunityDraft(emptyOpportunityDraft())
   }
 
-  async function submitOpportunity(event) {
-    event.preventDefault()
-    if (!opportunityEditor) return
+  async function submitOpportunity(payload) {
+    if (!opportunityEditor || submitting) return
     setSubmitting(true)
     setError('')
     try {
-      const payload = {
-        ...opportunityDraft,
-        estimatedValue: Number(opportunityDraft.estimatedValue) || 0,
-        probabilityPercent: Number(opportunityDraft.probabilityPercent) || 0,
-        targetDecisionAt: toIsoDateTime(opportunityDraft.targetDecisionAt),
-        nextFollowUpAt: toIsoDateTime(opportunityDraft.nextFollowUpAt),
-      }
       const result = opportunityEditor.mode === 'create'
         ? await api('/api/ledger/opportunities', { method: 'POST', body: JSON.stringify(payload) })
         : await api(`/api/ledger/opportunities/${encodeURIComponent(opportunityEditor.opportunity.id)}`, {
@@ -4257,7 +2766,7 @@ function App() {
     setSubmitting(true)
     setError('')
     try {
-      const response = await fetch('/api/ledger/upload', {
+      const response = await companyFetch('/api/ledger/upload', {
         method: 'POST',
         credentials: 'same-origin',
         headers: { 'Idempotency-Key': `site-survey-upload:${opportunityId}:${globalThis.crypto.randomUUID()}` },
@@ -6022,6 +4531,7 @@ function App() {
       jobId,
       payload: {
         meetingId,
+        briefingContentHash: selectedSafetyMeeting.briefingContentHash,
         acknowledged: true,
         acknowledgedAt: new Date().toISOString(),
         evidenceReference: safetyBriefingDraft.evidenceReference.trim(),
@@ -6822,14 +5332,15 @@ function App() {
   }
 
   async function openJobWorkspace(job) {
-    const start = toLocalDateTimeInput(job.scheduledStart || job.targetCompletion)
+    const start = toLocalDateTimeInput(job.replacementScheduledStart || job.scheduledStart || job.targetCompletion)
+    const end = toLocalDateTimeInput(job.replacementScheduledEnd)
     setSelectedJobId(job.id)
     setSelectedJob(null)
     setShowResourcePlanner(false)
     setScheduleReview(null)
     setScheduleDraft({
       plannedStart: start,
-      plannedEnd: suggestedEndInput(start, job.estimatedHours),
+      plannedEnd: end || suggestedEndInput(start, job.estimatedHours),
     })
     setWeatherDraft({
       condition: 'workable',
@@ -6838,7 +5349,7 @@ function App() {
         `${job.jobType || ''} ${job.title || ''} ${job.description || ''}`,
       ),
     })
-    setResourceDraft({ workerId: '', toolId: '' })
+    setResourceDraft({ workerId: job.replacementWorkerId || '', toolId: '', toolTaskId: '' })
     setCommunicationDraft({ channel: 'email', subject: '', body: '', expectsReply: true })
     setPortalDraft({ label: 'Client job portal', expiresAt: futureDateInput(30), locale: 'nl-NL' })
     setPortalLink('')
@@ -6855,8 +5366,9 @@ function App() {
         ? api('/api/ledger/inspection-templates').then((result) => {
             setData((current) => current ? { ...current, inspectionTemplates: result.templates || [] } : current)
           })
-        : Promise.resolve(),
+      : Promise.resolve(),
     ])
+    if (job.openResourcePlanner === true) setShowResourcePlanner(true)
   }
 
   function closeJobWorkspace() {
@@ -6893,6 +5405,14 @@ function App() {
     } finally {
       setSubmitting(false)
     }
+  }
+
+  async function refreshWorkDelivery(jobId) {
+    setWorkContextRevision(value => value + 1)
+    try {
+      const result = await api(`/api/ledger/jobs/${encodeURIComponent(jobId)}`)
+      setSelectedJob(current => current?.id === jobId ? { ...current, approvals: result.job.approvals, audit: result.job.audit } : current)
+    } catch (requestError) { setError(requestError.message) }
   }
 
   async function requestEstimateRatePolicy(payload) {
@@ -7325,6 +5845,31 @@ function App() {
     }
   }
 
+  async function prepareVariationImplementation(changeOrder, payload) {
+    if (!selectedJobId || !changeOrder?.id) return false
+    setSubmitting(true)
+    setError('')
+    try {
+      const result = await api(
+        `/api/ledger/jobs/${encodeURIComponent(selectedJobId)}/change-orders/${encodeURIComponent(changeOrder.id)}/implementation-plans`,
+        { method: 'POST', body: JSON.stringify(payload) },
+      )
+      setSelectedJob(result.job)
+      setData((current) => current
+        ? reconcileJobCollections({ ...current, dashboard: result.dashboard || current.dashboard }, result.job)
+        : current)
+      notify(result.replayed
+        ? ot('Implementation request already retained.')
+        : ot('Implementation tasks and material needs are awaiting internal approval.'))
+      return result
+    } catch (requestError) {
+      setError(requestError.message)
+      return false
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
   async function requestRiskRegisterRevision(payload) {
     if (!selectedJobId) return false
     setSubmitting(true)
@@ -7484,7 +6029,12 @@ function App() {
           priority: taskDraft.priority,
           assigneeId: taskDraft.assigneeId || null,
           durationHours: Number(taskDraft.durationHours),
+          requiredCrewRequirements: (taskDraft.requiredCrewRequirements || [{ role: taskDraft.requiredTrade || '', count: taskDraft.requiredCrewSize || 1 }])
+            .map(item => ({ role: String(item.role || '').trim(), count: Number(item.count || 1) })),
+          supervisorWorkerIds: taskDraft.supervisorWorkerIds || [],
+          ...(taskDraft.workersPerSupervisor ? { supervisionRatio: { workersPerSupervisor: Number(taskDraft.workersPerSupervisor) } } : {}),
           predecessorTaskId: taskDraft.predecessorTaskId || null,
+          materialRequirementIds: taskDraft.materialRequirementIds || [],
           dueAt: taskDraft.dueAt ? new Date(`${taskDraft.dueAt}T17:00:00`).toISOString() : null,
           actor: 'office_operator',
         }),
@@ -7615,7 +6165,9 @@ function App() {
       ? {
           ...draft,
           status: 'draft',
-          attachments: String(draft.attachments || '').split(',').map((value) => value.trim()).filter(Boolean),
+          attachments: Array.isArray(draft.attachmentDocumentIds)
+            ? draft.attachmentDocumentIds
+            : String(draft.attachments || '').split(',').map((value) => value.trim()).filter(Boolean),
         }
       : type === 'transmittal'
         ? {
@@ -7685,6 +6237,131 @@ function App() {
           ? `${record.title} is retained for explicit approval. No field or external reliance was created.`
           : `${record.title} is now ${formatStatus(payload.status)}.`,
       )
+      return result
+    } catch (requestError) {
+      setError(requestError.message)
+      return null
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  async function calculateResourceWorkPlan(payload) {
+    if (!selectedJobId || !payload.plannedStart) return null
+    setSubmitting(true)
+    try {
+      const result = await api(`/api/ledger/jobs/${encodeURIComponent(selectedJobId)}/work-plan/resource-preview`, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      })
+      notify(result.plan.status === 'feasible_under_recorded_constraints' ? 'Resource proposal calculated.' : 'Resource proposal needs review or more information.')
+      return result.plan
+    } catch (requestError) {
+      setError(requestError.message)
+      return null
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  async function reserveJobWarehouseMaterial(constraint, payload) {
+    if (!selectedJobId || !constraint?.materialRequirementId || !payload?.sourceReference?.trim()) return null
+    setSubmitting(true)
+    try {
+      const result = await api(`/api/ledger/jobs/${encodeURIComponent(selectedJobId)}/material-stock-reservations`, {
+        method: 'POST',
+        body: JSON.stringify({
+          materialRequirementId: constraint.materialRequirementId,
+          quantity: Number(payload.quantity),
+          sourceReference: payload.sourceReference.trim(),
+          note: payload.note?.trim() || 'Reserved from the work-plan material review.',
+          entryKey: `work-plan-reservation:${selectedJobId}:${constraint.materialRequirementId}:${globalThis.crypto.randomUUID()}`,
+        }),
+      })
+      notify('Warehouse stock reserved for this job; site issue and arrival remain separate steps.')
+      return result.allocation
+    } catch (requestError) {
+      setError(requestError.message)
+      return null
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  async function issueJobWarehouseMaterial(constraint, payload) {
+    if (!constraint?.warehouseAllocationId || !payload?.expectedArrivalAt
+      || !payload.dispatchReference?.trim() || !payload.evidenceReference?.trim()
+      || !Number.isFinite(Number(payload.quantity)) || Number(payload.quantity) <= 0) return null
+    setSubmitting(true)
+    try {
+      const result = await api(`/api/ledger/material-stock-reservations/${encodeURIComponent(constraint.warehouseAllocationId)}/issue`, {
+        method: 'POST',
+        body: JSON.stringify({
+          quantity: Number(payload.quantity),
+          dispatchReference: payload.dispatchReference.trim(),
+          evidenceReference: payload.evidenceReference.trim(),
+          expectedArrivalAt: new Date(payload.expectedArrivalAt).toISOString(),
+          note: payload.note?.trim() || 'Issued from the work-plan material review.',
+          entryKey: `work-plan-issue:${constraint.warehouseAllocationId}:${globalThis.crypto.randomUUID()}`,
+        }),
+      })
+      notify('Warehouse issue recorded; the field team must still confirm site receipt.')
+      return result
+    } catch (requestError) {
+      setError(requestError.message)
+      return null
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  async function saveJobSiteAccessCalendar(payload) {
+    if (!selectedJobId) return null
+    setSubmitting(true)
+    try {
+      const result = await api(`/api/ledger/jobs/${encodeURIComponent(selectedJobId)}/site-access-calendar`, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      })
+      setSelectedJob(result.job)
+      notify(result.changed ? 'Site access hours saved for future resource previews.' : 'Site access hours are unchanged.')
+      return result.calendar
+    } catch (requestError) {
+      setError(requestError.message)
+      return null
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  async function saveJobTravelRoute(payload) {
+    if (!selectedJobId) return null
+    setSubmitting(true)
+    try {
+      const result = await api(`/api/ledger/jobs/${encodeURIComponent(selectedJobId)}/travel-routes`, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      })
+      setSelectedJob(result.job)
+      notify(result.changed ? 'Sourced route saved for future resource previews.' : 'The sourced route is unchanged.')
+      return result.route
+    } catch (requestError) {
+      setError(requestError.message)
+      return null
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  async function requestResourceWorkPlanApproval(plan) {
+    if (!selectedJobId || !plan || plan.status !== 'feasible_under_recorded_constraints') return null
+    setSubmitting(true)
+    try {
+      const result = await api(`/api/ledger/jobs/${encodeURIComponent(selectedJobId)}/work-plan/resource-approval`, {
+        method: 'POST',
+        body: JSON.stringify({ plan, reason: 'Review the proposed task allocation before changing the field plan.' }),
+      })
+      notify(result.idempotent ? 'This resource proposal is already awaiting approval.' : 'Resource proposal sent for independent approval.')
       return result
     } catch (requestError) {
       setError(requestError.message)
@@ -8370,13 +7047,14 @@ function App() {
         body: JSON.stringify({
           toolId: tool.id,
           toolName: tool.name,
+          taskId: resourceDraft.toolTaskId || undefined,
           status: 'reserved',
           neededFrom: window.scheduledStart,
           neededUntil: window.scheduledEnd,
           actor: 'office_operator',
         }),
       })
-      setResourceDraft((draft) => ({ ...draft, toolId: '' }))
+      setResourceDraft((draft) => ({ ...draft, toolId: '', toolTaskId: '' }))
       notify(
         result.toolReservation.requiresApproval
           ? 'Equipment reservation was added as a conflict-aware approval request.'
@@ -8475,6 +7153,8 @@ function App() {
       setError('Enter a precipitation risk from 0 to 100 before recording the weather assessment.')
       return
     }
+    const plannedStartMs = Date.parse(scheduleDraft.plannedStart || '')
+    const weatherTarget = Number.isFinite(plannedStartMs) ? new Date(plannedStartMs).toISOString() : null
     setSubmitting(true)
     try {
       const result = await api('/api/ledger/weather/assess', {
@@ -8484,6 +7164,7 @@ function App() {
           condition: weatherDraft.condition,
           precipitationPercent,
           weatherSensitive: weatherDraft.weatherSensitive,
+          ...(weatherTarget ? { forecastAt: weatherTarget, plannedStart: weatherTarget } : {}),
           actor: 'office_operator',
         }),
       })
@@ -8915,17 +7596,26 @@ function App() {
 
   async function submitWorkerAvailability(event) {
     event.preventDefault()
-    if (!availabilityDraft.workerId || !availabilityDraft.startsAt || !availabilityDraft.endsAt) return
+    if (!availabilityDraft.workerId || !availabilityDraft.startsAt
+      || (availabilityDraft.repeatWeekly && (!availabilityDraft.recurrenceUntil || !availabilityDraft.recurrenceDays.length))
+      || (availabilityDraft.returnUnknown ? !availabilityDraft.reviewAt : !availabilityDraft.endsAt)) return
     setSubmitting(true)
     setError('')
     try {
+      const recurrence = !availabilityDraft.returnUnknown && availabilityDraft.repeatWeekly ? {
+        frequency: 'weekly', daysOfWeek: availabilityDraft.recurrenceDays,
+        timeZone: availabilityDraft.recurrenceTimeZone, until: availabilityDraft.recurrenceUntil,
+      } : null
       const result = await api(`/api/ledger/workers/${encodeURIComponent(availabilityDraft.workerId)}/availability`, {
         method: 'POST',
         body: JSON.stringify({
           periodType: availabilityDraft.periodType,
           title: availabilityDraft.title.trim() || null,
-          startsAt: availabilityDraft.startsAt,
-          endsAt: availabilityDraft.endsAt,
+          startsAt: recurrence ? toIsoDateTimeInTimeZone(availabilityDraft.startsAt, recurrence.timeZone) : new Date(availabilityDraft.startsAt).toISOString(),
+          endsAt: availabilityDraft.returnUnknown ? null : recurrence ? toIsoDateTimeInTimeZone(availabilityDraft.endsAt, recurrence.timeZone) : new Date(availabilityDraft.endsAt).toISOString(),
+          returnUnknown: availabilityDraft.returnUnknown,
+          reviewAt: availabilityDraft.returnUnknown ? availabilityDraft.reviewAt : null,
+          ...(recurrence ? { recurrence } : {}),
           notes: availabilityDraft.notes.trim() || null,
           actor: 'office_operator',
         }),
@@ -8994,6 +7684,52 @@ function App() {
     }
   }
 
+  async function requestAssignmentReplacement({ period, conflict, candidate, reason }) {
+    setSubmitting(true)
+    setError('')
+    try {
+      const result = await api(`/api/ledger/jobs/${encodeURIComponent(conflict.jobId)}/assignments/${encodeURIComponent(conflict.assignmentId)}/replacement`, {
+        method: 'POST',
+        body: JSON.stringify({ workerId: candidate.worker.id, availabilityPeriodId: period.id, reason, actor: 'office_operator' }),
+      })
+      setData((current) => current ? {
+        ...current,
+        availabilityRegister: result.availabilityRegister || current.availabilityRegister,
+        dashboard: result.dashboard || current.dashboard,
+      } : current)
+      notify(ot('Pending approval.'))
+      return true
+    } catch (requestError) {
+      setError(ot(requestError.message))
+      return false
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  async function requestAvailabilityReplacementPlan({ period, selections, reason }) {
+    setSubmitting(true)
+    setError('')
+    try {
+      const result = await api(`/api/ledger/workers/${encodeURIComponent(period.workerId)}/availability/${encodeURIComponent(period.id)}/replacement-plan`, {
+        method: 'POST',
+        body: JSON.stringify({ assignments: selections, reason, actor: 'office_operator' }),
+      })
+      setData((current) => current ? {
+        ...current,
+        availabilityRegister: result.availabilityRegister || current.availabilityRegister,
+        dashboard: result.dashboard || current.dashboard,
+      } : current)
+      notify(ot('Coordinated replacement plan submitted for approval. No assignment changes until it is approved.'))
+      return true
+    } catch (requestError) {
+      setError(ot(requestError.message))
+      return false
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
   function openMaterialReceiptEditor(plan = null) {
     setMaterialReceiptDraft(emptyMaterialReceiptDraft(plan))
     setMaterialReceiptEditor(true)
@@ -9037,6 +7773,7 @@ function App() {
           deliveredAt: toIsoDateTime(materialReceiptDraft.deliveredAt),
           receivedBy: materialReceiptDraft.receivedBy.trim(),
           location: materialReceiptDraft.location.trim() || null,
+          stockDestination: materialReceiptDraft.stockDestination,
           finalDelivery: materialReceiptDraft.finalDelivery,
           notes: materialReceiptDraft.notes.trim() || null,
           lines,
@@ -9492,6 +8229,7 @@ function App() {
       company: item.latest?.orientation?.company || action.company || 'Internal crew',
       rate: String(item.latest?.assignment?.hourlyRate || 52),
       availableQuantity: material?.quantity != null ? String(material.quantity) : '',
+      expectedAvailableAt: material?.data?.expectedAvailableAt ? toLocalDateTimeInput(material.data.expectedAvailableAt) : '',
       location: material?.data?.location || '',
       reference: item.latest?.orientation?.data?.verificationReference || material?.data?.verificationReference || '',
       supplier: matchedPartner?.name || procurementOrder?.supplier || '',
@@ -9619,8 +8357,14 @@ function App() {
     } else if (type === 'review_material_status') {
       const materialRequirementId = resourceAction.action.materialRequirementId || resourceAction.material?.id
       const availableQuantity = Number(resourceActionDraft.availableQuantity)
-      if (!materialRequirementId || !(availableQuantity > 0) || !resourceActionDraft.location.trim() || !reference) {
-        setError('Record a positive verified quantity, location, and material reference.')
+      const requiresStock = ['available', 'received', 'allocated', 'loaded', 'used'].includes(resourceActionDraft.materialStatus)
+      if (!materialRequirementId || !Number.isFinite(availableQuantity) || availableQuantity < 0
+        || (requiresStock && availableQuantity <= 0) || (availableQuantity > 0 && !resourceActionDraft.location.trim()) || !reference) {
+        setError('Record the retained material quantity and an evidence or order reference; positive stock also needs a location.')
+        return
+      }
+      if (resourceActionDraft.expectedAvailableAt && !reference) {
+        setError('An evidence or order reference is required for an expected availability date.')
         return
       }
       route = `/api/ledger/jobs/${encodeURIComponent(jobId)}/materials/${encodeURIComponent(materialRequirementId)}/status`
@@ -9628,6 +8372,7 @@ function App() {
       body = {
         status: resourceActionDraft.materialStatus,
         availableQuantity,
+        expectedAvailableAt: resourceActionDraft.expectedAvailableAt ? new Date(resourceActionDraft.expectedAvailableAt).toISOString() : null,
         location: resourceActionDraft.location.trim(),
         verificationReference: reference,
         notes,
@@ -11105,6 +9850,9 @@ function App() {
       resolution: notes,
       actor: 'office_operator',
     }
+    if (fieldAction.type === 'incident' && fieldAction.status === 'resolved') {
+      payload.correctiveAction = notes
+    }
     if (fieldAction.type === 'rfi') payload.response = notes
     if (fieldAction.type === 'permit') payload.expiresAt = new Date(`${fieldActionDate}T23:59:59`).toISOString()
     if (fieldAction.type === 'sds') {
@@ -11168,6 +9916,13 @@ function App() {
     }
   }
 
+  function openWorkPackCapture(job) {
+    setData(current => current ? { ...current, jobs: upsertById(current.jobs || [], job) } : current)
+    selectSection('field')
+    void selectFieldEvidenceJob(job.id)
+    focusFieldCapture({ jobId: job.id })
+  }
+
   async function openQaResetDialog(opener) {
     qaResetOpenerRef.current = opener || document.activeElement
     setQaResetError('')
@@ -11216,7 +9971,7 @@ function App() {
 
   if (authState === 'checking' || authState === 'required') {
     return (
-      <AuthenticationScreen checking={authState === 'checking'} error={authError} submitting={authSubmitting} onLogin={loginOperator} />
+      <AuthenticationScreen checking={authState === 'checking'} error={authError} submitting={authSubmitting} onLogin={loginOperator} identity={identityConfiguration} />
     )
   }
 
@@ -11224,6 +9979,7 @@ function App() {
 
   return (
     <div className="app-shell">
+      <a className="skip-to-workspace" href="#main-workspace">{operatorLocale === 'nl-NL' ? 'Naar werkruimte' : 'Skip to workspace'}</a>
       <aside
         className={`side-nav ${mobileNavOpen ? 'side-nav-open' : ''}`}
         aria-label={appText(operatorLocale, 'shell.primaryNavigation')}
@@ -11245,21 +10001,9 @@ function App() {
             <X size={19} />
           </button>
         </div>
-        <div className="nav-list">
-          {visibleNavItems.map(([key, label, icon]) => (
-            <button
-              key={key}
-              className={section === key ? 'nav-active' : ''}
-              onClick={() => selectSection(key)}
-              disabled={initialDataLoading && !['today', 'jobs'].includes(key)}
-            >
-              {createElement(icon, { size: 18 })}
-              {label}
-              {key === 'approvals' && metrics.pendingApprovals > 0 ? <b>{metrics.pendingApprovals}</b> : null}
-            </button>
-          ))}
-        </div>
+        <DashboardNavigation items={visibleNavItems} section={section} onSelect={selectSection} onIntent={preloadDashboardSection} locale={operatorLocale} pendingApprovals={metrics.pendingApprovals} loading={initialDataLoading} />
         <div className="nav-footer">
+          {data?.session?.identity?.enabled && <a className="company-switch-link" href={data.session.identity.accountUrl}><Building2 size={17} />{operatorLocale === 'nl-NL' ? 'Mijn bedrijven' : 'My companies'}</a>}
           <CloudOff size={16} />
           <span>{networkOnline ? appText(operatorLocale, 'shell.localLedger') : appText(operatorLocale, 'shell.offlineLedger')}</span>
           <small>{appText(operatorLocale, 'shell.approvalNotice')}</small>
@@ -11268,8 +10012,9 @@ function App() {
 
       <main
         className="workspace"
+        id="main-workspace"
+        tabIndex={-1}
         aria-busy={loading || sectionLoading}
-        inert={loading || sectionLoading ? true : undefined}
       >
         <header className="topbar">
           <button className="icon-button mobile-only" aria-label={appText(operatorLocale, 'shell.openNavigation')} onClick={() => setMobileNavOpen(true)}>
@@ -11307,7 +10052,7 @@ function App() {
                 <span>{operator.name || formatStatus(operator.role)}</span>
               </span>
             ) : null}
-            <button className="icon-button" aria-label={appText(operatorLocale, 'shell.refresh')} onClick={refreshCurrentView} disabled={loading || sectionLoading}>
+            <button className="icon-button" title={appText(operatorLocale, 'shell.refresh')} aria-label={appText(operatorLocale, 'shell.refresh')} onClick={refreshCurrentView} disabled={loading || sectionLoading}>
               <RefreshCw size={18} className={loading || sectionLoading ? 'spin' : ''} />
             </button>
             {operator.authenticated ? (
@@ -11372,9 +10117,14 @@ function App() {
                 {appText(operatorLocale, 'shell.loadingPage', { page: pageTitle.toLowerCase() })}
               </div>
             ) : null}
-              <>
+              <div className="workspace-content" inert={loading || sectionLoading ? true : undefined}>
             {section === 'today' && (
-              <section className="page-grid">
+              <section className="page-grid today-page">
+                <div className="today-heading">
+                  <div><h2>{operatorLocale === 'nl-NL' ? 'Dagoverzicht' : 'Daily overview'}</h2><p>{new Intl.DateTimeFormat(operatorLocale, { weekday: 'long', day: 'numeric', month: 'long' }).format(new Date())}</p></div>
+                  <span className="today-context">{fieldScoped ? appText(operatorLocale, 'shell.fieldScope') : appText(operatorLocale, 'shell.localFirst')}</span>
+                </div>
+                {fieldScoped ? <LazyControlBoundary label="personal work packs"><FieldWorkPack api={api} locale={operatorLocale} refreshKey={dashboard.generatedAt} canRespond onOpenJob={openJobWorkspace} onCapture={openWorkPackCapture} /></LazyControlBoundary> : null}
                 {capabilities.maintenance && data.organization && !data.organization.readiness?.ready ? (
                   <section className="panel first-run-panel" data-testid="first-run-setup">
                     <div>
@@ -11391,7 +10141,7 @@ function App() {
                 <div className="metrics-grid">
                   <Metric
                     icon={BriefcaseBusiness}
-                    label={ot('Jobs today')}
+                    label={operatorLocale === 'nl-NL' ? 'Open opdrachten' : 'Open jobs'}
                     value={metrics.openJobs || 0}
                     hint={ot('{count} completed', { count: metrics.completedJobs || 0 })}
                   />
@@ -11417,8 +10167,47 @@ function App() {
                     tone="green"
                   />
                 </div>
-                <div className="content-grid">
-                  <section className="panel command-panel">
+                {!fieldScoped && capabilities.clientSuccess ? <LazyControlBoundary label="client messages">
+                  <ClientConversationInbox api={api} locale={operatorLocale} onOpen={(message) => {
+                    setClientConversationTarget({ jobId: message.jobId, accessId: message.accessId })
+                    selectSection('clients')
+                  }} />
+                </LazyControlBoundary> : null}
+                <div className={fieldScoped ? undefined : 'today-work-grid'}>
+                {!fieldScoped && !initialDataLoading ? (
+                  <LazyControlBoundary label="daily workbench">
+                    <ContractorWorkbench
+                      api={api}
+                      locale={operatorLocale}
+                      refreshKey={dashboard.generatedAt}
+                      canAutomate={operator.role === 'owner'}
+                      canResolveAttendance={['owner', 'office_operator'].includes(operator.role)}
+                      suspended={automationSuspended}
+                      onChanged={refresh}
+                      formatMessage={(action) => localizedNextActionMessage({ ...action.data, ...action, type: action.actionType }, jobs, ot)}
+                      onOpenAction={(action) => {
+                        if (action.approvalId && capabilities.approvals) {
+                          openApprovals({ jobId: action.jobId, jobTitle: action.jobTitle, approvalId: action.approvalId })
+                        } else if (action.jobId) {
+                          void openJobWorkspace(jobs.find(job => job.id === action.jobId) || { id: action.jobId, title: action.jobTitle || ot('Ledger job') })
+                        } else if (action.data?.opportunityId && capabilities.pipeline) {
+                          selectSection('pipeline')
+                          void selectOpportunity({ id: action.data.opportunityId })
+                        } else {
+                          const destination = { approval: 'approvals', dispatch: 'dispatch', workforce: 'resources', inventory: 'resources', field_assurance: 'field', finance: 'finance', client_success: 'clients', learning: 'performance', operations: 'performance', capability: 'jobs' }[action.stream] || 'jobs'
+                          selectSection(visibleNavItems.some(([key]) => key === destination) ? destination : 'jobs')
+                        }
+                      }}
+                    />
+                  </LazyControlBoundary>
+                ) : null}
+                {!fieldScoped && !initialDataLoading ? <TodayAgenda jobs={activeJobs} locale={operatorLocale} onOpenJob={openJobWorkspace} onOpenSchedule={visibleNavItems.some(([key]) => key === 'schedule') ? () => selectSection('schedule') : undefined} /> : null}
+                </div>
+                {!fieldScoped && !initialDataLoading ? <LazyControlBoundary label="dossier review">
+                  <ContractorReviewControl api={api} locale={operatorLocale} refreshKey={dashboard.generatedAt} canAutomate={operator.role === 'owner'} canEdit={['owner', 'office_operator'].includes(operator.role)} suspended={automationSuspended} onOpenJob={job => void openJobWorkspace(job)} />
+                </LazyControlBoundary> : null}
+                <div className={`content-grid ${fieldScoped ? '' : 'today-schedule-grid'}`}>
+                  {fieldScoped ? <section className="panel command-panel">
                     <div className="panel-heading">
                       <div>
                         <h2>{fieldScoped ? ot('My field work') : ot('Command queue')}</h2>
@@ -11435,7 +10224,7 @@ function App() {
                     {nextActions.length ? (
                       <div className="queue-list">
                         {nextActions.map((item, index) => (
-                          <div className="queue-row" key={`${item.type}-${item.jobId || index}`}>
+                          <div className="queue-row" key={`${item.type}-${item.taskId || item.assignmentId || item.workerId || item.jobId || index}`}>
                             <span className={`severity severity-${item.severity || 'medium'}`}>
                               <TriangleAlert size={15} />
                             </span>
@@ -11443,7 +10232,9 @@ function App() {
                               <strong>{item.title || ot(formatStatus(item.type))}</strong>
                               <p>{localizedNextActionMessage(item, jobs, ot)}</p>
                             </div>
-                            {item.requiresApproval ? <span className="tag tag-amber">{ot('Approval')}</span> : <span className="tag">{ot('Draft')}</span>}
+                            {item.actionKind === 'worker_checkin_missing'
+                              ? <span className="tag tag-amber">{ot('Check required')}</span>
+                              : item.requiresApproval ? <span className="tag tag-amber">{ot('Approval')}</span> : <span className="tag">{ot('Draft')}</span>}
                             {item.jobId ? (
                               <button
                                 className="icon-button table-action"
@@ -11466,7 +10257,7 @@ function App() {
                     ) : (
                       <Empty title={ot('Queue is clear')} detail={ot('No immediate ledger action needs review.')} />
                     )}
-                  </section>
+                  </section> : null}
                   <section className="panel schedule-panel">
                     <div className="panel-heading">
                       <div>
@@ -11489,6 +10280,7 @@ function App() {
                           </tr>
                         </thead>
                         <tbody>
+                          {!activeJobs.length ? <tr><td colSpan={5}><Empty title={operatorLocale === 'nl-NL' ? 'Nog geen actieve opdrachten' : 'No active jobs'} /></td></tr> : null}
                           {activeJobs.slice(0, 6).map((job) => (
                             <tr key={job.id}>
                               <td>{job.scheduledStart || job.targetCompletion ? formatDate(job.scheduledStart || job.targetCompletion) : ot('Not scheduled')}</td>
@@ -11578,8 +10370,22 @@ function App() {
               </section>
             )}
 
+            {section === 'help' && (
+              <LazyControlBoundary label={operatorLocale === 'nl-NL' ? 'praktische hulp' : 'practical help'}>
+                <HelpCenter
+                  key={fieldScoped ? 'field' : 'office'}
+                  locale={operatorLocale}
+                  fieldScoped={fieldScoped}
+                  destinations={visibleNavItems.map(([key]) => key)}
+                  onNavigate={selectSection}
+                />
+              </LazyControlBoundary>
+            )}
+
             {section === 'pipeline' && capabilities.pipeline ? (
+              <LazyControlBoundary label="opportunity pipeline">
               <PipelineWorkspace
+                request={api}
                 locale={operatorLocale}
                 text={ot}
                 view={pipelineView}
@@ -11623,6 +10429,7 @@ function App() {
                 onReviewBidOrderDelivery={reviewBidOrderDelivery}
                 onRecordBidOrderDelivery={openBidOrderDelivery}
               />
+              </LazyControlBoundary>
             ) : null}
 
             {section === 'jobs' && (
@@ -11643,59 +10450,98 @@ function App() {
                     </button>
                   ) : null}
                 </div>
-                <div className="table-wrap">
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>{ot('Job')}</th>
-                        <th>{ot('Client')}</th>
-                        <th>{ot('Location')}</th>
-                        {!fieldScoped ? <th>{ot('Value')}</th> : null}
-                        <th>{ot('Progress')}</th>
-                        <th>{ot('Status')}</th>
-                        <th aria-label={ot('Open job')} />
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {jobs.map((job) => (
-                        <tr key={job.id}>
-                          <td>
-                            <strong>{job.title}</strong>
-                            <small>{ot(formatStatus(job.jobType))}</small>
-                          </td>
-                          <td>{job.clientName || ot('Not set')}</td>
-                          <td>{job.city || job.address || ot('Not set')}</td>
-                          {!fieldScoped ? <td>{currency.format(job.contractValue || job.estimatedCost || 0)}</td> : null}
-                          <td>
-                            <div className="progress">
-                              <span style={{ width: `${Math.min(100, job.progressPercent || 0)}%` }} />
-                            </div>
-                            <small>{Math.round(job.progressPercent || 0)}%</small>
-                          </td>
-                          <td>
-                            <span className={`status status-${job.status}`}>{ot(formatStatus(job.status))}</span>
-                          </td>
-                          <td>
-                            <button
-                              className="icon-button table-action"
-                              aria-label={ot('Open {title}', { title: job.title })}
-                              disabled={loading || sectionLoading}
-                              onClick={() => openJobWorkspace(job)}
-                            >
-                              <ArrowUpRight size={16} />
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                <JobRegisterSearch
+                  api={api}
+                  initialJobs={jobs}
+                  initialPagination={data?.jobRegisterPagination}
+                  t={ot}
+                >
+                  {(registerJobs) => (
+                    <div className="table-wrap">
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>{ot('Job')}</th>
+                            <th>{ot('Client')}</th>
+                            <th>{ot('Location')}</th>
+                            {!fieldScoped ? <th>{ot('Value')}</th> : null}
+                            <th>{ot('Progress')}</th>
+                            <th>{ot('Status')}</th>
+                            <th aria-label={ot('Open job')} />
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {registerJobs.length ? registerJobs.map((job) => (
+                            <tr key={job.id}>
+                              <td>
+                                <strong>{job.title}</strong>
+                                <small>{ot(formatStatus(job.jobType))}</small>
+                              </td>
+                              <td>{job.clientName || ot('Not set')}</td>
+                              <td>{job.city || job.address || ot('Not set')}</td>
+                              {!fieldScoped ? <td>{currency.format(job.contractValue || job.estimatedCost || 0)}</td> : null}
+                              <td>
+                                <div className="progress">
+                                  <span style={{ width: `${Math.min(100, job.progressPercent || 0)}%` }} />
+                                </div>
+                                <small>{Math.round(job.progressPercent || 0)}%</small>
+                              </td>
+                              <td>
+                                <span className={`status status-${job.status}`}>{ot(formatStatus(job.status))}</span>
+                              </td>
+                              <td>
+                                <button
+                                  className="icon-button table-action"
+                                  aria-label={ot('Open {title}', { title: job.title })}
+                                  disabled={loading || sectionLoading}
+                                  onClick={() => openJobWorkspace(job)}
+                                >
+                                  <ArrowUpRight size={16} />
+                                </button>
+                              </td>
+                            </tr>
+                          )) : <tr><td colSpan={fieldScoped ? 6 : 7}><Empty title={ot('No jobs to show.')} /></td></tr>}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </JobRegisterSearch>
               </section>
             )}
 
+            {section === 'recovery' && ['owner', 'office_operator'].includes(operator.role) ? (
+              <Suspense fallback={<div className="loading" role="status">{ot('Loading recovery cases...')}</div>}>
+                <OperationalRecoveryPortfolio
+                  data={data.recoveryPortfolio}
+                  locale={operatorLocale}
+                  loading={sectionLoading}
+                  error={error}
+                  onRefresh={() => void refreshSection('recovery')}
+                  onOpen={item => {
+                    void openJobWorkspace({ id: item.jobId, title: item.jobTitle }).then(() => {
+                      const navigateToRecovery = attempt => {
+                        if (!document.getElementById('job-operational-recovery') && attempt < 20) {
+                          window.setTimeout(() => navigateToRecovery(attempt + 1), 50)
+                          return
+                        }
+                        window.dispatchEvent(new CustomEvent('contractor:dossier-navigate', {
+                        detail: { area: 'planning', targetId: 'job-operational-recovery', jobId: item.jobId,
+                          sourceType: item.kind === 'unassigned_source' ? item.sourceType : undefined,
+                          sourceId: item.kind === 'unassigned_source' ? item.sourceId : undefined },
+                        }))
+                      }
+                      navigateToRecovery(0)
+                    })
+                  }}
+                />
+              </Suspense>
+            ) : null}
+
             {section === 'schedule' && capabilities.schedule ? (
               <>
-                <PortfolioScheduleWorkspace
+                <LazyControlBoundary label="portfolio schedule">
+              <PortfolioScheduleWorkspace
+                  api={api}
                   schedule={data.schedule}
                   jobs={jobs}
                   canApprove={capabilities.approvals === true}
@@ -11703,10 +10549,12 @@ function App() {
                   onOpenDispatch={reviewPortfolioDispatch}
                   onOpen={openJobWorkspace}
                 />
+              </LazyControlBoundary>
                 <LazyControlBoundary label="crew capacity board">
                   <CrewCapacityBoard
                     locale={operatorLocale}
                     board={data.crewCapacity}
+                    draftScope={draftRecoveryEnabled ? outboxScope : ''}
                     canApprove={capabilities.approvals === true}
                     submitting={submitting}
                     onLoadWindow={loadCrewCapacityWindow}
@@ -11776,6 +10624,7 @@ function App() {
             )}
 
             {section === 'dispatch' && capabilities.dispatch ? (
+              <LazyControlBoundary label="dispatch workspace">
               <DispatchWorkspace
                 dispatch={data.dispatch}
                 jobs={jobs}
@@ -11789,6 +10638,7 @@ function App() {
                 onOpenApprovals={openApprovals}
                 onOpen={openJobWorkspace}
               />
+              </LazyControlBoundary>
             ) : null}
 
             {section === 'resources' && capabilities.resources ? (
@@ -11829,6 +10679,8 @@ function App() {
                   onRetireQualificationRequirement={openQualificationRequirementRetirement}
                   onCreateAvailability={openAvailabilityEditor}
                   onCancelAvailability={openAvailabilityCancellation}
+                  onRequestAssignmentReplacement={requestAssignmentReplacement}
+                  onRequestAvailabilityReplacementPlan={requestAvailabilityReplacementPlan}
                   onCreateMaterialReceipt={openMaterialReceiptEditor}
                   onReverseMaterialReceipt={openMaterialReceiptReversal}
                   onCreateEquipment={() => openEquipmentEditor()}
@@ -11852,7 +10704,9 @@ function App() {
             ) : null}
 
             {section === 'finance' && capabilities.finance ? (
+              <LazyControlBoundary label={ot('Finance')}>
               <FinanceWorkspace
+                request={api}
                 locale={operatorLocale}
                 text={ot}
                 finance={data.finance}
@@ -11868,6 +10722,7 @@ function App() {
                 onOpen={openJobWorkspace}
                 onCashFlowChange={(cashFlow) => setData((current) => ({ ...current, cashFlow }))}
               />
+              </LazyControlBoundary>
             ) : null}
 
             {section === 'performance' && capabilities.performance ? (
@@ -11899,6 +10754,7 @@ function App() {
 
             {section === 'clients' && capabilities.clientSuccess ? (
               <LazyControlBoundary label="client controls">
+                <OfficeConversations jobs={jobs} api={api} locale={operatorLocale} canApprove={capabilities.approvals === true} isOwner={operator.role === 'owner'} onApprovals={openApprovals} draftScope={draftRecoveryEnabled ? outboxScope : ''} target={clientConversationTarget} />
                 <ClientsWorkspace
                   clients={data.clients}
                   directory={data.clientDirectory}
@@ -11922,6 +10778,7 @@ function App() {
 
             {section === 'field' && capabilities.fieldEvidence && (
               <section className="panel page-panel field-workspace" data-testid="field-workspace" aria-busy={loading || undefined}>
+                {!fieldScoped ? <LazyControlBoundary label="worker work packs"><FieldWorkPack api={api} locale={operatorLocale} canIssueStartRelease={['owner', 'approver'].includes(operator.role)} refreshKey={dashboard.generatedAt} onOpenJob={openJobWorkspace} /></LazyControlBoundary> : null}
                 <div className="panel-heading">
                   <div>
                     <h2>{ot('Field updates')}</h2>
@@ -12264,6 +11121,7 @@ function App() {
                     notify={notify}
                     refresh={refresh}
                     onOpenApprovals={openApprovals}
+                    draftScope={draftRecoveryEnabled ? outboxScope : ''}
                   />
                 </LazyControlBoundary>
                 <LazyControlBoundary label="SDS register controls">
@@ -12271,6 +11129,8 @@ function App() {
                     jobs={activeJobs}
                     fieldScoped={fieldScoped}
                     canCoordinate={canCoordinate}
+                    operatorRole={operator?.role}
+                    text={ot}
                     apiRequest={api}
                     notify={notify}
                     refresh={refresh}
@@ -12860,7 +11720,7 @@ function App() {
                           </span>
                           <span className={`status status-${report.status}`}>{formatStatus(report.status)}</span>
                           {report.status === 'approved' ? (
-                            <a className="icon-button icon-button-small" href={report.downloadPath} aria-label={`Download environmental report ${report.periodStart} to ${report.periodEnd}`} title="Download verified CSV">
+                            <a className="icon-button icon-button-small" href={companyApiUrl(report.downloadPath)} aria-label={`Download environmental report ${report.periodStart} to ${report.periodEnd}`} title="Download verified CSV">
                               <FileDown size={14} />
                             </a>
                           ) : null}
@@ -13624,6 +12484,8 @@ function App() {
 
             {section === 'operations' && capabilities.maintenance && (
               <section className="operations-grid">
+                {data.session?.identity?.enabled && <LazyControlBoundary label="bedrijfstoegang"><CompanyMembershipControl api={api} workers={data.workers} /></LazyControlBoundary>}
+                <LazyControlBoundary label="toelating uitvoerenden"><WorkBoardOffice api={api} isOwner={operator.role === 'owner'} /></LazyControlBoundary>
                 <LazyControlBoundary label={ot('team access')}>
                   <TeamAccessControl
                     request={api}
@@ -13885,7 +12747,7 @@ function App() {
                       {automationSuspended ? <Activity size={16} /> : <Ban size={16} />}
                       {automationSuspended ? ot('Resume autonomous drafting') : ot('Suspend autonomous drafting')}
                     </button>
-                    <a className="secondary-button" href="/api/operations/support-bundle" download>
+                    <a className="secondary-button" href={companyApiUrl('/api/operations/support-bundle')} download>
                       <FileDown size={16} />
                       {ot('Download support bundle')}
                     </a>
@@ -13894,14 +12756,14 @@ function App() {
                     {ot('The support bundle contains runtime, migration, aggregate-count, integrity, and control diagnostics only. It excludes customer records, evidence, logs, environment values, and credentials.')}
                   </p>
                 </section>
-                <section className="panel page-panel">
+                {data.health ? <section className="panel page-panel">
                   <div className="panel-heading">
                     <div>
                       <h2>Runtime readiness</h2>
                       <p>Local-first operational health and EU-hosting prerequisites.</p>
                     </div>
                     <span className={`status ${data.readiness?.status === 'ready' ? 'status-ready' : 'status-attention'}`}>
-                      {data.readiness?.status || 'local ready'}
+                      {data.readiness?.status || 'checking'}
                     </span>
                   </div>
                   <div className="readiness-list">
@@ -14023,7 +12885,10 @@ function App() {
                     Hosted mode fails closed until EU object storage, managed PostgreSQL, HTTPS, authentication, DPA, residency, and
                     recovery declarations are ready.
                   </p>
-                </section>
+                </section> : <section className="panel page-panel" role="status">
+                  <h2>Runtime readiness</h2>
+                  <p>{sectionLoading || loading ? 'Checking runtime readiness...' : 'Runtime diagnostics unavailable.'}</p>
+                </section>}
                 <section className="panel page-panel">
                   <div className="panel-heading">
                     <div>
@@ -14036,11 +12901,11 @@ function App() {
                     </div>
                   </div>
                   <div className="operations-actions">
-                    <a className="secondary-button" href="/api/operations/export">
+                    <a className="secondary-button" href={companyApiUrl('/api/operations/export')}>
                       <FileDown size={16} />
                       Export ledger
                     </a>
-                    <a className="secondary-button" href="/api/integrations/hai/feed?limit=100" download="contractor-ai.json">
+                    <a className="secondary-button" href={companyApiUrl('/api/integrations/hai/feed?limit=100')} download="contractor-ai.json">
                       <GitBranch size={16} />
                       {ot('Download HAI feed')}
                     </a>
@@ -14115,8 +12980,8 @@ function App() {
                             <button
                               className="secondary-button"
                               aria-label={`Check restore for backup ${backup.backupId}`}
-                              title="Verify file checksums and SQLite restore readiness"
-                              disabled={submitting || backup.manifestStatus === 'unreadable'}
+                              title={operationCapabilities?.restore?.authorityReviewRequired ? ot('reviewed recovery required') : ot('Verify file checksums and SQLite restore readiness')}
+                              disabled={submitting || !localRestoreAvailable || backup.manifestStatus === 'unreadable'}
                               onClick={() => verifyBackup(backup.backupId)}
                             >
                               <ShieldCheck size={15} />
@@ -14126,7 +12991,7 @@ function App() {
                               <a
                                 className="secondary-button"
                                 aria-label={`Download backup ${backup.backupId}`}
-                                href={`/api/operations/backups/${encodeURIComponent(backup.backupId)}/download`}
+                                href={companyApiUrl(`/api/operations/backups/${encodeURIComponent(backup.backupId)}/download`)}
                                 download
                               >
                                 <FileDown size={15} />
@@ -14143,7 +13008,9 @@ function App() {
                     </p>
                   )}
                   <p className="panel-copy">
-                    {localBackupAvailable
+                    {operationCapabilities?.restore?.authorityReviewRequired
+                      ? ot('Company authority recovery requires review. Generic restore is blocked.')
+                      : localBackupAvailable
                       ? 'Signed local backup v3 is the recovery artifact: it retains the SQLite ledger and private evidence with authenticated checksums. Download it to encrypted off-device storage; restore it only while the application is stopped.'
                       : 'Application-local packages are disabled in hosted mode because they cannot contain managed PostgreSQL and private object-store data.'}
                   </p>
@@ -14196,7 +13063,7 @@ function App() {
                 </section>
               </section>
             )}
-              </>
+              </div>
           </>
         ) : null}
       </main>
@@ -14217,1727 +13084,113 @@ function App() {
       ) : null}
 
       {jobLifecycleAction ? (
-        <div className="modal-backdrop job-lifecycle-backdrop" role="presentation">
-          <section
-            className="modal job-lifecycle-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="job-lifecycle-title"
-            data-testid="job-lifecycle-modal"
-          >
-            <div className="modal-heading">
-              <div>
-                <p className="eyebrow">Approval-gated lifecycle</p>
-                <h2 id="job-lifecycle-title">{jobLifecycleAction.mode === 'archive' ? 'Request job archive' : 'Request job restore'}</h2>
-                <p>
-                  {jobLifecycleAction.job.title} · {jobLifecycleAction.job.clientName || 'Client record'}
-                </p>
-              </div>
-              <button className="icon-button" aria-label="Close job lifecycle request" onClick={closeJobLifecycle}>
-                <X size={18} />
-              </button>
-            </div>
-            <form onSubmit={submitJobLifecycle}>
-              <div className="job-lifecycle-body">
-                <div className="job-lifecycle-effect">
-                  <Archive size={20} />
-                  <div>
-                    <strong>
-                      {jobLifecycleAction.mode === 'archive'
-                        ? 'Remove from active operations'
-                        : `Return to ${formatStatus(jobLifecycleAction.job.data?.archive?.previousStatus || 'retained state')}`}
-                    </strong>
-                    <p>
-                      {jobLifecycleAction.mode === 'archive'
-                        ? 'Schedules, queues, conflicts, automation, and rollups stop including this job only after approval.'
-                        : 'Applicable internal queues include the job again only after approval and current operating checks still apply.'}
-                    </p>
-                  </div>
-                </div>
-                <ul className="job-lifecycle-safeguards">
-                  <li>The complete job ledger, evidence, finance, field, client, resource, and audit history remains retained.</li>
-                  <li>No message, cancellation, supplier order, payment, safety clearance, or schedule commitment is triggered.</li>
-                  {jobLifecycleAction.mode === 'archive' ? (
-                    <li>Approval makes the job read-only and revokes active client portal links. Restore never reactivates those links.</li>
-                  ) : null}
-                  <li>
-                    {jobLifecycleAction.mode === 'archive'
-                      ? 'Returning the job later requires a separate restore approval.'
-                      : 'The archive and restore decisions remain visible in the audit history.'}
-                  </li>
-                </ul>
-                <label>
-                  Operational reason
-                  <textarea
-                    required
-                    minLength="8"
-                    value={jobLifecycleReason}
-                    onChange={(event) => setJobLifecycleReason(event.target.value)}
-                    placeholder={
-                      jobLifecycleAction.mode === 'archive'
-                        ? 'Explain why this job should leave active operations.'
-                        : 'Explain why this retained job should return to operations.'
-                    }
-                  />
-                </label>
-              </div>
-              <div className="modal-actions">
-                <button type="button" className="secondary-button" onClick={closeJobLifecycle}>
-                  Cancel
-                </button>
-                <button
-                  className={jobLifecycleAction.mode === 'archive' ? 'danger-button' : 'primary-button'}
-                  disabled={submitting || jobLifecycleReason.trim().length < 8}
-                >
-                  {jobLifecycleAction.mode === 'archive' ? <Archive size={16} /> : <RefreshCw size={16} />}
-                  {submitting
-                    ? 'Submitting...'
-                    : jobLifecycleAction.mode === 'archive'
-                      ? 'Request archive approval'
-                      : 'Request restore approval'}
-                </button>
-              </div>
-            </form>
-          </section>
-        </div>
+        <DeferredActionDialog locale={operatorLocale} title={<>{jobLifecycleAction.mode === 'archive' ? 'Request job archive' : 'Request job restore'}</>} onClose={closeJobLifecycle}>
+<JobLifecycleModalDialog closeJobLifecycle={closeJobLifecycle} jobLifecycleAction={jobLifecycleAction} jobLifecycleReason={jobLifecycleReason} setJobLifecycleReason={setJobLifecycleReason} submitJobLifecycle={submitJobLifecycle} submitting={submitting} />
+</DeferredActionDialog>
       ) : null}
 
       {workerEditor ? (
-        <div className="modal-backdrop worker-backdrop" role="presentation">
-          <section
-            className="modal worker-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="worker-editor-title"
-            data-testid="worker-editor"
-            onKeyDown={(event) => {
-              if (event.key === 'Escape') closeWorkerEditor()
-            }}
-          >
-            <div className="modal-heading">
-              <div>
-                <p className="eyebrow">{ot('Retained crew record')}</p>
-                <h2 id="worker-editor-title">{workerDraft.id ? ot('Edit {name}', { name: workerDraft.name || ot('crew member') }) : ot('Add crew member')}</h2>
-                <p>{ot('Identity, availability, skills, and internal cost evidence for resource planning.')}</p>
-              </div>
-              <button className="icon-button" aria-label={ot('Close crew member editor')} onClick={closeWorkerEditor}>
-                <X size={18} />
-              </button>
-            </div>
-            <form onSubmit={saveWorker}>
-              <div className="form-grid worker-form">
-                <label className="form-span">
-                  {ot('Full name')}
-                  <input
-                    autoFocus
-                    required
-                    minLength="2"
-                    value={workerDraft.name}
-                    onChange={(event) => setWorkerDraft({ ...workerDraft, name: event.target.value })}
-                  />
-                </label>
-                <label>
-                  {ot('Role or trade')}
-                  <input
-                    value={workerDraft.role}
-                    onChange={(event) => setWorkerDraft({ ...workerDraft, role: event.target.value })}
-                    placeholder={ot('Carpenter, site lead, electrician')}
-                  />
-                </label>
-                <label>
-                  {ot('Availability status')}
-                  <select value={workerDraft.status} onChange={(event) => setWorkerDraft({ ...workerDraft, status: event.target.value })}>
-                    <option value="available">{ot('Available')}</option>
-                    <option value="busy">{ot('Busy')}</option>
-                    <option value="traveling">{ot('Traveling')}</option>
-                    <option value="offline">{ot('Offline')}</option>
-                    <option value="on_leave">{ot('On leave')}</option>
-                    <option value="on_hold">{ot('On hold')}</option>
-                    <option value="inactive">{ot('Inactive')}</option>
-                  </select>
-                </label>
-                <label>
-                  {ot('Email')}
-                  <input
-                    type="email"
-                    value={workerDraft.email}
-                    onChange={(event) => setWorkerDraft({ ...workerDraft, email: event.target.value })}
-                  />
-                </label>
-                <label>
-                  {ot('Phone')}
-                  <input value={workerDraft.phone} onChange={(event) => setWorkerDraft({ ...workerDraft, phone: event.target.value })} />
-                </label>
-                <label>
-                  {ot('Home region')}
-                  <input
-                    value={workerDraft.homeRegion}
-                    onChange={(event) => setWorkerDraft({ ...workerDraft, homeRegion: event.target.value })}
-                    placeholder="Utrecht, Randstad, Noord-Brabant"
-                  />
-                </label>
-                <label>
-                  {ot('Hourly cost rate (EUR)')}
-                  <input
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    value={workerDraft.hourlyRate}
-                    onChange={(event) => setWorkerDraft({ ...workerDraft, hourlyRate: event.target.value })}
-                  />
-                </label>
-                <label className="form-span">
-                  {ot('Skills')}
-                  <input
-                    value={workerDraft.skills}
-                    onChange={(event) => setWorkerDraft({ ...workerDraft, skills: event.target.value })}
-                    placeholder={ot('Carpentry, renovation, electrical installation')}
-                  />
-                </label>
-                <label className="form-span">
-                  {ot('Internal notes')}
-                  <textarea
-                    value={workerDraft.notes}
-                    onChange={(event) => setWorkerDraft({ ...workerDraft, notes: event.target.value })}
-                    placeholder={ot('Record restrictions or resource planning context. Use Qualifications for certificate evidence.')}
-                  />
-                </label>
-                <p className="workflow-note form-span">
-                  {ot('Saving this record does not contact the crew member, submit payroll, clear site access, or commit a schedule.')}
-                </p>
-              </div>
-              <div className="modal-actions">
-                <button type="button" className="secondary-button" onClick={closeWorkerEditor}>
-                  {ot('Cancel')}
-                </button>
-                <button
-                  className="primary-button"
-                  disabled={
-                    submitting ||
-                    workerDraft.name.trim().length < 2 ||
-                    (workerDraft.hourlyRate !== '' && Number(workerDraft.hourlyRate) < 0)
-                  }
-                >
-                  <ShieldCheck size={16} />
-                  {submitting ? ot('Saving...') : ot('Save retained crew member')}
-                </button>
-              </div>
-            </form>
-          </section>
-        </div>
+        <DeferredActionDialog locale={operatorLocale} title={<>{workerDraft.id ? ot('Edit {name}', { name: workerDraft.name || ot('crew member') }) : ot('Add crew member')}</>} onClose={closeWorkerEditor}>
+<WorkerEditorDialog closeWorkerEditor={closeWorkerEditor} ot={ot} saveWorker={saveWorker} setWorkerDraft={setWorkerDraft} submitting={submitting} workerDraft={workerDraft} />
+</DeferredActionDialog>
       ) : null}
 
       {workerRetirement ? (
-        <div className="modal-backdrop worker-backdrop" role="presentation">
-          <section
-            className="modal worker-retirement-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="worker-retirement-title"
-            data-testid="worker-retirement-modal"
-            onKeyDown={(event) => {
-              if (event.key === 'Escape') closeWorkerRetirement()
-            }}
-          >
-            <div className="modal-heading">
-              <div>
-                <p className="eyebrow">{ot('Approval-gated lifecycle')}</p>
-                <h2 id="worker-retirement-title">{ot('Request crew retirement')}</h2>
-                <p>
-                  {workerRetirement.name} / {workerRetirement.role || ot('Role not retained')}
-                </p>
-              </div>
-              <button className="icon-button" aria-label={ot('Close crew retirement request')} onClick={closeWorkerRetirement}>
-                <X size={18} />
-              </button>
-            </div>
-            <form onSubmit={requestWorkerRetirement}>
-              <div className="job-lifecycle-body">
-                <div className="job-lifecycle-effect">
-                  <Archive size={20} />
-                  <div>
-                    <strong>{ot('Block this crew member from new assignments')}</strong>
-                    <p>
-                      {ot('The retained status changes to retired only after approval and after all operational assignments have been released or reassigned.')}
-                    </p>
-                  </div>
-                </div>
-                <ul className="job-lifecycle-safeguards">
-                  <li>{ot('The complete crew, assignment, time, approval, and audit history remains retained.')}</li>
-                  <li>{ot('New assignments are blocked as soon as this request enters the approval queue.')}</li>
-                  <li>
-                    {workerRetirement.activeAssignmentCount > 0
-                      ? ot('Approval cannot complete while {count} operational assignment(s) remain.', { count: workerRetirement.activeAssignmentCount })
-                      : ot('No operational assignments currently block this retirement.')}
-                  </li>
-                  {workerRetirement.dormantAssignmentCount > 0 ? (
-                    <li>
-                      {ot(
-                        workerRetirement.dormantAssignmentCount === 1
-                          ? 'Approval will release {count} dormant assignment retained on inactive jobs, so any later job restore requires reassignment.'
-                          : 'Approval will release {count} dormant assignments retained on inactive jobs, so any later job restore requires reassignment.',
-                        { count: workerRetirement.dormantAssignmentCount },
-                      )}
-                    </li>
-                  ) : null}
-                  <li>{ot('No crew member, client, payroll provider, or site contact is notified.')}</li>
-                </ul>
-                <label>
-                  Operational reason
-                  <textarea
-                    autoFocus
-                    required
-                    minLength="8"
-                    value={workerRetirementReason}
-                    onChange={(event) => setWorkerRetirementReason(event.target.value)}
-                    placeholder={ot('Explain why this person should no longer be selected for new work.')}
-                  />
-                </label>
-              </div>
-              <div className="modal-actions">
-                <button type="button" className="secondary-button" onClick={closeWorkerRetirement}>
-                  Cancel
-                </button>
-                <button className="danger-button" disabled={submitting || workerRetirementReason.trim().length < 8}>
-                  <Archive size={16} />
-                  {submitting ? 'Submitting...' : 'Request retirement approval'}
-                </button>
-              </div>
-            </form>
-          </section>
-        </div>
+        <DeferredActionDialog locale={operatorLocale} title={<>{ot('Request crew retirement')}</>} onClose={closeWorkerRetirement}>
+<WorkerRetirementModalDialog closeWorkerRetirement={closeWorkerRetirement} ot={ot} requestWorkerRetirement={requestWorkerRetirement} setWorkerRetirementReason={setWorkerRetirementReason} submitting={submitting} workerRetirement={workerRetirement} workerRetirementReason={workerRetirementReason} />
+</DeferredActionDialog>
       ) : null}
 
       {credentialEditor ? (
-        <div className="modal-backdrop worker-backdrop" role="presentation">
-          <section
-            className="modal qualification-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="credential-editor-title"
-            data-testid="credential-editor"
-            onKeyDown={(event) => {
-              if (event.key === 'Escape') closeCredentialEditor()
-            }}
-          >
-            <div className="modal-heading">
-              <div>
-                <p className="eyebrow">{ot('Approval-backed qualification evidence')}</p>
-                <h2 id="credential-editor-title">{ot('Add credential for {name}', { name: credentialEditor.name })}</h2>
-                <p>{ot('Retain the source identity and validity dates. Approval verifies this revision before readiness can rely on it.')}</p>
-              </div>
-              <button type="button" className="icon-button" aria-label={ot('Close credential editor')} onClick={closeCredentialEditor}>
-                <X size={18} />
-              </button>
-            </div>
-            <form onSubmit={submitWorkerCredential}>
-              <div className="form-grid qualification-form">
-                <label>
-                  {ot('Credential type')}
-                  <select autoFocus value={credentialDraft.credentialType} onChange={(event) => setCredentialDraft({ ...credentialDraft, credentialType: event.target.value })}>
-                    {(data.qualificationRegister?.catalog?.credentials || EMPTY_LIST).map((item) => <option key={item.key} value={item.key}>{ot(item.label)}</option>)}
-                  </select>
-                </label>
-                <label>
-                  {ot('Retained title')}
-                  <input value={credentialDraft.title} onChange={(event) => setCredentialDraft({ ...credentialDraft, title: event.target.value })} placeholder={ot('Uses the credential type when blank')} />
-                </label>
-                <label>
-                  {ot('Issuer')}
-                  <input value={credentialDraft.issuer} onChange={(event) => setCredentialDraft({ ...credentialDraft, issuer: event.target.value })} placeholder={ot('Training or examination authority')} />
-                </label>
-                <label>
-                  {ot('Credential number')}
-                  <input value={credentialDraft.credentialNumber} onChange={(event) => setCredentialDraft({ ...credentialDraft, credentialNumber: event.target.value })} />
-                </label>
-                <label>
-                  {ot('Issued on')}
-                  <input type="date" max={new Date().toISOString().slice(0, 10)} value={credentialDraft.issuedOn} onChange={(event) => setCredentialDraft({ ...credentialDraft, issuedOn: event.target.value })} />
-                </label>
-                <label>
-                  {ot('Expires on')}
-                  <input type="date" min={credentialDraft.issuedOn || undefined} value={credentialDraft.expiresOn} onChange={(event) => setCredentialDraft({ ...credentialDraft, expiresOn: event.target.value })} />
-                </label>
-                <label className="form-span">
-                  {ot('Evidence reference')}
-                  <textarea required minLength="4" maxLength="500" value={credentialDraft.evidenceReference} onChange={(event) => setCredentialDraft({ ...credentialDraft, evidenceReference: event.target.value })} placeholder={ot('Certificate file, provider register reference, or retained verification source')} />
-                </label>
-                <p className="workflow-note form-span">{ot('Submitting creates an immutable pending revision. Contractor.AI does not issue, renew, or contact a certificate authority.')}</p>
-              </div>
-              <div className="modal-actions">
-                <button type="button" className="secondary-button" onClick={closeCredentialEditor}>{ot('Cancel')}</button>
-                <button className="primary-button" disabled={submitting || credentialDraft.evidenceReference.trim().length < 4}>
-                  <ShieldCheck size={16} />
-                  {submitting ? ot('Submitting...') : ot('Request evidence verification')}
-                </button>
-              </div>
-            </form>
-          </section>
-        </div>
+        <DeferredActionDialog locale={operatorLocale} title={<>{ot('Add credential for {name}', { name: credentialEditor.name })}</>} onClose={closeCredentialEditor}>
+<CredentialEditorDialog closeCredentialEditor={closeCredentialEditor} credentialDraft={credentialDraft} credentialEditor={credentialEditor} data={data} ot={ot} setCredentialDraft={setCredentialDraft} submitWorkerCredential={submitWorkerCredential} submitting={submitting} />
+</DeferredActionDialog>
       ) : null}
 
       {qualificationRequirementEditor ? (
-        <div className="modal-backdrop worker-backdrop" role="presentation">
-          <section
-            className="modal qualification-requirement-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="qualification-requirement-title"
-            data-testid="qualification-requirement-editor"
-            onKeyDown={(event) => {
-              if (event.key === 'Escape') closeQualificationRequirementEditor()
-            }}
-          >
-            <div className="modal-heading">
-              <div>
-                <p className="eyebrow">{ot('Job readiness control')}</p>
-                <h2 id="qualification-requirement-title">{ot('Add qualification requirement')}</h2>
-                <p>{ot('This immediately adds a retained readiness gate for matching assigned roles.')}</p>
-              </div>
-              <button type="button" className="icon-button" aria-label={ot('Close qualification requirement editor')} onClick={closeQualificationRequirementEditor}>
-                <X size={18} />
-              </button>
-            </div>
-            <form onSubmit={submitQualificationRequirement}>
-              <div className="form-grid qualification-form">
-                <label className="form-span">
-                  {ot('Job')}
-                  <select autoFocus required value={qualificationRequirementDraft.jobId} onChange={(event) => setQualificationRequirementDraft({ ...qualificationRequirementDraft, jobId: event.target.value })}>
-                    <option value="">{ot('Select a retained job')}</option>
-                    {jobs.filter((job) => !['archived', 'cancelled', 'rejected'].includes(job.status)).map((job) => <option key={job.id} value={job.id}>{job.title}</option>)}
-                  </select>
-                </label>
-                <label>
-                  {ot('Requirement type')}
-                  <select value={qualificationRequirementDraft.credentialType} onChange={(event) => setQualificationRequirementDraft({ ...qualificationRequirementDraft, credentialType: event.target.value })}>
-                    {(data.qualificationRegister?.catalog?.requirements || EMPTY_LIST).map((item) => <option key={item.key} value={item.key}>{ot(item.label)}</option>)}
-                  </select>
-                </label>
-                <label>
-                  {ot('Applies to role')}
-                  <input value={qualificationRequirementDraft.role} onChange={(event) => setQualificationRequirementDraft({ ...qualificationRequirementDraft, role: event.target.value })} placeholder={ot('Blank means all assigned roles')} />
-                </label>
-                <label className="form-span">
-                  {ot('Requirement title')}
-                  <input value={qualificationRequirementDraft.title} onChange={(event) => setQualificationRequirementDraft({ ...qualificationRequirementDraft, title: event.target.value })} placeholder={ot('Uses the requirement type when blank')} />
-                </label>
-                <label className="checkbox-control form-span">
-                  <input type="checkbox" checked={qualificationRequirementDraft.mandatory} onChange={(event) => setQualificationRequirementDraft({ ...qualificationRequirementDraft, mandatory: event.target.checked })} />
-                  <span>{ot('Block dispatch, site access, and attendance when evidence is missing or expired')}</span>
-                </label>
-                <p className="workflow-note form-span">{ot('Removing a retained requirement later needs an approval and does not delete credential history.')}</p>
-              </div>
-              <div className="modal-actions">
-                <button type="button" className="secondary-button" onClick={closeQualificationRequirementEditor}>{ot('Cancel')}</button>
-                <button className="primary-button" disabled={submitting || !qualificationRequirementDraft.jobId}>
-                  <LockKeyhole size={16} />
-                  {submitting ? ot('Saving...') : ot('Enforce requirement')}
-                </button>
-              </div>
-            </form>
-          </section>
-        </div>
+        <DeferredActionDialog locale={operatorLocale} title={<>{ot('Add qualification requirement')}</>} onClose={closeQualificationRequirementEditor}>
+<QualificationRequirementEditorDialog closeQualificationRequirementEditor={closeQualificationRequirementEditor} data={data} jobs={jobs} ot={ot} qualificationRequirementDraft={qualificationRequirementDraft} setQualificationRequirementDraft={setQualificationRequirementDraft} submitQualificationRequirement={submitQualificationRequirement} submitting={submitting} />
+</DeferredActionDialog>
       ) : null}
 
       {qualificationRequirementRetirement ? (
-        <div className="modal-backdrop worker-backdrop" role="presentation">
-          <section
-            className="modal qualification-retirement-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="qualification-retirement-title"
-            data-testid="qualification-retirement-modal"
-            onKeyDown={(event) => {
-              if (event.key === 'Escape') closeQualificationRequirementRetirement()
-            }}
-          >
-            <div className="modal-heading">
-              <div>
-                <p className="eyebrow">{ot('Approval-gated safety change')}</p>
-                <h2 id="qualification-retirement-title">{ot('Request requirement removal')}</h2>
-                <p>{qualificationRequirementRetirement.title} / {qualificationRequirementRetirement.jobTitle}</p>
-              </div>
-              <button type="button" className="icon-button" aria-label={ot('Close qualification removal request')} onClick={closeQualificationRequirementRetirement}>
-                <X size={18} />
-              </button>
-            </div>
-            <form onSubmit={requestQualificationRequirementRetirement}>
-              <div className="job-lifecycle-body">
-                <div className="job-lifecycle-effect">
-                  <TriangleAlert size={20} />
-                  <div>
-                    <strong>{ot('Stop enforcing this readiness gate after approval')}</strong>
-                    <p>{ot('The requirement remains active while the decision is pending. Rejection or cancellation restores its normal active state.')}</p>
-                  </div>
-                </div>
-                <label>
-                  {ot('Operational reason')}
-                  <textarea autoFocus required minLength="8" value={qualificationRequirementRetirementReason} onChange={(event) => setQualificationRequirementRetirementReason(event.target.value)} placeholder={ot('Reference the accepted scope or safety-plan change.')} />
-                </label>
-              </div>
-              <div className="modal-actions">
-                <button type="button" className="secondary-button" onClick={closeQualificationRequirementRetirement}>{ot('Cancel')}</button>
-                <button className="danger-button" disabled={submitting || qualificationRequirementRetirementReason.trim().length < 8}>
-                  <Archive size={16} />
-                  {submitting ? ot('Submitting...') : ot('Request removal approval')}
-                </button>
-              </div>
-            </form>
-          </section>
-        </div>
+        <DeferredActionDialog locale={operatorLocale} title={<>{ot('Request requirement removal')}</>} onClose={closeQualificationRequirementRetirement}>
+<QualificationRetirementModalDialog closeQualificationRequirementRetirement={closeQualificationRequirementRetirement} ot={ot} qualificationRequirementRetirement={qualificationRequirementRetirement} qualificationRequirementRetirementReason={qualificationRequirementRetirementReason} requestQualificationRequirementRetirement={requestQualificationRequirementRetirement} setQualificationRequirementRetirementReason={setQualificationRequirementRetirementReason} submitting={submitting} />
+</DeferredActionDialog>
       ) : null}
 
       {availabilityEditor ? (
-        <div className="modal-backdrop worker-backdrop" role="presentation">
-          <section
-            className="modal availability-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="availability-editor-title"
-            data-testid="availability-editor"
-            onKeyDown={(event) => {
-              if (event.key === 'Escape') closeAvailabilityEditor()
-            }}
-          >
-            <div className="modal-heading">
-              <div>
-                <p className="eyebrow">{ot('Operational capacity ledger')}</p>
-                <h2 id="availability-editor-title">{ot('Add worker unavailability')}</h2>
-                <p>{ot('The retained time window blocks overlapping scheduling immediately without creating a message, payroll record, or HR case.')}</p>
-              </div>
-              <button type="button" className="icon-button" aria-label={ot('Close availability editor')} onClick={closeAvailabilityEditor}>
-                <X size={18} />
-              </button>
-            </div>
-            <form onSubmit={submitWorkerAvailability}>
-              <div className="form-grid availability-form">
-                <label className="form-span">
-                  {ot('Worker')}
-                  <select autoFocus required value={availabilityDraft.workerId} onChange={(event) => setAvailabilityDraft({ ...availabilityDraft, workerId: event.target.value })}>
-                    <option value="">{ot('Select retained worker')}</option>
-                    {(data.workers || EMPTY_LIST).filter((worker) => worker.status !== 'retired' && !worker.retirementApprovalId).map((worker) => (
-                      <option key={worker.id} value={worker.id}>{worker.name} / {worker.role || ot('Role not retained')}</option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  {ot('Operational type')}
-                  <select value={availabilityDraft.periodType} onChange={(event) => setAvailabilityDraft({ ...availabilityDraft, periodType: event.target.value })}>
-                    {(data.availabilityRegister?.catalog || EMPTY_LIST).map((item) => <option key={item.key} value={item.key}>{ot(item.label)}</option>)}
-                  </select>
-                </label>
-                <label>
-                  {ot('Display title')}
-                  <input maxLength="160" value={availabilityDraft.title} onChange={(event) => setAvailabilityDraft({ ...availabilityDraft, title: event.target.value })} placeholder={ot('Uses the operational type when blank')} />
-                </label>
-                <label>
-                  {ot('Starts')}
-                  <input required type="datetime-local" value={availabilityDraft.startsAt} onChange={(event) => setAvailabilityDraft({ ...availabilityDraft, startsAt: event.target.value })} />
-                </label>
-                <label>
-                  {ot('Ends')}
-                  <input required type="datetime-local" min={availabilityDraft.startsAt || undefined} value={availabilityDraft.endsAt} onChange={(event) => setAvailabilityDraft({ ...availabilityDraft, endsAt: event.target.value })} />
-                </label>
-                <label className="form-span">
-                  {ot('Operational note')}
-                  <textarea maxLength="1000" value={availabilityDraft.notes} onChange={(event) => setAvailabilityDraft({ ...availabilityDraft, notes: event.target.value })} placeholder={ot('Capacity or planning context only')} />
-                </label>
-                <p className="workflow-note form-span">{ot('Do not enter diagnosis, illness, medical details, payroll entitlement, HR case information, or location tracking data.')}</p>
-              </div>
-              <div className="modal-actions">
-                <button type="button" className="secondary-button" onClick={closeAvailabilityEditor}>{ot('Cancel')}</button>
-                <button className="primary-button" disabled={submitting || !availabilityDraft.workerId || !availabilityDraft.startsAt || !availabilityDraft.endsAt}>
-                  <CalendarOff size={16} />
-                  {submitting ? ot('Saving...') : ot('Block availability window')}
-                </button>
-              </div>
-            </form>
-          </section>
-        </div>
+        <DeferredActionDialog locale={operatorLocale} title={<>{ot('Add worker unavailability')}</>} onClose={closeAvailabilityEditor}>
+<AvailabilityEditorDialog AVAILABILITY_TIME_ZONES={AVAILABILITY_TIME_ZONES} availabilityDraft={availabilityDraft} closeAvailabilityEditor={closeAvailabilityEditor} data={data} ot={ot} setAvailabilityDraft={setAvailabilityDraft} submitWorkerAvailability={submitWorkerAvailability} submitting={submitting} workerAvailabilityReviewMinimum={workerAvailabilityReviewMinimum} />
+</DeferredActionDialog>
       ) : null}
 
       {availabilityCancellation ? (
-        <div className="modal-backdrop worker-backdrop" role="presentation">
-          <section
-            className="modal availability-cancellation-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="availability-cancellation-title"
-            data-testid="availability-cancellation-modal"
-            onKeyDown={(event) => {
-              if (event.key === 'Escape') closeAvailabilityCancellation()
-            }}
-          >
-            <div className="modal-heading">
-              <div>
-                <p className="eyebrow">{ot('Approval-backed capacity change')}</p>
-                <h2 id="availability-cancellation-title">{ot('Request availability cancellation')}</h2>
-                <p>{availabilityCancellation.workerName} / {availabilityCancellation.title}</p>
-              </div>
-              <button type="button" className="icon-button" aria-label={ot('Close availability cancellation')} onClick={closeAvailabilityCancellation}>
-                <X size={18} />
-              </button>
-            </div>
-            <form onSubmit={requestAvailabilityCancellation}>
-              <div className="job-lifecycle-body">
-                <div className="job-lifecycle-effect">
-                  <TriangleAlert size={20} />
-                  <div>
-                    <strong>{ot('Remove this scheduling block only after approval')}</strong>
-                    <p>{ot('{start} to {end} remains unavailable while review is pending.', { start: formatDateTime(availabilityCancellation.startsAt), end: formatDateTime(availabilityCancellation.endsAt) })}</p>
-                  </div>
-                </div>
-                <label>
-                  {ot('Operational reason')}
-                  <textarea autoFocus required minLength="8" maxLength="1000" value={availabilityCancellationReason} onChange={(event) => setAvailabilityCancellationReason(event.target.value)} placeholder={ot('Explain the verified planning change.')} />
-                </label>
-              </div>
-              <div className="modal-actions">
-                <button type="button" className="secondary-button" onClick={closeAvailabilityCancellation}>{ot('Cancel')}</button>
-                <button className="danger-button" disabled={submitting || availabilityCancellationReason.trim().length < 8}>
-                  <Ban size={16} />
-                  {submitting ? ot('Submitting...') : ot('Request cancellation approval')}
-                </button>
-              </div>
-            </form>
-          </section>
-        </div>
+        <DeferredActionDialog locale={operatorLocale} title={<>{ot('Request availability cancellation')}</>} onClose={closeAvailabilityCancellation}>
+<AvailabilityCancellationModalDialog availabilityCancellation={availabilityCancellation} availabilityCancellationReason={availabilityCancellationReason} closeAvailabilityCancellation={closeAvailabilityCancellation} ot={ot} requestAvailabilityCancellation={requestAvailabilityCancellation} setAvailabilityCancellationReason={setAvailabilityCancellationReason} submitting={submitting} />
+</DeferredActionDialog>
       ) : null}
 
       {equipmentEditor ? (
-        <div className="modal-backdrop equipment-backdrop" role="presentation">
-          <section
-            className="modal equipment-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="equipment-editor-title"
-            data-testid="equipment-editor"
-            onKeyDown={(event) => {
-              if (event.key === 'Escape') closeEquipmentEditor()
-            }}
-          >
-            <div className="modal-heading">
-              <div>
-                <p className="eyebrow">{ot('Retained equipment record')}</p>
-                <h2 id="equipment-editor-title">{equipmentDraft.id ? ot('Edit {name}', { name: equipmentDraft.name || ot('equipment') }) : ot('Add equipment')}</h2>
-                <p>{ot('Identity, condition, location, inspection, and internal reference evidence for resource planning.')}</p>
-              </div>
-              <button type="button" className="icon-button" aria-label={ot('Close equipment editor')} onClick={closeEquipmentEditor}>
-                <X size={18} />
-              </button>
-            </div>
-            <form onSubmit={saveEquipment}>
-              <div className="form-grid equipment-form">
-                <label className="form-span">
-                  {ot('Equipment name')}
-                  <input
-                    autoFocus
-                    required
-                    minLength="2"
-                    value={equipmentDraft.name}
-                    onChange={(event) => setEquipmentDraft({ ...equipmentDraft, name: event.target.value })}
-                    placeholder={ot('Site laser, tower scaffold, service van')}
-                  />
-                </label>
-                <label>
-                  {ot('Category')}
-                  <input
-                    required
-                    value={equipmentDraft.category}
-                    onChange={(event) => setEquipmentDraft({ ...equipmentDraft, category: event.target.value })}
-                    placeholder={ot('Measurement, access, vehicle')}
-                  />
-                </label>
-                <label>
-                  {ot('Operational status')}
-                  <select
-                    value={equipmentDraft.status}
-                    disabled={Boolean(equipmentEditor?.activeCustody)}
-                    onChange={(event) => setEquipmentDraft({ ...equipmentDraft, status: event.target.value })}
-                  >
-                    <option value="available">{ot('Available')}</option>
-                    <option value="in_use" disabled={!equipmentEditor?.activeCustody}>{ot('In use (custody controlled)')}</option>
-                    <option value="maintenance">{ot('Maintenance')}</option>
-                    <option value="inspection_due">{ot('Inspection due')}</option>
-                    <option value="inactive">{ot('Inactive')}</option>
-                    <option value="lost">{ot('Lost')}</option>
-                  </select>
-                </label>
-                <label>
-                  {ot('Home location')}
-                  <input
-                    value={equipmentDraft.homeLocation}
-                    onChange={(event) => setEquipmentDraft({ ...equipmentDraft, homeLocation: event.target.value })}
-                    placeholder={ot('Utrecht depot')}
-                  />
-                </label>
-                <label>
-                  {ot('Current location')}
-                  <input
-                    disabled={Boolean(equipmentEditor?.activeCustody)}
-                    value={equipmentDraft.currentLocation}
-                    onChange={(event) => setEquipmentDraft({ ...equipmentDraft, currentLocation: event.target.value })}
-                    placeholder={ot('Depot, site, or vehicle')}
-                  />
-                </label>
-                <label>
-                  {ot('Serial or asset reference')}
-                  <input
-                    value={equipmentDraft.serialNumber}
-                    onChange={(event) => setEquipmentDraft({ ...equipmentDraft, serialNumber: event.target.value })}
-                  />
-                </label>
-                <label className="checkbox-label">
-                  <input
-                    type="checkbox"
-                    checked={equipmentDraft.inspectionRequired}
-                    onChange={(event) =>
-                      setEquipmentDraft({
-                        ...equipmentDraft,
-                        inspectionRequired: event.target.checked,
-                        inspectionDueAt: event.target.checked ? equipmentDraft.inspectionDueAt : '',
-                      })
-                    }
-                  />
-                  {ot('Inspection required before reservation')}
-                </label>
-                <label>
-                  {ot('Inspection due')}
-                  <input
-                    type="date"
-                    required={equipmentDraft.inspectionRequired}
-                    disabled={!equipmentDraft.inspectionRequired}
-                    value={equipmentDraft.inspectionDueAt}
-                    onChange={(event) => setEquipmentDraft({ ...equipmentDraft, inspectionDueAt: event.target.value })}
-                  />
-                </label>
-                <label className="form-span">
-                  {ot('Internal notes')}
-                  <textarea
-                    value={equipmentDraft.notes}
-                    onChange={(event) => setEquipmentDraft({ ...equipmentDraft, notes: event.target.value })}
-                    placeholder={ot('Record condition, restrictions, certificates, or planning context.')}
-                  />
-                </label>
-                <p className="workflow-note form-span">
-                  {ot('Saving this record does not reserve, dispatch, inspect, purchase, or assign equipment.')}
-                </p>
-              </div>
-              <div className="modal-actions">
-                <button type="button" className="secondary-button" onClick={closeEquipmentEditor}>
-                  {ot('Cancel')}
-                </button>
-                <button
-                  className="primary-button"
-                  disabled={
-                    submitting ||
-                    equipmentDraft.name.trim().length < 2 ||
-                    !equipmentDraft.category.trim() ||
-                    (equipmentDraft.inspectionRequired && !equipmentDraft.inspectionDueAt)
-                  }
-                >
-                  <ShieldCheck size={16} />
-                  {submitting ? ot('Saving...') : ot('Save retained equipment')}
-                </button>
-              </div>
-            </form>
-          </section>
-        </div>
+        <DeferredActionDialog locale={operatorLocale} title={<>{equipmentDraft.id ? ot('Edit {name}', { name: equipmentDraft.name || ot('equipment') }) : ot('Add equipment')}</>} onClose={closeEquipmentEditor}>
+<EquipmentEditorDialog closeEquipmentEditor={closeEquipmentEditor} equipmentDraft={equipmentDraft} equipmentEditor={equipmentEditor} ot={ot} saveEquipment={saveEquipment} setEquipmentDraft={setEquipmentDraft} submitting={submitting} />
+</DeferredActionDialog>
       ) : null}
 
       {equipmentCheckoutEditor ? (
-        <div className="modal-backdrop equipment-backdrop" role="presentation">
-          <section
-            className="modal equipment-custody-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="equipment-checkout-title"
-            data-testid="equipment-checkout-modal"
-            onKeyDown={(event) => {
-              if (event.key === 'Escape') closeEquipmentCheckout()
-            }}
-          >
-            <div className="modal-heading">
-              <div>
-                <p className="eyebrow">{ot('Physical custody')}</p>
-                <h2 id="equipment-checkout-title">{ot('Check out reserved equipment')}</h2>
-                <p>{ot('Reservation-linked handoff evidence')}</p>
-              </div>
-              <button type="button" className="icon-button" aria-label={ot('Close equipment checkout')} onClick={closeEquipmentCheckout}>
-                <X size={18} />
-              </button>
-            </div>
-            <form onSubmit={saveEquipmentCheckout}>
-              <div className="form-grid equipment-custody-form">
-                <label>
-                  {ot('Job')}
-                  <select autoFocus required disabled={submitting} value={equipmentCheckoutDraft.jobId} onChange={(event) => void selectEquipmentCheckoutJob(event.target.value)}>
-                    <option value="">{ot('Select an active job')}</option>
-                    {jobs.filter((job) => !['archived', 'completed', 'cancelled', 'rejected'].includes(job.status)).map((job) => (
-                      <option key={job.id} value={job.id}>{job.title}</option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  {ot('Reservation')}
-                  <select required disabled={!equipmentCheckoutDraft.jobId || submitting} value={equipmentCheckoutDraft.reservationId} onChange={(event) => selectEquipmentCheckoutPlan(event.target.value)}>
-                    <option value="">{ot('Select checkout-ready equipment')}</option>
-                    {equipmentCheckoutPlans.map((plan) => (
-                      <option key={plan.reservation.id} value={plan.reservation.id} disabled={!plan.checkoutReady}>
-                        {plan.tool.name} / {plan.checkoutReady ? ot('ready') : plan.activeCustody ? ot('already checked out') : ot('{status} - blocked', { status: ot(plan.tool.status.replaceAll('_', ' ')) })}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                {selectedEquipmentCheckoutPlan ? (
-                  <dl className="equipment-custody-preview form-span">
-                    <div><dt>{ot('Equipment')}</dt><dd>{selectedEquipmentCheckoutPlan.tool.name}</dd></div>
-                    <div><dt>{ot('Current location')}</dt><dd>{selectedEquipmentCheckoutPlan.tool.currentLocation || ot('Not retained')}</dd></div>
-                    <div><dt>{ot('Reservation until')}</dt><dd>{selectedEquipmentCheckoutPlan.reservation.neededUntil ? formatDateTime(selectedEquipmentCheckoutPlan.reservation.neededUntil) : ot('Open')}</dd></div>
-                  </dl>
-                ) : equipmentCheckoutDraft.jobId && !submitting ? (
-                  <p className="workflow-note form-span">{ot('No checkout-ready retained equipment reservation is available for this job.')}</p>
-                ) : null}
-                <label>
-                  {ot('Physical custodian')}
-                  <input required minLength="2" maxLength="160" value={equipmentCheckoutDraft.checkedOutBy} onChange={(event) => setEquipmentCheckoutDraft({ ...equipmentCheckoutDraft, checkedOutBy: event.target.value })} />
-                </label>
-                <label>
-                  {ot('Checkout condition')}
-                  <select value={equipmentCheckoutDraft.condition} onChange={(event) => setEquipmentCheckoutDraft({ ...equipmentCheckoutDraft, condition: event.target.value })}>
-                    <option value="good">{ot('Good')}</option>
-                    <option value="serviceable">{ot('Serviceable')}</option>
-                  </select>
-                </label>
-                <label>
-                  {ot('Checked out at')}
-                  <input required type="datetime-local" max={toLocalDateTimeInput(new Date())} value={equipmentCheckoutDraft.checkedOutAt} onChange={(event) => setEquipmentCheckoutDraft({ ...equipmentCheckoutDraft, checkedOutAt: event.target.value })} />
-                </label>
-                <label>
-                  {ot('Due back')}
-                  <input type="datetime-local" min={equipmentCheckoutDraft.checkedOutAt} value={equipmentCheckoutDraft.dueBackAt} onChange={(event) => setEquipmentCheckoutDraft({ ...equipmentCheckoutDraft, dueBackAt: event.target.value })} />
-                </label>
-                <label>
-                  {ot('Handoff location')}
-                  <input maxLength="240" value={equipmentCheckoutDraft.location} onChange={(event) => setEquipmentCheckoutDraft({ ...equipmentCheckoutDraft, location: event.target.value })} placeholder={ot('Depot, yard, or project gate')} />
-                </label>
-                <label>
-                  {ot('Meter')}
-                  <input type="number" min="0" step="any" inputMode="decimal" value={equipmentCheckoutDraft.meter} onChange={(event) => setEquipmentCheckoutDraft({ ...equipmentCheckoutDraft, meter: event.target.value })} />
-                </label>
-                <label className="form-span">
-                  {ot('Handoff evidence reference')}
-                  <input required minLength="3" maxLength="240" value={equipmentCheckoutDraft.evidenceReference} onChange={(event) => setEquipmentCheckoutDraft({ ...equipmentCheckoutDraft, evidenceReference: event.target.value })} placeholder={ot('Photo, checklist, or signed handoff')} />
-                </label>
-                <label className="form-span">
-                  {ot('Handoff note')}
-                  <textarea maxLength="2000" value={equipmentCheckoutDraft.notes} onChange={(event) => setEquipmentCheckoutDraft({ ...equipmentCheckoutDraft, notes: event.target.value })} placeholder={ot('Keys, accessories, restrictions, or visible condition')} />
-                </label>
-                <p className="workflow-note form-span">{ot('Checkout changes equipment availability and reservation state atomically. It creates no purchase, hire, or external communication.')}</p>
-              </div>
-              <div className="modal-actions">
-                <button type="button" className="secondary-button" onClick={closeEquipmentCheckout}>{ot('Cancel')}</button>
-                <button className="primary-button" disabled={submitting || !selectedEquipmentCheckoutPlan?.checkoutReady || equipmentCheckoutDraft.checkedOutBy.trim().length < 2 || equipmentCheckoutDraft.evidenceReference.trim().length < 3}>
-                  <ArrowUpRight size={16} />
-                  {submitting ? ot('Recording...') : ot('Retain checkout')}
-                </button>
-              </div>
-            </form>
-          </section>
-        </div>
+        <DeferredActionDialog locale={operatorLocale} title={<>{ot('Check out reserved equipment')}</>} onClose={closeEquipmentCheckout}>
+<EquipmentCheckoutModalDialog closeEquipmentCheckout={closeEquipmentCheckout} equipmentCheckoutDraft={equipmentCheckoutDraft} equipmentCheckoutPlans={equipmentCheckoutPlans} jobs={jobs} ot={ot} saveEquipmentCheckout={saveEquipmentCheckout} selectEquipmentCheckoutJob={selectEquipmentCheckoutJob} selectEquipmentCheckoutPlan={selectEquipmentCheckoutPlan} selectedEquipmentCheckoutPlan={selectedEquipmentCheckoutPlan} setEquipmentCheckoutDraft={setEquipmentCheckoutDraft} submitting={submitting} />
+</DeferredActionDialog>
       ) : null}
 
       {equipmentReturnEditor ? (
-        <div className="modal-backdrop equipment-backdrop" role="presentation">
-          <section
-            className="modal equipment-return-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="equipment-return-title"
-            data-testid="equipment-return-modal"
-            onKeyDown={(event) => {
-              if (event.key === 'Escape') closeEquipmentReturn()
-            }}
-          >
-            <div className="modal-heading">
-              <div>
-                <p className="eyebrow">{ot('Physical custody')}</p>
-                <h2 id="equipment-return-title">{ot('Return {name}', { name: equipmentReturnEditor.toolName })}</h2>
-                <p>{equipmentReturnEditor.jobTitle} / {equipmentReturnEditor.workerName || equipmentReturnEditor.checkedOutBy}</p>
-              </div>
-              <button type="button" className="icon-button" aria-label={ot('Close equipment return')} onClick={closeEquipmentReturn}>
-                <X size={18} />
-              </button>
-            </div>
-            <form onSubmit={saveEquipmentReturn}>
-              <div className="form-grid equipment-custody-form">
-                <dl className="equipment-custody-preview form-span">
-                  <div><dt>{ot('Checked out')}</dt><dd>{formatDateTime(equipmentReturnEditor.checkedOutAt)}</dd></div>
-                  <div><dt>{ot('Due back')}</dt><dd>{equipmentReturnEditor.dueBackAt ? formatDateTime(equipmentReturnEditor.dueBackAt) : ot('Open')}</dd></div>
-                  <div><dt>{ot('Checkout condition')}</dt><dd>{ot(equipmentReturnEditor.checkoutCondition.replaceAll('_', ' '))}</dd></div>
-                </dl>
-                <label>
-                  {ot('Returned at')}
-                  <input autoFocus required type="datetime-local" max={toLocalDateTimeInput(new Date())} value={equipmentReturnDraft.returnedAt} onChange={(event) => setEquipmentReturnDraft({ ...equipmentReturnDraft, returnedAt: event.target.value })} />
-                </label>
-                <label>
-                  {ot('Returned by')}
-                  <input required minLength="2" maxLength="160" value={equipmentReturnDraft.returnedBy} onChange={(event) => setEquipmentReturnDraft({ ...equipmentReturnDraft, returnedBy: event.target.value })} />
-                </label>
-                <label>
-                  {ot('Return condition')}
-                  <select value={equipmentReturnDraft.condition} onChange={(event) => setEquipmentReturnDraft({ ...equipmentReturnDraft, condition: event.target.value })}>
-                    <option value="serviceable">{ot('Serviceable')}</option>
-                    <option value="good">{ot('Good')}</option>
-                    <option value="damaged">{ot('Damaged')}</option>
-                    <option value="unsafe">{ot('Unsafe')}</option>
-                    <option value="lost">{ot('Lost')}</option>
-                  </select>
-                </label>
-                <label>
-                  {ot('Return location')}
-                  <input maxLength="240" value={equipmentReturnDraft.location} onChange={(event) => setEquipmentReturnDraft({ ...equipmentReturnDraft, location: event.target.value })} placeholder={ot('Depot, yard, or quarantine bay')} />
-                </label>
-                <label>
-                  {ot('Meter')}
-                  <input type="number" min={equipmentReturnEditor.checkoutMeter ?? 0} step="any" inputMode="decimal" value={equipmentReturnDraft.meter} onChange={(event) => setEquipmentReturnDraft({ ...equipmentReturnDraft, meter: event.target.value })} />
-                </label>
-                <label className="form-span">
-                  {ot('Return evidence reference')}
-                  <input required minLength="3" maxLength="240" value={equipmentReturnDraft.evidenceReference} onChange={(event) => setEquipmentReturnDraft({ ...equipmentReturnDraft, evidenceReference: event.target.value })} placeholder={ot('Photo, checklist, or signed handoff')} />
-                </label>
-                <label className="form-span">
-                  {ot('Return findings')}
-                  <textarea required={['damaged', 'unsafe', 'lost'].includes(equipmentReturnDraft.condition)} minLength={['damaged', 'unsafe', 'lost'].includes(equipmentReturnDraft.condition) ? 8 : undefined} maxLength="2000" value={equipmentReturnDraft.notes} onChange={(event) => setEquipmentReturnDraft({ ...equipmentReturnDraft, notes: event.target.value })} placeholder={ot('Condition, missing parts, or isolation detail')} />
-                </label>
-                <p className="workflow-note form-span">{ot('Damaged, unsafe, and lost returns are quarantined automatically and create an internal review action. No supplier or finance action is executed.')}</p>
-              </div>
-              <div className="modal-actions">
-                <button type="button" className="secondary-button" onClick={closeEquipmentReturn}>{ot('Cancel')}</button>
-                <button className="primary-button" disabled={submitting || equipmentReturnDraft.returnedBy.trim().length < 2 || equipmentReturnDraft.evidenceReference.trim().length < 3 || (['damaged', 'unsafe', 'lost'].includes(equipmentReturnDraft.condition) && equipmentReturnDraft.notes.trim().length < 8)}>
-                  <PackageCheck size={16} />
-                  {submitting ? ot('Recording...') : ot('Retain return')}
-                </button>
-              </div>
-            </form>
-          </section>
-        </div>
+        <DeferredActionDialog locale={operatorLocale} title={<>{ot('Return {name}', { name: equipmentReturnEditor.toolName })}</>} onClose={closeEquipmentReturn}>
+<EquipmentReturnModalDialog closeEquipmentReturn={closeEquipmentReturn} equipmentReturnDraft={equipmentReturnDraft} equipmentReturnEditor={equipmentReturnEditor} ot={ot} saveEquipmentReturn={saveEquipmentReturn} setEquipmentReturnDraft={setEquipmentReturnDraft} submitting={submitting} />
+</DeferredActionDialog>
       ) : null}
 
       {equipmentInspection ? (
-        <div className="modal-backdrop equipment-backdrop" role="presentation">
-          <section
-            className="modal equipment-inspection-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="equipment-inspection-title"
-            data-testid="equipment-inspection-modal"
-            onKeyDown={(event) => {
-              if (event.key === 'Escape') closeEquipmentInspection()
-            }}
-          >
-            <div className="modal-heading">
-              <div>
-                <p className="eyebrow">{ot('Internal inspection evidence')}</p>
-                <h2 id="equipment-inspection-title">{ot('Record equipment inspection')}</h2>
-                <p>
-                  {equipmentInspection.name} / {ot(equipmentInspection.category || 'general')}
-                </p>
-              </div>
-              <button type="button" className="icon-button" aria-label={ot('Close equipment inspection')} onClick={closeEquipmentInspection}>
-                <X size={18} />
-              </button>
-            </div>
-            <form onSubmit={recordEquipmentInspection}>
-              <div className="form-grid equipment-inspection-form">
-                <label>
-                  {ot('Inspection result')}
-                  <select
-                    autoFocus
-                    value={equipmentInspectionDraft.result}
-                    onChange={(event) => setEquipmentInspectionDraft({ ...equipmentInspectionDraft, result: event.target.value })}
-                  >
-                    <option value="passed">{ot('Passed')}</option>
-                    <option value="limited">{ot('Limited')}</option>
-                    <option value="failed">{ot('Failed')}</option>
-                  </select>
-                </label>
-                <label>
-                  {ot('Inspection date')}
-                  <input
-                    type="date"
-                    required
-                    max={new Date().toISOString().slice(0, 10)}
-                    value={equipmentInspectionDraft.inspectedAt}
-                    onChange={(event) => setEquipmentInspectionDraft({ ...equipmentInspectionDraft, inspectedAt: event.target.value })}
-                  />
-                </label>
-                <label>
-                  {ot('Inspector or internal reference')}
-                  <input
-                    required
-                    minLength="2"
-                    value={equipmentInspectionDraft.inspector}
-                    onChange={(event) => setEquipmentInspectionDraft({ ...equipmentInspectionDraft, inspector: event.target.value })}
-                    placeholder={ot('Name or retained staff reference')}
-                  />
-                </label>
-                <label>
-                  {ot('Next inspection due')}
-                  <input
-                    type="date"
-                    required={equipmentInspection.inspection?.required && equipmentInspectionDraft.result === 'passed'}
-                    disabled={equipmentInspectionDraft.result !== 'passed'}
-                    min={equipmentInspectionDraft.inspectedAt}
-                    value={equipmentInspectionDraft.nextDueAt}
-                    onChange={(event) => setEquipmentInspectionDraft({ ...equipmentInspectionDraft, nextDueAt: event.target.value })}
-                  />
-                </label>
-                <label className="form-span">
-                  {ot('Evidence reference')}
-                  <input
-                    value={equipmentInspectionDraft.reference}
-                    onChange={(event) => setEquipmentInspectionDraft({ ...equipmentInspectionDraft, reference: event.target.value })}
-                    placeholder={ot('Checklist, document, or service reference')}
-                  />
-                </label>
-                <label className="form-span">
-                  {ot('Findings')}
-                  <textarea
-                    required={equipmentInspectionDraft.result !== 'passed'}
-                    minLength={equipmentInspectionDraft.result !== 'passed' ? 8 : undefined}
-                    value={equipmentInspectionDraft.notes}
-                    onChange={(event) => setEquipmentInspectionDraft({ ...equipmentInspectionDraft, notes: event.target.value })}
-                    placeholder={ot('Retain findings, restrictions, or follow-up work.')}
-                  />
-                </label>
-                <p className="workflow-note form-span">
-                  {ot('This creates internal operational evidence only. It does not claim statutory inspection, certification, supplier service, or external approval. Failed and limited results block new reservations.')}
-                  {['failed', 'limited'].includes(equipmentInspection.inspection?.status)
-                    ? ` ${ot('Retain completed maintenance before recording a passing reinspection.')}`
-                    : equipmentInspection.inspection?.status === 'reinspection_required'
-                      ? ` ${ot('Completed maintenance is retained; record a passing reinspection before reservation readiness can return.')}`
-                      : ''}
-                </p>
-              </div>
-              <div className="modal-actions">
-                <button type="button" className="secondary-button" onClick={closeEquipmentInspection}>
-                  {ot('Cancel')}
-                </button>
-                <button
-                  className="primary-button"
-                  disabled={
-                    submitting ||
-                    equipmentInspectionDraft.inspector.trim().length < 2 ||
-                    !equipmentInspectionDraft.inspectedAt ||
-                    (equipmentInspection.inspection?.required &&
-                      equipmentInspectionDraft.result === 'passed' &&
-                      !equipmentInspectionDraft.nextDueAt) ||
-                    (equipmentInspectionDraft.result !== 'passed' && equipmentInspectionDraft.notes.trim().length < 8)
-                  }
-                >
-                  <ClipboardCheck size={16} />
-                  {submitting ? ot('Recording...') : ot('Record inspection')}
-                </button>
-              </div>
-            </form>
-          </section>
-        </div>
+        <DeferredActionDialog locale={operatorLocale} title={<>{ot('Record equipment inspection')}</>} onClose={closeEquipmentInspection}>
+<EquipmentInspectionModalDialog closeEquipmentInspection={closeEquipmentInspection} equipmentInspection={equipmentInspection} equipmentInspectionDraft={equipmentInspectionDraft} ot={ot} recordEquipmentInspection={recordEquipmentInspection} setEquipmentInspectionDraft={setEquipmentInspectionDraft} submitting={submitting} />
+</DeferredActionDialog>
       ) : null}
 
       {equipmentMaintenance ? (
-        <div className="modal-backdrop equipment-backdrop" role="presentation">
-          <section
-            className="modal equipment-maintenance-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="equipment-maintenance-title"
-            data-testid="equipment-maintenance-modal"
-            onKeyDown={(event) => {
-              if (event.key === 'Escape') closeEquipmentMaintenance()
-            }}
-          >
-            <div className="modal-heading">
-              <div>
-                <p className="eyebrow">{ot('Internal maintenance evidence')}</p>
-                <h2 id="equipment-maintenance-title">{ot('Record equipment maintenance')}</h2>
-                <p>
-                  {equipmentMaintenance.name} / {ot(equipmentMaintenance.category || 'general')}
-                </p>
-              </div>
-              <button type="button" className="icon-button" aria-label={ot('Close equipment maintenance')} onClick={closeEquipmentMaintenance}>
-                <X size={18} />
-              </button>
-            </div>
-            <form onSubmit={recordEquipmentMaintenance}>
-              <div className="form-grid equipment-maintenance-form">
-                <label>
-                  {ot('Maintenance outcome')}
-                  <select
-                    autoFocus
-                    value={equipmentMaintenanceDraft.outcome}
-                    onChange={(event) => setEquipmentMaintenanceDraft({ ...equipmentMaintenanceDraft, outcome: event.target.value })}
-                  >
-                    <option value="completed">{ot('Completed')}</option>
-                    <option value="follow_up_required">{ot('Follow up required')}</option>
-                  </select>
-                </label>
-                <label>
-                  {ot('Maintenance type')}
-                  <select
-                    value={equipmentMaintenanceDraft.maintenanceType}
-                    onChange={(event) =>
-                      setEquipmentMaintenanceDraft({ ...equipmentMaintenanceDraft, maintenanceType: event.target.value })
-                    }
-                  >
-                    <option value="corrective">{ot('Corrective')}</option>
-                    <option value="preventive">{ot('Preventive')}</option>
-                    <option value="repair">{ot('Repair')}</option>
-                    <option value="service">{ot('Service')}</option>
-                  </select>
-                </label>
-                <label>
-                  {ot('Maintenance date')}
-                  <input
-                    type="date"
-                    required
-                    max={new Date().toISOString().slice(0, 10)}
-                    value={equipmentMaintenanceDraft.performedAt}
-                    onChange={(event) => setEquipmentMaintenanceDraft({ ...equipmentMaintenanceDraft, performedAt: event.target.value })}
-                  />
-                </label>
-                <label>
-                  {ot('Person or internal reference')}
-                  <input
-                    required
-                    minLength="2"
-                    value={equipmentMaintenanceDraft.performedBy}
-                    onChange={(event) => setEquipmentMaintenanceDraft({ ...equipmentMaintenanceDraft, performedBy: event.target.value })}
-                    placeholder={ot('Name or retained staff reference')}
-                  />
-                </label>
-                <label className="form-span">
-                  {ot('Evidence reference')}
-                  <input
-                    value={equipmentMaintenanceDraft.reference}
-                    onChange={(event) => setEquipmentMaintenanceDraft({ ...equipmentMaintenanceDraft, reference: event.target.value })}
-                    placeholder={ot('Work order, checklist, or internal reference')}
-                  />
-                </label>
-                <label className="form-span">
-                  {ot('Work performed')}
-                  <textarea
-                    required
-                    minLength="8"
-                    value={equipmentMaintenanceDraft.notes}
-                    onChange={(event) => setEquipmentMaintenanceDraft({ ...equipmentMaintenanceDraft, notes: event.target.value })}
-                    placeholder={ot('Retain the work completed, remaining defect, or follow-up requirement.')}
-                  />
-                </label>
-                <p className="workflow-note form-span">
-                  {ot('This retains internal maintenance evidence only. It does not place a supplier order, commit spend, claim external service, or clear a failed inspection. A passing reinspection is required after failed or limited inspection evidence.')}
-                </p>
-              </div>
-              <div className="modal-actions">
-                <button type="button" className="secondary-button" onClick={closeEquipmentMaintenance}>
-                  {ot('Cancel')}
-                </button>
-                <button
-                  className="primary-button"
-                  disabled={
-                    submitting ||
-                    equipmentMaintenanceDraft.performedBy.trim().length < 2 ||
-                    !equipmentMaintenanceDraft.performedAt ||
-                    equipmentMaintenanceDraft.notes.trim().length < 8
-                  }
-                >
-                  <Wrench size={16} />
-                  {submitting ? ot('Recording...') : ot('Record maintenance')}
-                </button>
-              </div>
-            </form>
-          </section>
-        </div>
+        <DeferredActionDialog locale={operatorLocale} title={<>{ot('Record equipment maintenance')}</>} onClose={closeEquipmentMaintenance}>
+<EquipmentMaintenanceModalDialog closeEquipmentMaintenance={closeEquipmentMaintenance} equipmentMaintenance={equipmentMaintenance} equipmentMaintenanceDraft={equipmentMaintenanceDraft} ot={ot} recordEquipmentMaintenance={recordEquipmentMaintenance} setEquipmentMaintenanceDraft={setEquipmentMaintenanceDraft} submitting={submitting} />
+</DeferredActionDialog>
       ) : null}
 
       {equipmentRetirement ? (
-        <div className="modal-backdrop equipment-backdrop" role="presentation">
-          <section
-            className="modal equipment-retirement-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="equipment-retirement-title"
-            data-testid="equipment-retirement-modal"
-            onKeyDown={(event) => {
-              if (event.key === 'Escape') closeEquipmentRetirement()
-            }}
-          >
-            <div className="modal-heading">
-              <div>
-                <p className="eyebrow">{ot('Approval-gated lifecycle')}</p>
-                <h2 id="equipment-retirement-title">{ot('Request equipment retirement')}</h2>
-                <p>
-                  {equipmentRetirement.name} / {ot(equipmentRetirement.category || 'general')}
-                </p>
-              </div>
-              <button
-                type="button"
-                className="icon-button"
-                aria-label={ot('Close equipment retirement request')}
-                onClick={closeEquipmentRetirement}
-              >
-                <X size={18} />
-              </button>
-            </div>
-            <form onSubmit={requestEquipmentRetirement}>
-              <div className="job-lifecycle-body">
-                <div className="job-lifecycle-effect">
-                  <Archive size={20} />
-                  <div>
-                    <strong>{ot('Block this equipment from new reservations')}</strong>
-                    <p>
-                      {ot('The retained status changes to retired only after approval and after every operational reservation has been released.')}
-                    </p>
-                  </div>
-                </div>
-                <ul className="job-lifecycle-safeguards">
-                  <li>{ot('The complete equipment, reservation, approval, and audit history remains retained.')}</li>
-                  <li>{ot('New reservations are blocked as soon as this request enters the approval queue.')}</li>
-                  <li>
-                    {equipmentRetirement.activeReservationCount > 0
-                      ? ot('Approval cannot complete while {count} operational reservations remain.', { count: equipmentRetirement.activeReservationCount })
-                      : ot('No operational reservations currently block this retirement.')}
-                  </li>
-                  {equipmentRetirement.dormantReservationCount > 0 ? (
-                    <li>
-                      {ot('Approval will release {count} dormant reservations retained on inactive jobs, so any later job restore requires a new reservation.', {
-                        count: equipmentRetirement.dormantReservationCount,
-                      })}
-                    </li>
-                  ) : null}
-                  <li>{ot('No crew member, client, supplier, finance provider, or site contact is notified.')}</li>
-                </ul>
-                <label>
-                  {ot('Operational reason')}
-                  <textarea
-                    autoFocus
-                    required
-                    minLength="8"
-                    value={equipmentRetirementReason}
-                    onChange={(event) => setEquipmentRetirementReason(event.target.value)}
-                    placeholder={ot('Explain why this equipment should no longer be selected for work.')}
-                  />
-                </label>
-              </div>
-              <div className="modal-actions">
-                <button type="button" className="secondary-button" onClick={closeEquipmentRetirement}>
-                  {ot('Cancel')}
-                </button>
-                <button className="danger-button" disabled={submitting || equipmentRetirementReason.trim().length < 8}>
-                  <Archive size={16} />
-                  {submitting ? ot('Submitting...') : ot('Request retirement approval')}
-                </button>
-              </div>
-            </form>
-          </section>
-        </div>
+        <DeferredActionDialog locale={operatorLocale} title={<>{ot('Request equipment retirement')}</>} onClose={closeEquipmentRetirement}>
+<EquipmentRetirementModalDialog closeEquipmentRetirement={closeEquipmentRetirement} equipmentRetirement={equipmentRetirement} equipmentRetirementReason={equipmentRetirementReason} ot={ot} requestEquipmentRetirement={requestEquipmentRetirement} setEquipmentRetirementReason={setEquipmentRetirementReason} submitting={submitting} />
+</DeferredActionDialog>
       ) : null}
 
       {tradePartnerEditor ? (
-        <div className="modal-backdrop trade-partner-backdrop" role="presentation">
-          <section
-            className="modal trade-partner-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="trade-partner-editor-title"
-            data-testid="trade-partner-editor"
-          >
-            <div className="modal-heading">
-              <div>
-                <p className="eyebrow">Retained commercial evidence</p>
-                <h2 id="trade-partner-editor-title">
+        <DeferredActionDialog locale={operatorLocale} title={<>
                   {tradePartnerDraft.id ? `Edit ${tradePartnerDraft.name || 'trade partner'}` : 'Add trade partner'}
-                </h2>
-                <p>Identity and compliance evidence used by approval-gated purchasing.</p>
-              </div>
-              <button className="icon-button" aria-label="Close trade partner editor" onClick={closeTradePartnerEditor}>
-                <X size={18} />
-              </button>
-            </div>
-            <form onSubmit={saveTradePartner}>
-              <div className="form-grid trade-partner-form">
-                <label className="form-span">
-                  Legal or trading name
-                  <input
-                    required
-                    value={tradePartnerDraft.name}
-                    onChange={(event) => setTradePartnerDraft({ ...tradePartnerDraft, name: event.target.value })}
-                  />
-                </label>
-                <label>
-                  Partner type
-                  <select
-                    value={tradePartnerDraft.partnerType}
-                    onChange={(event) => {
-                      const partnerType = event.target.value
-                      setTradePartnerDraft({
-                        ...tradePartnerDraft,
-                        partnerType,
-                        requiresInsurance: tradePartnerDraft.requiresInsurance || ['subcontractor', 'both'].includes(partnerType),
-                      })
-                    }}
-                  >
-                    <option value="supplier">Supplier</option>
-                    <option value="subcontractor">Subcontractor</option>
-                    <option value="both">Supplier and subcontractor</option>
-                  </select>
-                </label>
-                <label>
-                  Internal status
-                  <select
-                    value={tradePartnerDraft.status}
-                    onChange={(event) => setTradePartnerDraft({ ...tradePartnerDraft, status: event.target.value })}
-                  >
-                    <option value="active">Active</option>
-                    <option value="on_hold">On hold</option>
-                  </select>
-                </label>
-                <label>
-                  Contact name
-                  <input
-                    value={tradePartnerDraft.contactName}
-                    onChange={(event) => setTradePartnerDraft({ ...tradePartnerDraft, contactName: event.target.value })}
-                  />
-                </label>
-                <label>
-                  Email
-                  <input
-                    type="email"
-                    value={tradePartnerDraft.email}
-                    onChange={(event) => setTradePartnerDraft({ ...tradePartnerDraft, email: event.target.value })}
-                  />
-                </label>
-                <label>
-                  Phone
-                  <input
-                    value={tradePartnerDraft.phone}
-                    onChange={(event) => setTradePartnerDraft({ ...tradePartnerDraft, phone: event.target.value })}
-                  />
-                </label>
-                <label>
-                  City
-                  <input
-                    value={tradePartnerDraft.city}
-                    onChange={(event) => setTradePartnerDraft({ ...tradePartnerDraft, city: event.target.value })}
-                  />
-                </label>
-                <label>
-                  Country
-                  <input
-                    required
-                    maxLength="2"
-                    value={tradePartnerDraft.country}
-                    onChange={(event) => setTradePartnerDraft({ ...tradePartnerDraft, country: event.target.value.toUpperCase() })}
-                    placeholder="NL"
-                  />
-                </label>
-                <label>
-                  Registration / KVK
-                  <input
-                    value={tradePartnerDraft.registrationNumber}
-                    onChange={(event) => setTradePartnerDraft({ ...tradePartnerDraft, registrationNumber: event.target.value })}
-                  />
-                </label>
-                <label>
-                  VAT number
-                  <input
-                    disabled={tradePartnerDraft.vatExempt}
-                    value={tradePartnerDraft.vatNumber}
-                    onChange={(event) => setTradePartnerDraft({ ...tradePartnerDraft, vatNumber: event.target.value })}
-                  />
-                </label>
-                <label className="form-span checkbox-label">
-                  <input
-                    type="checkbox"
-                    checked={tradePartnerDraft.vatExempt}
-                    onChange={(event) => setTradePartnerDraft({ ...tradePartnerDraft, vatExempt: event.target.checked })}
-                  />
-                  VAT exemption has been verified
-                </label>
-                <label className="form-span">
-                  Specialties
-                  <input
-                    value={tradePartnerDraft.specialties}
-                    onChange={(event) => setTradePartnerDraft({ ...tradePartnerDraft, specialties: event.target.value })}
-                    placeholder="Roofing, electrical, timber"
-                  />
-                </label>
-                <label className="checkbox-label">
-                  <input
-                    type="checkbox"
-                    checked={tradePartnerDraft.requiresInsurance}
-                    onChange={(event) => setTradePartnerDraft({ ...tradePartnerDraft, requiresInsurance: event.target.checked })}
-                  />
-                  Insurance evidence required
-                </label>
-                <label>
-                  Insurance expiry
-                  <input
-                    type="date"
-                    disabled={!tradePartnerDraft.requiresInsurance}
-                    required={tradePartnerDraft.requiresInsurance}
-                    value={tradePartnerDraft.insuranceExpiresAt}
-                    onChange={(event) => setTradePartnerDraft({ ...tradePartnerDraft, insuranceExpiresAt: event.target.value })}
-                  />
-                </label>
-                <label className="checkbox-label">
-                  <input
-                    type="checkbox"
-                    checked={tradePartnerDraft.requiresVca}
-                    onChange={(event) => setTradePartnerDraft({ ...tradePartnerDraft, requiresVca: event.target.checked })}
-                  />
-                  VCA evidence required
-                </label>
-                <label>
-                  VCA expiry
-                  <input
-                    type="date"
-                    disabled={!tradePartnerDraft.requiresVca}
-                    required={tradePartnerDraft.requiresVca}
-                    value={tradePartnerDraft.vcaExpiresAt}
-                    onChange={(event) => setTradePartnerDraft({ ...tradePartnerDraft, vcaExpiresAt: event.target.value })}
-                  />
-                </label>
-                <label>
-                  Verification reference
-                  <input
-                    value={tradePartnerDraft.verificationReference}
-                    onChange={(event) => setTradePartnerDraft({ ...tradePartnerDraft, verificationReference: event.target.value })}
-                    placeholder="Registry check or evidence record"
-                  />
-                </label>
-                <label>
-                  Verified on
-                  <input
-                    type="date"
-                    value={tradePartnerDraft.verifiedAt}
-                    onChange={(event) => setTradePartnerDraft({ ...tradePartnerDraft, verifiedAt: event.target.value })}
-                  />
-                </label>
-                <label className="form-span">
-                  Internal notes
-                  <textarea
-                    value={tradePartnerDraft.notes}
-                    onChange={(event) => setTradePartnerDraft({ ...tradePartnerDraft, notes: event.target.value })}
-                    placeholder="Record scope, restrictions, or evidence context."
-                  />
-                </label>
-                <p className="workflow-note form-span">
-                  Saving this record does not contact the partner, place an order, commit spend, or approve site access.
-                </p>
-              </div>
-              <div className="modal-actions">
-                <button type="button" className="secondary-button" onClick={closeTradePartnerEditor}>
-                  {ot('Cancel')}
-                </button>
-                <button className="primary-button" disabled={submitting || !tradePartnerDraft.name.trim()}>
-                  <ShieldCheck size={16} />
-                  {submitting ? 'Saving...' : 'Save retained partner'}
-                </button>
-              </div>
-            </form>
-          </section>
-        </div>
+                </>} onClose={closeTradePartnerEditor}>
+<TradePartnerEditorDialog closeTradePartnerEditor={closeTradePartnerEditor} ot={ot} saveTradePartner={saveTradePartner} setTradePartnerDraft={setTradePartnerDraft} submitting={submitting} tradePartnerDraft={tradePartnerDraft} />
+</DeferredActionDialog>
       ) : null}
 
       {tradePartnerRetirement ? (
-        <div className="modal-backdrop trade-partner-backdrop" role="presentation">
-          <section
-            className="modal trade-partner-retirement-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="trade-partner-retirement-title"
-            data-testid="trade-partner-retirement-modal"
-          >
-            <div className="modal-heading">
-              <div>
-                <p className="eyebrow">Approval-gated lifecycle</p>
-                <h2 id="trade-partner-retirement-title">Request partner retirement</h2>
-                <p>
-                  {tradePartnerRetirement.name} / {formatStatus(tradePartnerRetirement.partnerType)}
-                </p>
-              </div>
-              <button className="icon-button" aria-label="Close trade partner retirement request" onClick={closeTradePartnerRetirement}>
-                <X size={18} />
-              </button>
-            </div>
-            <form onSubmit={requestTradePartnerRetirement}>
-              <div className="job-lifecycle-body">
-                <div className="job-lifecycle-effect">
-                  <Archive size={20} />
-                  <div>
-                    <strong>Block this partner from new procurement</strong>
-                    <p>The status changes to retired only after approval. Open work remains visible for operator review.</p>
-                  </div>
-                </div>
-                <ul className="job-lifecycle-safeguards">
-                  <li>All identity, compliance, purchasing, approval, and audit history remains retained.</li>
-                  <li>No open order, contract, payment, delivery, or site assignment is cancelled.</li>
-                  <li>No partner, supplier, client, or worker is contacted from this action.</li>
-                </ul>
-                <label>
-                  Operational reason
-                  <textarea
-                    required
-                    minLength="8"
-                    value={tradePartnerRetirementReason}
-                    onChange={(event) => setTradePartnerRetirementReason(event.target.value)}
-                    placeholder="Explain why this partner should no longer be selected for new work."
-                  />
-                </label>
-              </div>
-              <div className="modal-actions">
-                <button type="button" className="secondary-button" onClick={closeTradePartnerRetirement}>
-                  Cancel
-                </button>
-                <button className="danger-button" disabled={submitting || tradePartnerRetirementReason.trim().length < 8}>
-                  <Archive size={16} />
-                  {submitting ? ot('Submitting...') : ot('Request retirement approval')}
-                </button>
-              </div>
-            </form>
-          </section>
-        </div>
+        <DeferredActionDialog locale={operatorLocale} title={<>Request partner retirement</>} onClose={closeTradePartnerRetirement}>
+<TradePartnerRetirementModalDialog closeTradePartnerRetirement={closeTradePartnerRetirement} ot={ot} requestTradePartnerRetirement={requestTradePartnerRetirement} setTradePartnerRetirementReason={setTradePartnerRetirementReason} submitting={submitting} tradePartnerRetirement={tradePartnerRetirement} tradePartnerRetirementReason={tradePartnerRetirementReason} />
+</DeferredActionDialog>
       ) : null}
 
       {approvalReview ? (
-        <div className="modal-backdrop" role="presentation">
-          <section
-            className="modal approval-review-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="approval-review-title"
-            data-testid="approval-review-modal"
-          >
-            <div className="modal-heading">
-              <div>
-                <p className="eyebrow">Retained decision review</p>
-                <h2 id="approval-review-title">{approvalReview.status === 'approved' ? 'Approve decision' : 'Reject decision'}</h2>
-                <p>{approvalReview.item.summary || formatStatus(approvalReview.item.targetType)}</p>
-              </div>
-              <button className="icon-button" aria-label="Close approval review" onClick={closeApprovalReview}>
-                <X size={18} />
-              </button>
-            </div>
-            <form onSubmit={resolveApproval}>
-              <div className="approval-review-body">
-                <div className="approval-review-primary">
-                  <TriangleAlert size={20} />
-                  <div>
-                    <span className={`tag tag-${approvalReview.item.decision?.riskLevel === 'high' ? 'amber' : 'green'}`}>
-                      {approvalReview.item.decision?.riskLevel || 'review'} risk
-                    </span>
-                    <strong>
-                      {approvalReview.item.decision?.primaryEffect ||
-                        approvalReview.item.reason ||
-                        'Resolve this retained ledger decision.'}
-                    </strong>
-                  </div>
-                </div>
-                {approvalReview.item.decision?.effects?.length ? (
-                  <div className="approval-review-section">
-                    <h3>Ledger effects</h3>
-                    <ul>
-                      {approvalReview.item.decision.effects.map((effect) => (
-                        <li key={effect}>{effect}</li>
-                      ))}
-                    </ul>
-                  </div>
-                ) : null}
-                {Object.keys(approvalReview.item.decision?.preview || {}).length ? (
-                  <div className="approval-review-section">
-                    <h3>Submitted details</h3>
-                    <dl>
-                      {Object.entries(approvalReview.item.decision.preview)
-                        .filter(([, value]) => value !== null && value !== undefined && value !== '')
-                        .map(([key, value]) => (
-                          <div key={key}>
-                            <dt>{formatStatus(key)}</dt>
-                            <dd>{typeof value === 'object' ? JSON.stringify(value) : String(value)}</dd>
-                          </div>
-                        ))}
-                    </dl>
-                  </div>
-                ) : null}
-                {approvalReview.item.decision?.safeguards?.length ? (
-                  <div className="approval-review-section approval-review-safeguards">
-                    <h3>Safeguards</h3>
-                    <ul>
-                      {approvalReview.item.decision.safeguards.map((safeguard) => (
-                        <li key={safeguard}>{safeguard}</li>
-                      ))}
-                    </ul>
-                  </div>
-                ) : null}
-                <label className="approval-review-reason">
-                  Reviewer reason
-                  {approvalReview.status === 'rejected' || approvalReview.item.data?.requiresExceptionOverride ? ' (required)' : ''}
-                  <textarea
-                    required={approvalReview.status === 'rejected' || approvalReview.item.data?.requiresExceptionOverride === true}
-                    value={approvalReason}
-                    onChange={(event) => setApprovalReason(event.target.value)}
-                    placeholder={
-                      approvalReview.status === 'rejected'
-                        ? 'Explain what must change before this can be resubmitted.'
-                        : approvalReview.item.data?.requiresExceptionOverride
-                          ? 'Explain why the retained match exceptions are accepted.'
-                          : 'Record what was verified before approval.'
-                    }
-                  />
-                </label>
-                <p className="workflow-note">
-                  This action updates the local ledger and audit trail only. The listed safeguards remain in force after resolution.
-                </p>
-              </div>
-              <div className="modal-actions">
-                <button type="button" className="secondary-button" onClick={closeApprovalReview}>
-                  Cancel
-                </button>
-                <button
-                  className={approvalReview.status === 'approved' ? 'primary-button' : 'danger-button'}
-                  disabled={
-                    submitting ||
-                    ((approvalReview.status === 'rejected' || approvalReview.item.data?.requiresExceptionOverride === true) &&
-                      !approvalReason.trim())
-                  }
-                >
-                  <ShieldCheck size={16} />
-                  {submitting ? 'Resolving...' : approvalReview.status === 'approved' ? 'Confirm approval' : 'Confirm rejection'}
-                </button>
-              </div>
-            </form>
-          </section>
-        </div>
+        <DeferredActionDialog locale={operatorLocale} title={<>{approvalReview.status === 'approved' ? 'Approve decision' : 'Reject decision'}</>} onClose={closeApprovalReview}>
+<ApprovalReviewModalDialog approvalReason={approvalReason} approvalReview={approvalReview} closeApprovalReview={closeApprovalReview} ot={ot} resolveApproval={resolveApproval} setApprovalReason={setApprovalReason} submitting={submitting} />
+</DeferredActionDialog>
       ) : null}
 
       {clientEditor ? (
-        <div className="modal-backdrop" role="presentation">
-          <section
-            className="modal client-editor-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="client-editor-title"
-            data-testid="client-editor-modal"
-          >
-            <div className="modal-heading">
-              <div>
-                <p className="eyebrow">{ot('Retained client identity')}</p>
-                <h2 id="client-editor-title">{clientEditor.mode === 'edit' ? ot('Edit client') : ot('New client')}</h2>
-                <p>{ot('Contact, billing, and electronic invoicing data used by future controlled records.')}</p>
-              </div>
-              <button className="icon-button" type="button" aria-label={ot('Close client editor')} onClick={closeClientEditor}>
-                <X size={18} />
-              </button>
-            </div>
-            <form onSubmit={submitClientEditor}>
-              <div className="form-grid client-editor-form">
-                <label>
-                  {ot('Contact name')}
-                  <input autoFocus required minLength="2" maxLength="160" value={clientDraft.name} onChange={(event) => setClientDraft({ ...clientDraft, name: event.target.value })} />
-                </label>
-                <label>
-                  {ot('Client type')}
-                  <select value={clientDraft.clientType} onChange={(event) => setClientDraft({ ...clientDraft, clientType: event.target.value })}>
-                    <option value="business">{ot('Business')}</option>
-                    <option value="consumer">{ot('Consumer')}</option>
-                    <option value="public">{ot('Public body')}</option>
-                    <option value="property_manager">{ot('Property manager')}</option>
-                    <option value="other">{ot('Other')}</option>
-                  </select>
-                </label>
-                <label className="form-span">
-                  {ot('Legal or company name')}
-                  <input maxLength="200" value={clientDraft.company} onChange={(event) => setClientDraft({ ...clientDraft, company: event.target.value })} />
-                </label>
-                <label>
-                  {ot('Contact email')}
-                  <input type="email" maxLength="254" value={clientDraft.email} onChange={(event) => setClientDraft({ ...clientDraft, email: event.target.value })} />
-                </label>
-                <label>
-                  {ot('Billing email')}
-                  <input type="email" maxLength="254" value={clientDraft.billingEmail} onChange={(event) => setClientDraft({ ...clientDraft, billingEmail: event.target.value })} />
-                </label>
-                <label>
-                  {ot('Phone')}
-                  <input type="tel" maxLength="80" value={clientDraft.phone} onChange={(event) => setClientDraft({ ...clientDraft, phone: event.target.value })} />
-                </label>
-                <label>
-                  {ot('Preferred language')}
-                  <select value={clientDraft.preferredLanguage} onChange={(event) => setClientDraft({ ...clientDraft, preferredLanguage: event.target.value })}>
-                    <option value="nl">{ot('Dutch')}</option>
-                    <option value="en">{ot('English')}</option>
-                    <option value="de">{ot('German')}</option>
-                    <option value="fr">{ot('French')}</option>
-                  </select>
-                </label>
-                <label className="form-span">
-                  {ot('Street address')}
-                  <input maxLength="300" value={clientDraft.address} onChange={(event) => setClientDraft({ ...clientDraft, address: event.target.value })} />
-                </label>
-                <label>
-                  {ot('Postal code')}
-                  <input maxLength="30" value={clientDraft.postalCode} onChange={(event) => setClientDraft({ ...clientDraft, postalCode: event.target.value })} />
-                </label>
-                <label>
-                  City
-                  <input maxLength="120" value={clientDraft.city} onChange={(event) => setClientDraft({ ...clientDraft, city: event.target.value })} />
-                </label>
-                <label>
-                  {ot('Country code')}
-                  <input required minLength="2" maxLength="2" value={clientDraft.country} onChange={(event) => setClientDraft({ ...clientDraft, country: event.target.value.toUpperCase() })} />
-                </label>
-                <label>
-                  {ot('KVK / registration number')}
-                  <input maxLength="80" value={clientDraft.registrationNumber} onChange={(event) => setClientDraft({ ...clientDraft, registrationNumber: event.target.value })} />
-                </label>
-                <label>
-                  {ot('VAT number')}
-                  <input maxLength="80" value={clientDraft.vatNumber} onChange={(event) => setClientDraft({ ...clientDraft, vatNumber: event.target.value })} />
-                </label>
-                <label>
-                  {ot('Electronic address scheme')}
-                  <input maxLength="20" placeholder="0106 for KVK or 0190 for OIN" value={clientDraft.electronicAddressScheme} onChange={(event) => setClientDraft({ ...clientDraft, electronicAddressScheme: event.target.value })} />
-                </label>
-                <label>
-                  {ot('Electronic address')}
-                  <input maxLength="120" value={clientDraft.electronicAddress} onChange={(event) => setClientDraft({ ...clientDraft, electronicAddress: event.target.value })} />
-                </label>
-                <label className="form-span">
-                  {ot('Internal notes')}
-                  <textarea maxLength="4000" value={clientDraft.notes} onChange={(event) => setClientDraft({ ...clientDraft, notes: event.target.value })} />
-                </label>
-                <p className="workflow-note form-span">
-                  {ot('Saving changes the client master only. Existing quote, invoice, handover, and communication snapshots remain unchanged, and no external action is performed.')}
-                </p>
-              </div>
-              <div className="modal-actions">
-                <button type="button" className="secondary-button" onClick={closeClientEditor}>{ot('Cancel')}</button>
-                <button
-                  className="primary-button"
-                  disabled={
-                    submitting
-                    || clientDraft.name.trim().length < 2
-                    || clientDraft.country.trim().length !== 2
-                    || Boolean(clientDraft.electronicAddressScheme.trim()) !== Boolean(clientDraft.electronicAddress.trim())
-                  }
-                >
-                  <BadgeCheck size={16} />
-                  {submitting ? ot('Retaining...') : clientEditor.mode === 'edit' ? ot('Update client') : ot('Retain client')}
-                </button>
-              </div>
-            </form>
-          </section>
-        </div>
+        <DeferredActionDialog locale={operatorLocale} title={<>{clientEditor.mode === 'edit' ? ot('Edit client') : ot('New client')}</>} onClose={closeClientEditor}>
+<ClientEditorModalDialog clientDraft={clientDraft} clientEditor={clientEditor} closeClientEditor={closeClientEditor} ot={ot} setClientDraft={setClientDraft} submitClientEditor={submitClientEditor} submitting={submitting} />
+</DeferredActionDialog>
       ) : null}
 
       {selectedJobId ? (
@@ -16002,7 +13255,17 @@ function App() {
                     <strong>{(selectedJob.approvals || []).filter((item) => item.status === 'pending').length}</strong>
                   </div>
                 </div>
+                <DossierSections key={selectedJob.id} locale={operatorLocale} fieldScoped={fieldScoped}>
+                {!fieldScoped && <DossierSection areas={['work']}><LazyControlBoundary label="werkdossier"><WorkContextControl key={selectedJob.id} api={api} jobId={selectedJob.id} canEdit={['owner', 'office_operator'].includes(operator.role)} onChanged={() => setWorkContextRevision(value => value + 1)} /></LazyControlBoundary></DossierSection>}
+                {!fieldScoped && <DossierSection areas={['work', 'planning']}><LazyControlBoundary label="werkbalans"><WorkBalanceControl key={`${selectedJob.id}:${draftRecoveryEnabled ? outboxScope : 'local'}`} api={api} jobId={selectedJob.id} canEdit={['owner', 'office_operator'].includes(operator.role)} draftScope={draftRecoveryEnabled ? outboxScope : ''} refreshKey={`${workContextRevision}:${selectedJob.updatedAt}`} onChanged={() => { setWorkContextRevision(value => value + 1); void refreshWorkDelivery(selectedJob.id) }} /></LazyControlBoundary></DossierSection>}
+                {!fieldScoped && <DossierSection areas={['work', 'planning', 'safety']}><LazyControlBoundary label="verstoringen en herstel"><OperationalRecoveryControl key={`${selectedJob.id}:${draftRecoveryEnabled ? outboxScope : 'local'}`} api={api} jobId={selectedJob.id} canEdit={['owner', 'office_operator'].includes(operator.role)} draftScope={draftRecoveryEnabled ? outboxScope : ''} refreshKey={`${workContextRevision}:${selectedJob.updatedAt}`} onChanged={async result => { setWorkContextRevision(value => value + 1); if (result?.materialAvailabilityUpdated) { const refreshedJob = await loadSelectedJob(selectedJob.id); if (refreshedJob) setScheduleRefreshRevision(value => value + 1) } }} /></LazyControlBoundary></DossierSection>}
+                {!fieldScoped && <DossierSection areas={['work', 'planning']}><LazyControlBoundary label="open posities"><WorkBoardOffice api={api} jobId={selectedJob.id} isOwner={operator.role === 'owner'} refreshKey={workContextRevision} /></LazyControlBoundary></DossierSection>}
+                {!fieldScoped && <DossierSection areas={['work', 'quality', 'finance']}><LazyControlBoundary label="deelopleveringen"><WorkDeliveryControl key={selectedJob.id} api={api} jobId={selectedJob.id} canEdit={['owner', 'office_operator'].includes(operator.role)} refreshKey={`${workContextRevision}:${selectedJob.updatedAt}`} onChanged={() => { void refreshWorkDelivery(selectedJob.id) }} /></LazyControlBoundary></DossierSection>}
+                {!fieldScoped && <DossierSection areas={['work', 'quality']}><LazyControlBoundary label="keuringsdekking"><InspectionCoverageControl key={selectedJob.id} api={api} jobId={selectedJob.id} canEdit={['owner', 'office_operator'].includes(operator.role)} refreshKey={`${workContextRevision}:${selectedJob.updatedAt}`} onChanged={() => { void refreshWorkDelivery(selectedJob.id) }} /></LazyControlBoundary></DossierSection>}
+                {!fieldScoped && <DossierSection areas={['work', 'quality', 'client']}><LazyControlBoundary label="klantopleveringen"><ClientDeliveryControl key={selectedJob.id} api={api} jobId={selectedJob.id} canEdit={['owner', 'office_operator'].includes(operator.role)} refreshKey={`${workContextRevision}:${selectedJob.updatedAt}`} onChanged={() => { void refreshWorkDelivery(selectedJob.id) }} /></LazyControlBoundary></DossierSection>}
+                {!fieldScoped && <DossierSection areas={['work', 'quality', 'client']}><LazyControlBoundary label="installatiehistorie"><AssetHistoryControl key={selectedJob.id} api={api} jobId={selectedJob.id} canEdit={['owner', 'office_operator'].includes(operator.role)} refreshKey={`${workContextRevision}:${selectedJob.updatedAt}`} onChanged={() => setWorkContextRevision(value => value + 1)} onOpenJob={jobId => { void loadSelectedJob(jobId) }} /></LazyControlBoundary></DossierSection>}
                 <LazyControlBoundary label={ot('job controls')} mode="job">
+                  <DossierSection areas={['work', 'finance']}>
                   {!fieldScoped ? (
                     <TakeoffControl
                       job={selectedJob}
@@ -16020,6 +13283,8 @@ function App() {
                       onConvert={openTakeoffConversion}
                     />
                   ) : null}
+                  </DossierSection>
+                  <DossierSection areas={['work']}>
                   <ProductionControl
                     job={selectedJob}
                     locale={operatorLocale}
@@ -16035,6 +13300,8 @@ function App() {
                     onOpenApprovals={openApprovals}
                     onSyncOutbox={() => syncFieldOutbox({ announce: true })}
                   />
+                  </DossierSection>
+                  <DossierSection areas={['work', 'finance']}>
                   <DayworkControl
                     job={selectedJob}
                     locale={operatorLocale}
@@ -16050,9 +13317,12 @@ function App() {
                     onOpenApprovals={openApprovals}
                     onSyncOutbox={() => syncFieldOutbox({ announce: true })}
                   />
+                  </DossierSection>
+                  <DossierSection areas={['finance']}>
                   {!fieldScoped ? (
                     <CommercialControl
                       job={selectedJob}
+                      api={api}
                       locale={operatorLocale}
                       canCoordinate={canCoordinate}
                       canApprove={capabilities.approvals === true}
@@ -16060,6 +13330,7 @@ function App() {
                       onNewQuote={() => openCommercialDraft('quote')}
                       onNewChangeOrder={(supersedes) => openCommercialDraft('change_order', supersedes)}
                       onRequestAcceptance={openCommercialAcceptance}
+                      onPrepareVariationImplementation={prepareVariationImplementation}
                       onRecordChangeDelivery={openChangeOrderDelivery}
                       onOpenApprovals={openApprovals}
                       onRequestCommercialScope={requestCommercialScopeRevision}
@@ -16067,6 +13338,8 @@ function App() {
                       onRetainPricingBasis={retainPricingBasisDecision}
                     />
                   ) : null}
+                  </DossierSection>
+                  <DossierSection areas={['work']}>
                   {!fieldScoped ? (
                     <CapabilitySetupControl
                       job={selectedJob}
@@ -16076,8 +13349,11 @@ function App() {
                       onApply={applyCapabilitySetup}
                     />
                   ) : null}
+                  </DossierSection>
+                  <DossierSection areas={['work', 'planning']}>
                   <WorkPlanControl
                     job={selectedJob}
+                    refreshScheduleKey={scheduleRefreshRevision}
                     locale={operatorLocale}
                     canCoordinate={canCoordinate}
                     canApprove={capabilities.approvals === true}
@@ -16093,9 +13369,17 @@ function App() {
                     onAddDependency={addJobTaskDependency}
                     onCancelDependency={cancelJobTaskDependency}
                     onCalculate={calculateJobWorkPlan}
+                    onReserveWarehouseMaterial={reserveJobWarehouseMaterial}
+                    onIssueWarehouseMaterial={issueJobWarehouseMaterial}
+                    onCalculateResources={calculateResourceWorkPlan}
+                    onSaveSiteAccessCalendar={saveJobSiteAccessCalendar}
+                    onSaveTravelRoute={saveJobTravelRoute}
+                    onRequestResourceApproval={requestResourceWorkPlanApproval}
                     onRequestBaseline={requestJobScheduleBaseline}
                     onOpenApprovals={openApprovals}
                   />
+                  </DossierSection>
+                  <DossierSection areas={['documents']}>
                   <ProjectControls
                     job={selectedJob}
                     locale={operatorLocale}
@@ -16112,6 +13396,8 @@ function App() {
                     onCreateMeetingFollowUp={createProjectMeetingFollowUp}
                     onOpenApprovals={openApprovals}
                   />
+                  </DossierSection>
+                  <DossierSection areas={['quality']}>
                   {!fieldScoped ? (
                     <EnergyPerformanceControl
                       job={selectedJob}
@@ -16122,6 +13408,8 @@ function App() {
                       onOpenApprovals={openApprovals}
                     />
                   ) : null}
+                  </DossierSection>
+                  <DossierSection areas={['documents', 'quality']}>
                   <PhotoEvidenceControl
                     job={selectedJob}
                     locale={operatorLocale}
@@ -16132,6 +13420,8 @@ function App() {
                     onRequestReview={requestPhotoEvidenceReview}
                     onOpenApprovals={openApprovals}
                   />
+                  </DossierSection>
+                  <DossierSection areas={['quality']}>
                   <InspectionChecklistControl
                     job={selectedJob}
                     templates={inspectionTemplates}
@@ -16186,7 +13476,9 @@ function App() {
                     onLifecycle={openJobCloseoutLifecycle}
                     onOpenApprovals={openApprovals}
                   />
+                  </DossierSection>
                 </LazyControlBoundary>
+                <DossierSection areas={[]}>
                 {canCoordinate ? (
                   <div className="job-workspace-lifecycle" data-testid="job-archive-control">
                     <div>
@@ -16217,8 +13509,10 @@ function App() {
                     </button>
                   </div>
                 ) : null}
+                </DossierSection>
                 {canCoordinate ? (
                   <>
+                    <DossierSection areas={['planning']}>
                     <section className="job-workspace-section">
                       <div className="section-heading">
                         <CalendarDays size={18} />
@@ -16287,7 +13581,7 @@ function App() {
                         <CloudOff size={18} />
                         <div>
                           <h3>Weather assessment</h3>
-                          <p>Record a local weather condition for this job. It updates readiness but never commits a date.</p>
+                          <p>Record conditions for the current planned start. Reassess after a schedule change and check conditions again before dispatch; this never commits a date.</p>
                         </div>
                       </div>
                       <form className="form-grid compact-form" onSubmit={recordWeatherAssessment}>
@@ -16338,6 +13632,8 @@ function App() {
                         </p>
                       ) : null}
                     </section>
+                    </DossierSection>
+                    <DossierSection areas={['client']}>
                     <section className="job-workspace-section">
                       <div className="section-heading">
                         <MessageSquareText size={18} />
@@ -16478,6 +13774,7 @@ function App() {
                         </div>
                       ) : null}
                     </section>
+                    </DossierSection>
                   </>
                 ) : (
                   <div className="field-note">
@@ -16491,6 +13788,7 @@ function App() {
                     </div>
                   </div>
                 )}
+                <DossierSection areas={['client']}>
                 <section className="job-workspace-section activity-section">
                   <div className="section-heading">
                     <Bell size={18} />
@@ -16517,3412 +13815,211 @@ function App() {
                     <p className="workflow-note">No client communication has been recorded for this job.</p>
                   )}
                 </section>
+                </DossierSection>
+                </DossierSections>
               </div>
             )}
           </section>
         </div>
       ) : null}
       {takeoffDialog?.mode === 'create' ? (
-        <div className="modal-backdrop commercial-backdrop" role="presentation">
-          <section
-            className="modal takeoff-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="takeoff-create-title"
-            data-testid="takeoff-create-modal"
-            onKeyDown={(event) => {
-              if (event.key === 'Escape') closeTakeoffDialog()
-            }}
-          >
-            <div className="modal-heading">
-              <div>
-                <p className="eyebrow">{ot('Measured scope')}</p>
-                <h2 id="takeoff-create-title">{ot('New quantity takeoff')}</h2>
-                <p>{selectedJob?.title} / {ot('internal draft')}</p>
-              </div>
-              <button type="button" className="icon-button" aria-label={ot('Close quantity takeoff')} onClick={closeTakeoffDialog}>
-                <X size={18} />
-              </button>
-            </div>
-            <form onSubmit={submitTakeoff}>
-              <div className="takeoff-modal-body form-grid">
-                <label className="form-span">
-                  {ot('Takeoff title')}
-                  <input
-                    autoFocus
-                    required
-                    minLength="2"
-                    maxLength="160"
-                    value={takeoffDraft.title}
-                    onChange={(event) => setTakeoffDraft({ ...takeoffDraft, title: event.target.value })}
-                  />
-                </label>
-                <label>
-                  {ot('VAT rate (%)')}
-                  <input
-                    required
-                    type="number"
-                    min="0"
-                    max="100"
-                    step="0.01"
-                    value={takeoffDraft.taxRate}
-                    onChange={(event) => setTakeoffDraft({ ...takeoffDraft, taxRate: event.target.value })}
-                  />
-                </label>
-                <label className="form-span">
-                  {ot('Internal notes')}
-                  <textarea
-                    maxLength="4000"
-                    value={takeoffDraft.notes}
-                    onChange={(event) => setTakeoffDraft({ ...takeoffDraft, notes: event.target.value })}
-                    placeholder={ot('Record drawing revisions, survey assumptions, exclusions, or estimator context.')}
-                  />
-                </label>
-                <p className="workflow-note form-span">{ot('This creates an empty internal measurement sheet. It does not create or issue an estimate.')}</p>
-              </div>
-              <div className="modal-actions">
-                <button type="button" className="secondary-button" onClick={closeTakeoffDialog}>{ot('Cancel')}</button>
-                <button className="primary-button" disabled={submitting || takeoffDraft.title.trim().length < 2}>
-                  <Ruler size={16} />
-                  {submitting ? ot('Saving...') : ot('Retain takeoff')}
-                </button>
-              </div>
-            </form>
-          </section>
-        </div>
+        <DeferredActionDialog locale={operatorLocale} title={<>{ot('New quantity takeoff')}</>} onClose={closeTakeoffDialog}>
+<TakeoffCreateModalDialog closeTakeoffDialog={closeTakeoffDialog} ot={ot} selectedJob={selectedJob} setTakeoffDraft={setTakeoffDraft} submitTakeoff={submitTakeoff} submitting={submitting} takeoffDraft={takeoffDraft} />
+</DeferredActionDialog>
       ) : null}
 
       {['add_item', 'edit_item'].includes(takeoffDialog?.mode) ? (
-        <div className="modal-backdrop commercial-backdrop" role="presentation">
-          <section
-            className="modal takeoff-item-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="takeoff-item-title"
-            data-testid="takeoff-item-modal"
-            onKeyDown={(event) => {
-              if (event.key === 'Escape') closeTakeoffDialog()
-            }}
-          >
-            <div className="modal-heading">
-              <div>
-                <p className="eyebrow">{ot('Server-calculated measurement')}</p>
-                <h2 id="takeoff-item-title">{takeoffDialog.mode === 'edit_item' ? ot('Edit measurement') : ot('Add measurement')}</h2>
-                <p>{takeoffDialog.takeoff.title}</p>
-              </div>
-              <button type="button" className="icon-button" aria-label={ot('Close takeoff measurement')} onClick={closeTakeoffDialog}>
-                <X size={18} />
-              </button>
-            </div>
-            <form onSubmit={submitTakeoffItem}>
-              <div className="takeoff-modal-body">
-                <div className="form-grid takeoff-item-form">
-                  <label className="form-span">
-                    {ot('Description')}
-                    <input
-                      autoFocus
-                      required
-                      minLength="2"
-                      maxLength="240"
-                      value={takeoffItemDraft.description}
-                      onChange={(event) => setTakeoffItemDraft({ ...takeoffItemDraft, description: event.target.value })}
-                    />
-                  </label>
-                  <label>
-                    {ot('Category')}
-                    <select value={takeoffItemDraft.category} onChange={(event) => setTakeoffItemDraft({ ...takeoffItemDraft, category: event.target.value })}>
-                      <option value="material">{ot('Material')}</option>
-                      <option value="labor">{ot('Labor')}</option>
-                      <option value="equipment">{ot('Equipment')}</option>
-                      <option value="subcontract">{ot('Subcontract')}</option>
-                      <option value="other">{ot('Other')}</option>
-                    </select>
-                  </label>
-                  <label>
-                    {ot('Measurement type')}
-                    <select value={takeoffItemDraft.measurementType} onChange={(event) => changeTakeoffMeasurementType(event.target.value)}>
-                      <option value="count">{ot('Count')}</option>
-                      <option value="linear">{ot('Linear')}</option>
-                      <option value="area">{ot('Area')}</option>
-                      <option value="volume">{ot('Volume')}</option>
-                      <option value="manual">{ot('Manual quantity')}</option>
-                    </select>
-                  </label>
-                  {takeoffItemDraft.measurementType === 'manual' ? (
-                    <label>
-                      {ot('Quantity')}
-                      <input required type="number" min="0.0001" max="1000000000" step="0.0001" value={takeoffItemDraft.quantity} onChange={(event) => setTakeoffItemDraft({ ...takeoffItemDraft, quantity: event.target.value })} />
-                    </label>
-                  ) : (
-                    <label>
-                      {ot('Count')}
-                      <input required type="number" min="0.0001" max="1000000" step="0.0001" value={takeoffItemDraft.count} onChange={(event) => setTakeoffItemDraft({ ...takeoffItemDraft, count: event.target.value })} />
-                    </label>
-                  )}
-                  {['linear', 'area', 'volume'].includes(takeoffItemDraft.measurementType) ? (
-                    <label>
-                      {ot('Length (m)')}
-                      <input required type="number" min="0.0001" max="1000000" step="0.0001" value={takeoffItemDraft.length} onChange={(event) => setTakeoffItemDraft({ ...takeoffItemDraft, length: event.target.value })} />
-                    </label>
-                  ) : null}
-                  {['area', 'volume'].includes(takeoffItemDraft.measurementType) ? (
-                    <label>
-                      {ot('Width (m)')}
-                      <input required type="number" min="0.0001" max="1000000" step="0.0001" value={takeoffItemDraft.width} onChange={(event) => setTakeoffItemDraft({ ...takeoffItemDraft, width: event.target.value })} />
-                    </label>
-                  ) : null}
-                  {takeoffItemDraft.measurementType === 'volume' ? (
-                    <label>
-                      {ot('Height (m)')}
-                      <input required type="number" min="0.0001" max="1000000" step="0.0001" value={takeoffItemDraft.height} onChange={(event) => setTakeoffItemDraft({ ...takeoffItemDraft, height: event.target.value })} />
-                    </label>
-                  ) : null}
-                  <label>
-                    {ot('Waste (%)')}
-                    <input required type="number" min="0" max="1000" step="0.01" value={takeoffItemDraft.wastePercent} onChange={(event) => setTakeoffItemDraft({ ...takeoffItemDraft, wastePercent: event.target.value })} />
-                  </label>
-                  <label>
-                    {ot('Unit')}
-                    <input required maxLength="24" value={takeoffItemDraft.unit} onChange={(event) => setTakeoffItemDraft({ ...takeoffItemDraft, unit: event.target.value })} />
-                  </label>
-                  <label>
-                    {ot('Unit cost')}
-                    <input required type="number" min="0" max="1000000000" step="0.01" value={takeoffItemDraft.unitCost} onChange={(event) => setTakeoffItemDraft({ ...takeoffItemDraft, unitCost: event.target.value })} />
-                  </label>
-                  <label>
-                    {ot('Unit sell price')}
-                    <input required type="number" min="0" max="1000000000" step="0.01" value={takeoffItemDraft.unitPrice} onChange={(event) => setTakeoffItemDraft({ ...takeoffItemDraft, unitPrice: event.target.value })} />
-                  </label>
-                  <label>
-                    {ot('Cost code')}
-                    <input maxLength="80" value={takeoffItemDraft.costCode} onChange={(event) => setTakeoffItemDraft({ ...takeoffItemDraft, costCode: event.target.value })} />
-                  </label>
-                  <label>
-                    {ot('WBS code')}
-                    <input
-                      required
-                      maxLength="80"
-                      pattern="[A-Za-z0-9][A-Za-z0-9\-]{0,11}(\.[A-Za-z0-9][A-Za-z0-9\-]{0,11}){0,7}"
-                      title={ot('Use one to eight dot-separated work-breakdown segments, for example 01.20.')}
-                      value={takeoffItemDraft.wbsCode}
-                      onChange={(event) => setTakeoffItemDraft({ ...takeoffItemDraft, wbsCode: event.target.value })}
-                    />
-                  </label>
-                  <label>
-                    {ot('Work package')}
-                    <input
-                      required
-                      minLength="2"
-                      maxLength="120"
-                      value={takeoffItemDraft.workPackage}
-                      onChange={(event) => setTakeoffItemDraft({ ...takeoffItemDraft, workPackage: event.target.value })}
-                    />
-                  </label>
-                  <label>
-                    {ot('Drawing / source reference')}
-                    <input maxLength="240" value={takeoffItemDraft.sourceReference} onChange={(event) => setTakeoffItemDraft({ ...takeoffItemDraft, sourceReference: event.target.value })} />
-                  </label>
-                </div>
-                <div className="takeoff-preview" aria-label={ot('Calculated measurement preview')}>
-                  <div><span>{ot('Quantity')}</span><strong>{takeoffPreviewQuantity || 0} {takeoffItemDraft.unit}</strong></div>
-                  <div><span>{ot('Extended cost')}</span><strong>{currency.format(takeoffPreviewCost)}</strong></div>
-                  <div><span>{ot('Extended sell')}</span><strong>{currency.format(takeoffPreviewSell)}</strong></div>
-                </div>
-                <p className="workflow-note">{ot('The ledger recalculates quantity, cost, and sell totals. Browser preview values are not authoritative.')}</p>
-              </div>
-              <div className="modal-actions">
-                <button type="button" className="secondary-button" onClick={closeTakeoffDialog}>{ot('Cancel')}</button>
-                <button className="primary-button" disabled={submitting || !takeoffItemDraftReady}>
-                  <Ruler size={16} />
-                  {submitting ? ot('Saving...') : takeoffDialog.mode === 'edit_item' ? ot('Recalculate measurement') : ot('Retain measurement')}
-                </button>
-              </div>
-            </form>
-          </section>
-        </div>
+        <DeferredActionDialog locale={operatorLocale} title={<>{takeoffDialog.mode === 'edit_item' ? ot('Edit measurement') : ot('Add measurement')}</>} onClose={closeTakeoffDialog}>
+<TakeoffItemModalDialog changeTakeoffMeasurementType={changeTakeoffMeasurementType} closeTakeoffDialog={closeTakeoffDialog} ot={ot} setTakeoffItemDraft={setTakeoffItemDraft} submitTakeoffItem={submitTakeoffItem} submitting={submitting} takeoffDialog={takeoffDialog} takeoffItemDraft={takeoffItemDraft} takeoffItemDraftReady={takeoffItemDraftReady} takeoffPreviewCost={takeoffPreviewCost} takeoffPreviewQuantity={takeoffPreviewQuantity} takeoffPreviewSell={takeoffPreviewSell} />
+</DeferredActionDialog>
       ) : null}
 
       {takeoffDialog?.mode === 'remove_item' ? (
-        <div className="modal-backdrop commercial-backdrop" role="presentation">
-          <section
-            className="modal takeoff-confirm-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="takeoff-remove-title"
-            data-testid="takeoff-remove-modal"
-            onKeyDown={(event) => {
-              if (event.key === 'Escape') closeTakeoffDialog()
-            }}
-          >
-            <div className="modal-heading">
-              <div>
-                <p className="eyebrow">{ot('Draft correction')}</p>
-                <h2 id="takeoff-remove-title">{ot('Remove measurement?')}</h2>
-                <p>{takeoffDialog.item.description}</p>
-              </div>
-              <button type="button" className="icon-button" aria-label={ot('Close measurement removal')} onClick={closeTakeoffDialog}><X size={18} /></button>
-            </div>
-            <div className="takeoff-modal-body">
-              <p className="workflow-note">{ot('The draft sheet will be recalculated. This does not affect any converted estimate.')}</p>
-            </div>
-            <div className="modal-actions">
-              <button type="button" className="secondary-button" onClick={closeTakeoffDialog}>{ot('Cancel')}</button>
-              <button type="button" className="danger-button" disabled={submitting} onClick={removeTakeoffItem}>
-                <X size={16} />
-                {submitting ? ot('Removing...') : ot('Remove measurement')}
-              </button>
-            </div>
-          </section>
-        </div>
+        <DeferredActionDialog locale={operatorLocale} title={<>{ot('Remove measurement?')}</>} onClose={closeTakeoffDialog}>
+<TakeoffRemoveModalDialog closeTakeoffDialog={closeTakeoffDialog} ot={ot} removeTakeoffItem={removeTakeoffItem} submitting={submitting} takeoffDialog={takeoffDialog} />
+</DeferredActionDialog>
       ) : null}
 
       {takeoffDialog?.mode === 'convert' ? (
-        <div className="modal-backdrop commercial-backdrop" role="presentation">
-          <section
-            className="modal takeoff-confirm-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="takeoff-convert-title"
-            data-testid="takeoff-convert-modal"
-            onKeyDown={(event) => {
-              if (event.key === 'Escape') closeTakeoffDialog()
-            }}
-          >
-            <div className="modal-heading">
-              <div>
-                <p className="eyebrow">{ot('Immutable estimate basis')}</p>
-                <h2 id="takeoff-convert-title">{ot('Prepare estimate')}</h2>
-                <p>{takeoffDialog.takeoff.title}</p>
-              </div>
-              <button type="button" className="icon-button" aria-label={ot('Close estimate preparation')} onClick={closeTakeoffDialog}><X size={18} /></button>
-            </div>
-            <form onSubmit={convertTakeoff}>
-              <div className="takeoff-modal-body">
-                <div className="commercial-draft-pricing" data-testid="takeoff-conversion-pricing-basis">
-                  <GitBranch size={16} />
-                  <div>
-                    <strong>{ot(formatStatus(selectedJob?.pricingBasis?.currentDecision?.selectedModel || 'review'))}</strong>
-                    <span>{ot('Decision v{version} / {score}% fixed-price readiness / source current', { version: selectedJob?.pricingBasis?.currentDecision?.versionNumber || '-', score: selectedJob?.pricingBasis?.currentDecision?.score || 0 })}</span>
-                  </div>
-                </div>
-                <div className="takeoff-preview takeoff-convert-preview">
-                  <div><span>{ot('Work packages')}</span><strong>{takeoffDialog.takeoff.workBreakdown?.packageCount || 0}</strong></div>
-                  <div><span>{ot('Measurements')}</span><strong>{takeoffDialog.takeoff.itemCount}</strong></div>
-                  <div><span>{ot('Cost')}</span><strong>{currency.format(takeoffDialog.takeoff.totalCost || 0)}</strong></div>
-                  <div><span>{ot('Estimate net')}</span><strong>{currency.format(takeoffDialog.takeoff.subtotal || 0)}</strong></div>
-                </div>
-                <div className="form-grid">
-                  <label>
-                    {ot('Valid until')}
-                    <input autoFocus required type="date" min={new Date().toISOString().slice(0, 10)} value={takeoffConversionDraft.validUntil} onChange={(event) => setTakeoffConversionDraft({ ...takeoffConversionDraft, validUntil: event.target.value })} />
-                  </label>
-                  <label className="form-span">
-                    {ot('Estimate notes')}
-                    <textarea maxLength="4000" value={takeoffConversionDraft.notes} onChange={(event) => setTakeoffConversionDraft({ ...takeoffConversionDraft, notes: event.target.value })} placeholder={ot('Add reviewer context, exclusions, or estimate assumptions.')} />
-                  </label>
-                </div>
-                <p className="workflow-note">{ot('Conversion seals the WBS, measurements, and package rollups with a SHA-256 snapshot and makes them read-only. It creates an internal quote approval only.')}</p>
-              </div>
-              <div className="modal-actions">
-                <button type="button" className="secondary-button" onClick={closeTakeoffDialog}>{ot('Cancel')}</button>
-                <button className="primary-button" disabled={submitting || !takeoffConversionDraft.validUntil}>
-                  <ShieldCheck size={16} />
-                  {submitting ? ot('Preparing...') : ot('Seal and prepare estimate')}
-                </button>
-              </div>
-            </form>
-          </section>
-        </div>
+        <DeferredActionDialog locale={operatorLocale} title={<>{ot('Prepare estimate')}</>} onClose={closeTakeoffDialog}>
+<TakeoffConvertModalDialog closeTakeoffDialog={closeTakeoffDialog} convertTakeoff={convertTakeoff} ot={ot} selectedJob={selectedJob} setTakeoffConversionDraft={setTakeoffConversionDraft} submitting={submitting} takeoffConversionDraft={takeoffConversionDraft} takeoffDialog={takeoffDialog} />
+</DeferredActionDialog>
       ) : null}
 
       {commercialDraftMode ? (
-        <div className="modal-backdrop commercial-backdrop" role="presentation">
-          <section
-            className="modal commercial-draft-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="commercial-draft-title"
-            data-testid="commercial-draft-modal"
-            onKeyDown={(event) => {
-              if (event.key === 'Escape') closeCommercialDialog()
-            }}
-          >
-            <div className="modal-heading">
-              <div>
-                <p className="eyebrow">{ot('Approval-gated commercial record')}</p>
-                <h2 id="commercial-draft-title">
+        <DeferredActionDialog locale={operatorLocale} title={<>
                   {commercialDraftMode === 'quote'
                     ? selectedJob?.pricingBasis?.currentDecision?.selectedModel === 'time_and_materials' ? ot('New T&M budget estimate') : ot('New fixed-price estimate')
                     : ot('New scope change')}
-                </h2>
-                <p>{selectedJob?.title} / {ot('server-derived totals')}</p>
-              </div>
-              <button type="button" className="icon-button" aria-label={ot('Close commercial draft')} onClick={closeCommercialDialog}>
-                <X size={18} />
-              </button>
-            </div>
-            <form onSubmit={submitCommercialDraft}>
-              <div className="commercial-draft-body">
-                {commercialDraftMode === 'quote' ? (
-                  <>
-                    <div className="commercial-draft-pricing" data-testid="commercial-draft-scope">
-                      <ClipboardList size={16} />
-                      <div>
-                        <strong>{selectedJob?.commercialScope?.currentRevision?.title || ot('Commercial scope required')}</strong>
-                        <span>
-                          {ot('Revision v{version} / {inclusions} inclusions / {exclusions} exclusions / {allowances} allowances / source current', { version: selectedJob?.commercialScope?.currentRevision?.versionNumber || '-', inclusions: selectedJob?.commercialScope?.currentRevision?.snapshot?.inclusions?.length || 0, exclusions: selectedJob?.commercialScope?.currentRevision?.snapshot?.exclusions?.length || 0, allowances: selectedJob?.commercialScope?.currentRevision?.snapshot?.allowances?.length || 0 })}
-                        </span>
-                      </div>
-                    </div>
-                    <div className="commercial-draft-pricing" data-testid="commercial-draft-pricing-basis">
-                      <GitBranch size={16} />
-                      <div>
-                        <strong>{ot(formatStatus(selectedJob?.pricingBasis?.currentDecision?.selectedModel || 'review'))}</strong>
-                        <span>
-                          {selectedJob?.pricingBasis?.currentDecision?.selectedModel === 'time_and_materials'
-                            ? ot('Amounts form a budget estimate; actual billing requires retained time, material, rate, and work evidence.')
-                            : ot('The price applies to the stated scope, assumptions, exclusions, and allowances; approved changes remain separate.')}
-                        </span>
-                      </div>
-                    </div>
-                    <div className="form-grid compact-form">
-                      <label>
-                        {ot('Valid until')}
-                        <input
-                          autoFocus
-                          required
-                          type="date"
-                          min={new Date().toISOString().slice(0, 10)}
-                          value={quoteDraft.validUntil}
-                          onChange={(event) => setQuoteDraft({ ...quoteDraft, validUntil: event.target.value })}
-                        />
-                      </label>
-                      <label>
-                        {ot('VAT rate (%)')}
-                        <input
-                          required
-                          type="number"
-                          min="0"
-                          max="100"
-                          step="0.01"
-                          value={quoteDraft.taxRate}
-                          onChange={(event) => setQuoteDraft({ ...quoteDraft, taxRate: event.target.value })}
-                        />
-                      </label>
-                    </div>
-                  </>
-                ) : (
-                  <div className="form-grid compact-form">
-                    <label className="form-span">
-                      {ot('Change title')}
-                      <input
-                        autoFocus
-                        required
-                        minLength="2"
-                        value={changeOrderDraft.title}
-                        onChange={(event) => setChangeOrderDraft({ ...changeOrderDraft, title: event.target.value })}
-                        placeholder={ot('Describe the commercial decision')}
-                      />
-                    </label>
-                    <label className="form-span">
-                      {ot('Scope change')}
-                      <textarea
-                        required
-                        minLength="3"
-                        value={changeOrderDraft.scopeDelta}
-                        onChange={(event) => setChangeOrderDraft({ ...changeOrderDraft, scopeDelta: event.target.value })}
-                        placeholder={ot('Record added, omitted, or revised scope.')}
-                      />
-                    </label>
-                    {changeOrderDraft.supersedesChangeOrderId ? (
-                      <div className="form-span commercial-source-notice" role="status">
-                        <ShieldCheck size={16} />{ot('Preparing the next formal revision of the client-returned variation. The prior revision is superseded only after this revision is approved.')}
-                      </div>
-                    ) : null}
-                    <label>
-                      {ot('Variation type')}
-                      <select value={changeOrderDraft.variationType} onChange={(event) => setChangeOrderDraft({ ...changeOrderDraft, variationType: event.target.value })}>
-                        <option value="client_request">{ot('Client request')}</option>
-                        <option value="design_change">{ot('Design change')}</option>
-                        <option value="unforeseen_condition">{ot('Unforeseen condition')}</option>
-                        <option value="regulatory_change">{ot('Regulatory change')}</option>
-                        <option value="allowance_reconciliation">{ot('Allowance reconciliation')}</option>
-                        <option value="contractor_proposal">{ot('Contractor proposal')}</option>
-                        <option value="error_correction">{ot('Error correction')}</option>
-                        <option value="other">{ot('Other')}</option>
-                      </select>
-                    </label>
-                    <label>
-                      {ot('Initiated by')}
-                      <select value={changeOrderDraft.initiatedBy} onChange={(event) => setChangeOrderDraft({ ...changeOrderDraft, initiatedBy: event.target.value })}>
-                        <option value="client">{ot('Client')}</option>
-                        <option value="contractor">{ot('Contractor')}</option>
-                        <option value="designer">{ot('Designer')}</option>
-                        <option value="authority">{ot('Authority')}</option>
-                        <option value="supplier">{ot('Supplier')}</option>
-                        <option value="site_condition">{ot('Site condition')}</option>
-                        <option value="other">{ot('Other')}</option>
-                      </select>
-                    </label>
-                    <label className="form-span">
-                      {ot('Cause')}
-                      <textarea required minLength="8" maxLength="2000" value={changeOrderDraft.cause} onChange={(event) => setChangeOrderDraft({ ...changeOrderDraft, cause: event.target.value })} placeholder={ot('What event or instruction created this variation?')} />
-                    </label>
-                    <label className="form-span">
-                      {ot('Contractual justification')}
-                      <textarea required minLength="8" maxLength="2000" value={changeOrderDraft.justification} onChange={(event) => setChangeOrderDraft({ ...changeOrderDraft, justification: event.target.value })} placeholder={ot('Why is this outside or different from the retained contract scope?')} />
-                    </label>
-                    <label>
-                      {ot('Reference quote')}
-                      <select
-                        value={changeOrderDraft.quoteId}
-                        onChange={(event) => setChangeOrderDraft({ ...changeOrderDraft, quoteId: event.target.value })}
-                      >
-                        <option value="">{ot('Current retained contract')}</option>
-                        {(selectedJob?.quotes || [])
-                          .filter((quote) => quote.status === 'accepted')
-                          .map((quote) => (
-                            <option key={quote.id} value={quote.id}>
-                              {ot(formatStatus(quote.status))} / {currency.format(quote.subtotal || 0)} {ot('net')}
-                            </option>
-                          ))}
-                      </select>
-                    </label>
-                    <label>
-                      {ot('Contract / clause reference')}
-                      <input required minLength="3" maxLength="240" value={changeOrderDraft.contractReference} onChange={(event) => setChangeOrderDraft({ ...changeOrderDraft, contractReference: event.target.value })} />
-                    </label>
-                    <label>
-                      {ot('Notice reference')}
-                      <input maxLength="240" value={changeOrderDraft.noticeReference} onChange={(event) => setChangeOrderDraft({ ...changeOrderDraft, noticeReference: event.target.value })} placeholder={ot('Instruction, RFI, email, or notice ID')} />
-                    </label>
-                    <label>
-                      {ot('If no notice, explain why')}
-                      <input required={!changeOrderDraft.noticeReference.trim()} minLength="8" maxLength="500" value={changeOrderDraft.noticeNotApplicableReason} onChange={(event) => setChangeOrderDraft({ ...changeOrderDraft, noticeNotApplicableReason: event.target.value })} />
-                    </label>
-                    <label>
-                      {ot('Requested on')}
-                      <input required type="date" value={changeOrderDraft.requestedAt} onChange={(event) => setChangeOrderDraft({ ...changeOrderDraft, requestedAt: event.target.value })} />
-                    </label>
-                    <label>
-                      {ot('Response due')}
-                      <input type="date" min={changeOrderDraft.requestedAt} value={changeOrderDraft.responseDueAt} onChange={(event) => setChangeOrderDraft({ ...changeOrderDraft, responseDueAt: event.target.value })} />
-                    </label>
-                    <label>
-                      {ot('Schedule impact (days)')}
-                      <input
-                        required
-                        type="number"
-                        min="-3650"
-                        max="3650"
-                        step="1"
-                        value={changeOrderDraft.scheduleDeltaDays}
-                        onChange={(event) => setChangeOrderDraft({ ...changeOrderDraft, scheduleDeltaDays: event.target.value })}
-                      />
-                    </label>
-                    <label className="form-span">
-                      {ot('Schedule impact basis')}
-                      <textarea required minLength="8" maxLength="2000" value={changeOrderDraft.scheduleImpactNarrative} onChange={(event) => setChangeOrderDraft({ ...changeOrderDraft, scheduleImpactNarrative: event.target.value })} placeholder={ot('Explain the proposed effect or why no date change is needed.')} />
-                    </label>
-                    <label>
-                      {ot('Risk impact')}
-                      <select aria-label={ot('Risk impact')} value={changeOrderDraft.riskImpact} onChange={(event) => setChangeOrderDraft({ ...changeOrderDraft, riskImpact: event.target.value })}>
-                        <option value="none">{ot('None')}</option>
-                        <option value="low">{ot('Low')}</option>
-                        <option value="medium">{ot('Medium')}</option>
-                        <option value="high">{ot('High')}</option>
-                        <option value="critical">{ot('Critical')}</option>
-                      </select>
-                    </label>
-                    <label>
-                      {ot('VAT rate (%)')}
-                      <input
-                        required
-                        type="number"
-                        min="0"
-                        max="100"
-                        step="0.01"
-                        value={changeOrderDraft.taxRate}
-                        onChange={(event) => setChangeOrderDraft({ ...changeOrderDraft, taxRate: event.target.value })}
-                      />
-                    </label>
-                    <label className="form-span">
-                      {ot('Risk impact statement')}
-                      <textarea required minLength="8" maxLength="2000" value={changeOrderDraft.riskImpactStatement} onChange={(event) => setChangeOrderDraft({ ...changeOrderDraft, riskImpactStatement: event.target.value })} />
-                    </label>
-                    <label>
-                      {ot('Assumptions (one per line)')}
-                      <textarea required value={changeOrderDraft.assumptions} onChange={(event) => setChangeOrderDraft({ ...changeOrderDraft, assumptions: event.target.value })} />
-                    </label>
-                    <label>
-                      {ot('Exclusions (one per line)')}
-                      <textarea required value={changeOrderDraft.exclusions} onChange={(event) => setChangeOrderDraft({ ...changeOrderDraft, exclusions: event.target.value })} />
-                    </label>
-                    <label className="form-span">
-                      {ot('Evidence references (one per line)')}
-                      <textarea value={changeOrderDraft.evidenceReferences} onChange={(event) => setChangeOrderDraft({ ...changeOrderDraft, evidenceReferences: event.target.value })} placeholder={ot('Drawing revision, instruction, site photo, RFI, or retained document reference')} />
-                    </label>
-                  </div>
-                )}
-                <div className="commercial-line-heading">
-                  <div>
-                    <h3>{ot('Line items')}</h3>
-                    <p>{ot('Amounts are recalculated by the ledger.')}</p>
-                  </div>
-                  <button
-                    type="button"
-                    className="secondary-button"
-                    disabled={(activeCommercialDraft.lineItems || []).length >= 50}
-                    onClick={() => addCommercialLineItem(commercialDraftMode)}
-                  >
-                    <Plus size={15} />
-                    {ot('Add line')}
-                  </button>
-                </div>
-                <div className="commercial-line-items">
-                  {activeCommercialDraft.lineItems.map((item, index) => (
-                    <div className="commercial-line-item" key={index}>
-                      <label>
-                        {ot('Description')}
-                        <input
-                          required
-                          minLength="2"
-                          maxLength="240"
-                          value={item.description}
-                          onChange={(event) => updateCommercialLineItem(commercialDraftMode, index, 'description', event.target.value)}
-                        />
-                      </label>
-                      <label>
-                        {ot('Quantity')}
-                        <input
-                          required
-                          type="number"
-                          min="0.01"
-                          max="1000000"
-                          step="0.01"
-                          value={item.quantity}
-                          onChange={(event) => updateCommercialLineItem(commercialDraftMode, index, 'quantity', event.target.value)}
-                        />
-                      </label>
-                      <label>
-                        {ot('Unit price')}
-                        <input
-                          required
-                          type="number"
-                          min={commercialDraftMode === 'quote' ? '0' : '-1000000000'}
-                          max="1000000000"
-                          step="0.01"
-                          value={item.unitPrice}
-                          onChange={(event) => updateCommercialLineItem(commercialDraftMode, index, 'unitPrice', event.target.value)}
-                        />
-                      </label>
-                      <label>
-                        {ot('Cost code')}
-                        <input
-                          maxLength="80"
-                          value={item.costCode}
-                          onChange={(event) => updateCommercialLineItem(commercialDraftMode, index, 'costCode', event.target.value)}
-                        />
-                      </label>
-                      <button
-                        type="button"
-                        className="icon-button commercial-line-remove"
-                        aria-label={ot('Remove line {number}', { number: index + 1 })}
-                        disabled={activeCommercialDraft.lineItems.length === 1}
-                        onClick={() => removeCommercialLineItem(commercialDraftMode, index)}
-                      >
-                        <X size={16} />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-                <div className="commercial-total-strip" aria-label={ot('Commercial totals')}>
-                  <span>
-                    {commercialDraftMode === 'quote' && selectedJob?.pricingBasis?.currentDecision?.selectedModel === 'time_and_materials' ? ot('Budget net') : ot('Net')} <strong>{currency.format(commercialDraftNet)}</strong>
-                  </span>
-                  <span>
-                    {ot('VAT')} <strong>{currency.format(commercialDraftTax)}</strong>
-                  </span>
-                  <span>
-                    {commercialDraftMode === 'quote' && selectedJob?.pricingBasis?.currentDecision?.selectedModel === 'time_and_materials' ? ot('Budget gross') : ot('Gross')} <strong>{currency.format(commercialDraftTotal)}</strong>
-                  </span>
-                </div>
-                <label>
-                  {ot('Internal notes')}
-                  <textarea
-                    maxLength="4000"
-                    value={activeCommercialDraft.notes}
-                    onChange={(event) =>
-                      commercialDraftMode === 'quote'
-                        ? setQuoteDraft({ ...quoteDraft, notes: event.target.value })
-                        : setChangeOrderDraft({ ...changeOrderDraft, notes: event.target.value })
-                    }
-                    placeholder={ot('Record assumptions, exclusions, and reviewer context.')}
-                  />
-                </label>
-                <p className="workflow-note">
-                  {ot('Saving creates an internal approval request. It does not send a quote, commit scope, alter contract value, or contact the client.')}
-                </p>
-              </div>
-              <div className="modal-actions">
-                <button type="button" className="secondary-button" onClick={closeCommercialDialog}>
-                  {ot('Cancel')}
-                </button>
-                <button className="primary-button" disabled={submitting || !commercialDraftReady}>
-                  <ShieldCheck size={16} />
-                  {submitting
-                    ? ot('Saving...')
-                    : commercialDraftMode === 'quote'
-                      ? selectedJob?.pricingBasis?.currentDecision?.selectedModel === 'time_and_materials' ? ot('Retain T&M budget') : ot('Retain fixed-price estimate')
-                      : ot('Request change approval')}
-                </button>
-              </div>
-            </form>
-          </section>
-        </div>
+                </>} onClose={closeCommercialDialog}>
+<CommercialDraftModalDialog activeCommercialDraft={activeCommercialDraft} addCommercialLineItem={addCommercialLineItem} changeOrderDraft={changeOrderDraft} closeCommercialDialog={closeCommercialDialog} commercialDraftMode={commercialDraftMode} commercialDraftNet={commercialDraftNet} commercialDraftReady={commercialDraftReady} commercialDraftTax={commercialDraftTax} commercialDraftTotal={commercialDraftTotal} ot={ot} quoteDraft={quoteDraft} removeCommercialLineItem={removeCommercialLineItem} selectedJob={selectedJob} setChangeOrderDraft={setChangeOrderDraft} setQuoteDraft={setQuoteDraft} submitCommercialDraft={submitCommercialDraft} submitting={submitting} updateCommercialLineItem={updateCommercialLineItem} />
+</DeferredActionDialog>
       ) : null}
 
       {commercialAcceptance ? (
-        <div className="modal-backdrop commercial-backdrop" role="presentation">
-          <section
-            className="modal commercial-acceptance-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="commercial-acceptance-title"
-            data-testid="commercial-acceptance-modal"
-            onKeyDown={(event) => {
-              if (event.key === 'Escape') closeCommercialDialog()
-            }}
-          >
-            <div className="modal-heading">
-              <div>
-                <p className="eyebrow">{ot('Client evidence verification')}</p>
-                <h2 id="commercial-acceptance-title">{ot('Record client acceptance')}</h2>
-                <p>
-                  {commercialAcceptance.type === 'quote'
-                    ? ot('Quote {amount} net', { amount: currency.format(commercialAcceptance.record.subtotal || 0) })
-                    : commercialAcceptance.record.title}
-                </p>
-              </div>
-              <button type="button" className="icon-button" aria-label={ot('Close client acceptance')} onClick={closeCommercialDialog}>
-                <X size={18} />
-              </button>
-            </div>
-            <form onSubmit={submitCommercialAcceptance}>
-              <div className="form-grid commercial-acceptance-form">
-                <label>
-                  {ot('Accepted on')}
-                  <input
-                    autoFocus
-                    required
-                    type="date"
-                    max={new Date().toISOString().slice(0, 10)}
-                    value={commercialAcceptanceDraft.acceptedAt}
-                    onChange={(event) => setCommercialAcceptanceDraft({ ...commercialAcceptanceDraft, acceptedAt: event.target.value })}
-                  />
-                </label>
-                <label className="form-span">
-                  {ot('Evidence reference')}
-                  <input
-                    required
-                    minLength="3"
-                    maxLength="240"
-                    value={commercialAcceptanceDraft.evidenceReference}
-                    onChange={(event) =>
-                      setCommercialAcceptanceDraft({ ...commercialAcceptanceDraft, evidenceReference: event.target.value })
-                    }
-                    placeholder={ot('Signed quote, portal decision, email, or document reference')}
-                  />
-                </label>
-                <label className="form-span">
-                  {ot('Verification notes')}
-                  <textarea
-                    maxLength="2000"
-                    value={commercialAcceptanceDraft.notes}
-                    onChange={(event) => setCommercialAcceptanceDraft({ ...commercialAcceptanceDraft, notes: event.target.value })}
-                    placeholder={ot('Record where the evidence is retained and any conditions.')}
-                  />
-                </label>
-                <p className="workflow-note form-span">
-                  {ot('This request does not claim acceptance by itself. Contract value changes only after a separate approver verifies the retained evidence.')}
-                </p>
-              </div>
-              <div className="modal-actions">
-                <button type="button" className="secondary-button" onClick={closeCommercialDialog}>
-                  {ot('Cancel')}
-                </button>
-                <button className="primary-button" disabled={submitting || commercialAcceptanceDraft.evidenceReference.trim().length < 3}>
-                  <ShieldCheck size={16} />
-                  {submitting ? ot('Recording...') : ot('Request verification')}
-                </button>
-              </div>
-            </form>
-          </section>
-        </div>
+        <DeferredActionDialog locale={operatorLocale} title={<>{ot('Record client acceptance')}</>} onClose={closeCommercialDialog}>
+<CommercialAcceptanceModalDialog closeCommercialDialog={closeCommercialDialog} commercialAcceptance={commercialAcceptance} commercialAcceptanceDraft={commercialAcceptanceDraft} ot={ot} setCommercialAcceptanceDraft={setCommercialAcceptanceDraft} submitCommercialAcceptance={submitCommercialAcceptance} submitting={submitting} />
+</DeferredActionDialog>
       ) : null}
 
       {commercialDelivery ? (
-        <div className="modal-backdrop commercial-backdrop" role="presentation">
-          <section
-            className="modal commercial-delivery-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="commercial-delivery-title"
-            data-testid="commercial-delivery-modal"
-            onKeyDown={(event) => {
-              if (event.key === 'Escape') closeCommercialDialog()
-            }}
-          >
-            <div className="modal-heading">
-              <div>
-                <p className="eyebrow">{ot('Verified delivery evidence')}</p>
-                <h2 id="commercial-delivery-title">{ot('Record change-order delivery')}</h2>
-                <p>
-                  {commercialDelivery.changeOrder.data?.issuePackage?.issueReference || commercialDelivery.changeOrder.title} /{' '}
-                  {commercialDelivery.communication.data?.recipient}
-                </p>
-              </div>
-              <button type="button" className="icon-button" aria-label={ot('Close change-order delivery')} onClick={closeCommercialDialog}>
-                <X size={18} />
-              </button>
-            </div>
-            <form onSubmit={submitChangeOrderDelivery}>
-              <div className="form-grid commercial-acceptance-form">
-                <label>
-                  {ot('Configured integration ID')}
-                  <input
-                    autoFocus
-                    required
-                    minLength="2"
-                    maxLength="120"
-                    value={commercialDeliveryDraft.integration}
-                    onChange={(event) =>
-                      setCommercialDeliveryDraft({ ...commercialDeliveryDraft, integration: event.target.value })
-                    }
-                    placeholder="verified_client_gateway"
-                  />
-                </label>
-                <label>
-                  {ot('Provider message ID')}
-                  <input
-                    required
-                    minLength="3"
-                    maxLength="240"
-                    value={commercialDeliveryDraft.providerMessageId}
-                    onChange={(event) =>
-                      setCommercialDeliveryDraft({ ...commercialDeliveryDraft, providerMessageId: event.target.value })
-                    }
-                    placeholder="provider-change-000123"
-                  />
-                </label>
-                <label>
-                  {ot('Provider sent at')}
-                  <input
-                    required
-                    type="datetime-local"
-                    value={commercialDeliveryDraft.sentAt}
-                    onChange={(event) => setCommercialDeliveryDraft({ ...commercialDeliveryDraft, sentAt: event.target.value })}
-                  />
-                </label>
-                <p className="workflow-note form-span">
-                  {ot('Record this only after the configured provider returns evidence for the approved recipient and exact package. Delivery does not authorize the work or alter contract value.')}
-                </p>
-              </div>
-              <div className="modal-actions">
-                <button type="button" className="secondary-button" disabled={submitting} onClick={closeCommercialDialog}>
-                  {ot('Cancel')}
-                </button>
-                <button
-                  className="primary-button"
-                  disabled={
-                    submitting ||
-                    commercialDeliveryDraft.integration.trim().length < 2 ||
-                    commercialDeliveryDraft.providerMessageId.trim().length < 3 ||
-                    !commercialDeliveryDraft.sentAt
-                  }
-                >
-                  <MailCheck size={15} /> {submitting ? ot('Recording...') : ot('Record verified receipt')}
-                </button>
-              </div>
-            </form>
-          </section>
-        </div>
+        <DeferredActionDialog locale={operatorLocale} title={<>{ot('Record change-order delivery')}</>} onClose={closeCommercialDialog}>
+<CommercialDeliveryModalDialog closeCommercialDialog={closeCommercialDialog} commercialDelivery={commercialDelivery} commercialDeliveryDraft={commercialDeliveryDraft} ot={ot} setCommercialDeliveryDraft={setCommercialDeliveryDraft} submitChangeOrderDelivery={submitChangeOrderDelivery} submitting={submitting} />
+</DeferredActionDialog>
       ) : null}
 
       {taskAction ? (
-        <div className="modal-backdrop task-action-backdrop" role="presentation">
-          <section
-            className="modal task-action-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="task-action-title"
-            data-testid="task-action-modal"
-          >
-            <div className="modal-heading">
-              <div>
-                <p className="eyebrow">Retained task lifecycle</p>
-                <h2 id="task-action-title">{formatStatus(taskAction.status)} task</h2>
-                <p>{taskAction.task.title}</p>
-              </div>
-              <button
-                type="button"
-                className="icon-button"
-                aria-label="Close task action"
-                disabled={submitting}
-                onClick={() => {
+        <DeferredActionDialog locale={operatorLocale} title={<>{formatStatus(taskAction.status)} task</>} onClose={() => {
                   setTaskAction(null)
                   setTaskActionNote('')
-                }}
-              >
-                <X size={18} />
-              </button>
-            </div>
-            <form onSubmit={submitTaskTransition}>
-              <div className="form-grid">
-                <label className="form-span">
-                  Evidence and outcome
-                  <textarea
-                    required
-                    minLength="4"
-                    autoFocus
-                    value={taskActionNote}
-                    onChange={(event) => setTaskActionNote(event.target.value)}
-                    placeholder="Record the work, blocker, or cancellation basis"
-                  />
-                </label>
-              </div>
-              <div className="modal-actions">
-                <button
-                  type="button"
-                  className="secondary-button"
-                  disabled={submitting}
-                  onClick={() => {
-                    setTaskAction(null)
-                    setTaskActionNote('')
-                  }}
-                >
-                  Cancel
-                </button>
-                <button
-                  className={taskAction.status === 'cancelled' ? 'danger-button' : 'primary-button'}
-                  disabled={submitting || taskActionNote.trim().length < 4}
-                >
-                  {taskAction.status === 'completed' ? (
-                    <Check size={16} />
-                  ) : taskAction.status === 'blocked' ? (
-                    <TriangleAlert size={16} />
-                  ) : (
-                    <Ban size={16} />
-                  )}
-                  {submitting ? 'Saving...' : `Mark ${formatStatus(taskAction.status)}`}
-                </button>
-              </div>
-            </form>
-          </section>
-        </div>
+                }}>
+<TaskActionModalDialog setTaskAction={setTaskAction} setTaskActionNote={setTaskActionNote} submitTaskTransition={submitTaskTransition} submitting={submitting} taskAction={taskAction} taskActionNote={taskActionNote} />
+</DeferredActionDialog>
       ) : null}
-      {opportunityEditor ? (
-        <div className="modal-backdrop opportunity-backdrop" role="presentation">
-          <section
-            className="modal opportunity-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="opportunity-title"
-            data-testid="opportunity-modal"
-          >
-            <div className="modal-heading">
-              <div>
-                <h2 id="opportunity-title">{opportunityEditor.mode === 'create' ? 'New opportunity' : 'Edit opportunity'}</h2>
-                <p>Retain qualification and forecast data before operational job creation.</p>
-              </div>
-              <button className="icon-button" aria-label="Close opportunity" onClick={closeOpportunityEditor}>
-                <X size={18} />
-              </button>
+      {opportunityEditor && canCoordinate ? (
+        <Suspense fallback={<div className="modal-backdrop opportunity-backdrop" role="presentation">
+          <section className="modal opportunity-modal" role="dialog" aria-modal="true" aria-label={ot('Loading opportunity editor')}>
+            <div className="modal-heading"><p role="status"><LoaderCircle className="spin" size={16} /> {ot('Loading opportunity editor')}</p>
+              <button type="button" className="icon-button" aria-label="Close opportunity" disabled={submitting} onClick={closeOpportunityEditor}><X size={18} /></button>
             </div>
-            <form onSubmit={submitOpportunity}>
-              <div className="form-grid opportunity-form-grid">
-                <label>
-                  Client name
-                  <input
-                    required
-                    disabled={opportunityEditor.mode === 'edit'}
-                    value={opportunityDraft.clientName}
-                    onChange={(event) => setOpportunityDraft({ ...opportunityDraft, clientName: event.target.value })}
-                  />
-                </label>
-                <label>
-                  Company
-                  <input
-                    disabled={opportunityEditor.mode === 'edit'}
-                    value={opportunityDraft.company}
-                    onChange={(event) => setOpportunityDraft({ ...opportunityDraft, company: event.target.value })}
-                  />
-                </label>
-                <label>
-                  Email
-                  <input
-                    type="email"
-                    disabled={opportunityEditor.mode === 'edit'}
-                    value={opportunityDraft.email}
-                    onChange={(event) => setOpportunityDraft({ ...opportunityDraft, email: event.target.value })}
-                  />
-                </label>
-                <label>
-                  Phone
-                  <input
-                    disabled={opportunityEditor.mode === 'edit'}
-                    value={opportunityDraft.phone}
-                    onChange={(event) => setOpportunityDraft({ ...opportunityDraft, phone: event.target.value })}
-                  />
-                </label>
-                <label className="form-span">
-                  Opportunity title
-                  <input
-                    required
-                    minLength="2"
-                    value={opportunityDraft.title}
-                    onChange={(event) => setOpportunityDraft({ ...opportunityDraft, title: event.target.value })}
-                  />
-                </label>
-                <label>
-                  Stage
-                  <select
-                    value={opportunityDraft.stage}
-                    disabled={opportunityDraft.stage === 'won'}
-                    onChange={(event) => {
-                      const nextStage = event.target.value
-                      const defaultProbability = {
-                        new: 10,
-                        qualifying: 20,
-                        site_visit: 35,
-                        estimating: 50,
-                        proposal: 65,
-                        negotiating: 80,
-                        lost: 0,
-                        archived: 0,
-                      }[nextStage]
-                      setOpportunityDraft({
-                        ...opportunityDraft,
-                        stage: nextStage,
-                        probabilityPercent: String(defaultProbability ?? opportunityDraft.probabilityPercent),
-                      })
-                    }}
-                  >
-                    {PIPELINE_STAGES.map((option) => (
-                      <option key={option} value={option} disabled={option === 'won' && opportunityDraft.stage !== 'won'}>
-                        {formatStatus(option)}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  Probability
-                  <div className="probability-control">
-                    <input
-                      type="range"
-                      min="0"
-                      max="100"
-                      step="5"
-                      disabled={['won', 'lost', 'archived'].includes(opportunityDraft.stage)}
-                      value={opportunityDraft.probabilityPercent}
-                      onChange={(event) => setOpportunityDraft({ ...opportunityDraft, probabilityPercent: event.target.value })}
-                    />
-                    <output>{opportunityDraft.probabilityPercent}%</output>
-                  </div>
-                </label>
-                <label>
-                  Service
-                  <input
-                    value={opportunityDraft.service}
-                    onChange={(event) => setOpportunityDraft({ ...opportunityDraft, service: event.target.value })}
-                    placeholder="Renovation, maintenance..."
-                  />
-                </label>
-                <label>
-                  Source
-                  <input
-                    value={opportunityDraft.sourceChannel}
-                    onChange={(event) => setOpportunityDraft({ ...opportunityDraft, sourceChannel: event.target.value })}
-                    placeholder="Referral, website, tender..."
-                  />
-                </label>
-                <label>
-                  Client segment
-                  <input
-                    value={opportunityDraft.clientSegment}
-                    onChange={(event) => setOpportunityDraft({ ...opportunityDraft, clientSegment: event.target.value })}
-                    placeholder="Homeowner, housing association..."
-                  />
-                </label>
-                <label>
-                  Estimated value
-                  <input
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    value={opportunityDraft.estimatedValue}
-                    onChange={(event) => setOpportunityDraft({ ...opportunityDraft, estimatedValue: event.target.value })}
-                  />
-                </label>
-                <label>
-                  Owner
-                  <input
-                    value={opportunityDraft.ownerName}
-                    onChange={(event) => setOpportunityDraft({ ...opportunityDraft, ownerName: event.target.value })}
-                  />
-                </label>
-                <label>
-                  Next follow-up
-                  <input
-                    type="datetime-local"
-                    value={opportunityDraft.nextFollowUpAt}
-                    onChange={(event) => setOpportunityDraft({ ...opportunityDraft, nextFollowUpAt: event.target.value })}
-                  />
-                </label>
-                <label>
-                  Decision target
-                  <input
-                    type="datetime-local"
-                    value={opportunityDraft.targetDecisionAt}
-                    onChange={(event) => setOpportunityDraft({ ...opportunityDraft, targetDecisionAt: event.target.value })}
-                  />
-                </label>
-                <label>
-                  Address
-                  <input
-                    value={opportunityDraft.address}
-                    onChange={(event) => setOpportunityDraft({ ...opportunityDraft, address: event.target.value })}
-                  />
-                </label>
-                <label>
-                  {ot('City')}
-                  <input
-                    value={opportunityDraft.city}
-                    onChange={(event) => setOpportunityDraft({ ...opportunityDraft, city: event.target.value })}
-                  />
-                </label>
-                <label>
-                  {ot('Postal code')}
-                  <input
-                    value={opportunityDraft.postalCode}
-                    onChange={(event) => setOpportunityDraft({ ...opportunityDraft, postalCode: event.target.value })}
-                    placeholder="6811 AA"
-                  />
-                </label>
-                <label>
-                  Country
-                  <input
-                    value={opportunityDraft.country}
-                    onChange={(event) => setOpportunityDraft({ ...opportunityDraft, country: event.target.value })}
-                    placeholder="NL"
-                  />
-                </label>
-                {opportunityDraft.stage === 'lost' ? (
-                  <label className="form-span">
-                    Loss reason
-                    <textarea
-                      required
-                      minLength="4"
-                      value={opportunityDraft.lostReason}
-                      onChange={(event) => setOpportunityDraft({ ...opportunityDraft, lostReason: event.target.value })}
-                      placeholder="Retain why this opportunity was not won."
-                    />
-                  </label>
-                ) : null}
-                <label className="form-span">
-                  Scope and qualification notes
-                  <textarea
-                    value={opportunityDraft.description}
-                    onChange={(event) => setOpportunityDraft({ ...opportunityDraft, description: event.target.value })}
-                    placeholder="Need, access, constraints, decision process and scope assumptions."
-                  />
-                </label>
-              </div>
-              <div className="modal-actions">
-                <button type="button" className="secondary-button" onClick={closeOpportunityEditor}>
-                  Cancel
-                </button>
-                <button className="primary-button" disabled={submitting || opportunityDraft.title.trim().length < 2}>
-                  {submitting ? 'Saving...' : opportunityEditor.mode === 'create' ? 'Retain opportunity' : 'Save changes'}
-                </button>
-              </div>
-            </form>
           </section>
-        </div>
+        </div>}>
+          <OpportunityEditor key={outboxScope + ':' + opportunityEditor.mode + ':' + (opportunityEditor.opportunity?.id || 'new')} editor={opportunityEditor} scope={outboxScope} enabled={draftRecoveryEnabled}
+            api={api} ot={ot} submitting={submitting} error={error} onClose={closeOpportunityEditor} onSave={submitOpportunity} />
+        </Suspense>
       ) : null}
 
       {opportunityActivity ? (
-        <div className="modal-backdrop opportunity-activity-backdrop" role="presentation">
-          <section
-            className="modal opportunity-activity-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="opportunity-activity-title"
-            data-testid="opportunity-activity-modal"
-          >
-            <div className="modal-heading">
-              <div>
-                <h2 id="opportunity-activity-title">Add pipeline activity</h2>
-                <p>{opportunityActivity.title} / internal ledger only</p>
-              </div>
-              <button className="icon-button" aria-label="Close opportunity activity" onClick={() => setOpportunityActivity(null)}>
-                <X size={18} />
-              </button>
-            </div>
-            <form onSubmit={submitOpportunityActivity}>
-              <div className="form-grid opportunity-activity-form">
-                <label>
-                  Activity type
-                  <select
-                    value={opportunityActivityDraft.activityType}
-                    onChange={(event) => setOpportunityActivityDraft({ ...opportunityActivityDraft, activityType: event.target.value })}
-                  >
-                    <option value="follow_up">Follow-up</option>
-                    <option value="qualification">Qualification</option>
-                    <option value="site_visit">Site visit</option>
-                    <option value="estimate_review">Estimate review</option>
-                    <option value="note">Note</option>
-                  </select>
-                </label>
-                <label>
-                  Due
-                  <input
-                    type="datetime-local"
-                    value={opportunityActivityDraft.dueAt}
-                    onChange={(event) => setOpportunityActivityDraft({ ...opportunityActivityDraft, dueAt: event.target.value })}
-                  />
-                </label>
-                <label className="form-span">
-                  Summary
-                  <input
-                    required
-                    minLength="3"
-                    value={opportunityActivityDraft.summary}
-                    onChange={(event) => setOpportunityActivityDraft({ ...opportunityActivityDraft, summary: event.target.value })}
-                    placeholder="Confirm site visit availability"
-                  />
-                </label>
-                <label className="form-span">
-                  Internal notes
-                  <textarea
-                    value={opportunityActivityDraft.notes}
-                    onChange={(event) => setOpportunityActivityDraft({ ...opportunityActivityDraft, notes: event.target.value })}
-                    placeholder="Context for the office. This does not send a message."
-                  />
-                </label>
-              </div>
-              <div className="modal-actions">
-                <button type="button" className="secondary-button" onClick={() => setOpportunityActivity(null)}>
-                  Cancel
-                </button>
-                <button className="primary-button" disabled={submitting || opportunityActivityDraft.summary.trim().length < 3}>
-                  {submitting ? 'Saving...' : 'Retain activity'}
-                </button>
-              </div>
-            </form>
-          </section>
-        </div>
+        <DeferredActionDialog locale={operatorLocale} title={<>Add pipeline activity</>} onClose={() => setOpportunityActivity(null)}>
+<OpportunityActivityModalDialog opportunityActivity={opportunityActivity} opportunityActivityDraft={opportunityActivityDraft} setOpportunityActivity={setOpportunityActivity} setOpportunityActivityDraft={setOpportunityActivityDraft} submitOpportunityActivity={submitOpportunityActivity} submitting={submitting} />
+</DeferredActionDialog>
       ) : null}
 
       {bidPackageEditor ? (
-        <div className="modal-backdrop bid-package-backdrop" role="presentation">
-          <section className="modal bid-package-modal" role="dialog" aria-modal="true" aria-labelledby="bid-package-modal-title" data-testid="bid-package-modal">
-            <div className="modal-heading">
-              <div>
-                <h2 id="bid-package-modal-title">{ot('New bid package')}</h2>
-                <p>{ot('Retain an internal tender comparison. No invitations are sent from this workflow.')}</p>
-              </div>
-              <button className="icon-button" aria-label={ot('Close bid package')} onClick={() => setBidPackageEditor(false)}><X size={18} /></button>
-            </div>
-            <form onSubmit={submitBidPackage}>
-              <div className="form-grid bid-package-form">
-                <label className="form-span">
-                  {ot('Opportunity')}
-                  <select required value={bidPackageDraft.opportunityId} onChange={(event) => setBidPackageDraft({ ...bidPackageDraft, opportunityId: event.target.value })}>
-                    <option value="">{ot('Select an open opportunity')}</option>
-                    {(data.opportunities || EMPTY_LIST).filter((opportunity) => !['won', 'lost', 'archived'].includes(opportunity.stage)).map((opportunity) => (
-                      <option key={opportunity.id} value={opportunity.id}>{opportunity.title} / {opportunity.client?.name || ot('Client pending')}</option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  {ot('Package title')}
-                  <input required minLength="2" value={bidPackageDraft.title} onChange={(event) => setBidPackageDraft({ ...bidPackageDraft, title: event.target.value })} placeholder={ot('Electrical installation package')} />
-                </label>
-                <label>
-                  {ot('Trade')}
-                  <input required minLength="2" value={bidPackageDraft.trade} onChange={(event) => setBidPackageDraft({ ...bidPackageDraft, trade: event.target.value })} placeholder={ot('Electrical')} />
-                </label>
-                <label>
-                  {ot('Return due')}
-                  <input required type="date" min={futureDateInput(1)} value={bidPackageDraft.dueAt} onChange={(event) => setBidPackageDraft({ ...bidPackageDraft, dueAt: event.target.value })} />
-                </label>
-                <label>
-                  {ot('Owner')}
-                  <input value={bidPackageDraft.ownerName} onChange={(event) => setBidPackageDraft({ ...bidPackageDraft, ownerName: event.target.value })} />
-                </label>
-                <label className="form-span">
-                  {ot('Scope')}
-                  <textarea required minLength="5" value={bidPackageDraft.scope} onChange={(event) => setBidPackageDraft({ ...bidPackageDraft, scope: event.target.value })} placeholder={ot('Retained scope, interfaces, evidence, assumptions, and return requirements.')} />
-                </label>
-                <fieldset className="form-span bid-partner-picker">
-                  <legend>{ot('Internal bidder list')}</legend>
-                  {(data.tradePartners || EMPTY_LIST).filter((partner) => partner.status === 'active').length ? (
-                    <div>
-                      {(data.tradePartners || EMPTY_LIST).filter((partner) => partner.status === 'active').map((partner) => (
-                        <label key={partner.id}>
-                          <input
-                            type="checkbox"
-                            checked={bidPackageDraft.tradePartnerIds.includes(partner.id)}
-                            onChange={(event) => setBidPackageDraft({
-                              ...bidPackageDraft,
-                              tradePartnerIds: event.target.checked
-                                ? [...bidPackageDraft.tradePartnerIds, partner.id]
-                                : bidPackageDraft.tradePartnerIds.filter((id) => id !== partner.id),
-                            })}
-                          />
-                          <span><strong>{partner.name}</strong><small>{ot(String(partner.partnerType || 'supplier').replaceAll('_', ' '))} / {ot(String(partner.compliance?.status || 'needs_review').replaceAll('_', ' '))}</small></span>
-                        </label>
-                      ))}
-                    </div>
-                  ) : (
-                    <p>{ot('No active trade partners are retained. Add and verify partners in Resources first.')}</p>
-                  )}
-                </fieldset>
-              </div>
-              <div className="modal-actions">
-                <button type="button" className="secondary-button" onClick={() => setBidPackageEditor(false)}>{ot('Cancel')}</button>
-                <button className="primary-button" disabled={submitting || !bidPackageDraft.opportunityId || bidPackageDraft.title.trim().length < 2 || bidPackageDraft.trade.trim().length < 2 || bidPackageDraft.scope.trim().length < 5 || !bidPackageDraft.tradePartnerIds.length}>
-                  {submitting ? ot('Saving...') : ot('Retain bid package')}
-                </button>
-              </div>
-            </form>
-          </section>
-        </div>
+        <DeferredActionDialog locale={operatorLocale} title={<>{ot('New bid package')}</>} onClose={() => setBidPackageEditor(false)}>
+<BidPackageModalDialog bidPackageDraft={bidPackageDraft} data={data} ot={ot} setBidPackageDraft={setBidPackageDraft} setBidPackageEditor={setBidPackageEditor} submitBidPackage={submitBidPackage} submitting={submitting} />
+</DeferredActionDialog>
       ) : null}
 
       {bidPackageAction?.type === 'return' ? (
-        <div className="modal-backdrop bid-package-backdrop" role="presentation">
-          <section className="modal bid-return-modal" role="dialog" aria-modal="true" aria-labelledby="bid-return-modal-title" data-testid="bid-return-modal">
-            <div className="modal-heading">
-              <div>
-                <h2 id="bid-return-modal-title">{ot('Record bid return')}</h2>
-                <p>{bidPackageAction.participant.partner?.name} / {bidPackageAction.bidPackage.packageNumber}</p>
-              </div>
-              <button className="icon-button" aria-label={ot('Close bid return')} onClick={() => setBidPackageAction(null)}><X size={18} /></button>
-            </div>
-            <form onSubmit={submitBidReturn}>
-              <div className="form-grid bid-return-form">
-                <label>
-                  {ot('Net amount')}
-                  <input required type="number" min="0.01" step="0.01" value={bidReturnDraft.netAmount} onChange={(event) => setBidReturnDraft({ ...bidReturnDraft, netAmount: event.target.value })} />
-                </label>
-                <label>
-                  {ot('VAT rate')}
-                  <input required type="number" min="0" max="100" step="0.01" value={bidReturnDraft.taxRate} onChange={(event) => setBidReturnDraft({ ...bidReturnDraft, taxRate: event.target.value })} />
-                </label>
-                <label>
-                  {ot('Received date')}
-                  <input required type="date" max={futureDateInput(1)} value={bidReturnDraft.receivedAt} onChange={(event) => setBidReturnDraft({ ...bidReturnDraft, receivedAt: event.target.value })} />
-                </label>
-                <label>
-                  {ot('Valid until')}
-                  <input type="date" min={bidReturnDraft.receivedAt || futureDateInput(0)} value={bidReturnDraft.validUntil} onChange={(event) => setBidReturnDraft({ ...bidReturnDraft, validUntil: event.target.value })} />
-                </label>
-                <label>
-                  {ot('Duration days')}
-                  <input type="number" min="0" max="3650" step="1" value={bidReturnDraft.durationDays} onChange={(event) => setBidReturnDraft({ ...bidReturnDraft, durationDays: event.target.value })} />
-                </label>
-                <label>
-                  {ot('Evidence reference')}
-                  <input required minLength="3" value={bidReturnDraft.evidenceReference} onChange={(event) => setBidReturnDraft({ ...bidReturnDraft, evidenceReference: event.target.value })} placeholder={ot('Email, document or receipt reference')} />
-                </label>
-                <label className="form-span">
-                  {ot('Exclusions')}
-                  <textarea value={bidReturnDraft.exclusions} onChange={(event) => setBidReturnDraft({ ...bidReturnDraft, exclusions: event.target.value })} placeholder={ot('One exclusion per line')} />
-                </label>
-                <label className="form-span">
-                  {ot('Qualifications')}
-                  <textarea value={bidReturnDraft.qualifications} onChange={(event) => setBidReturnDraft({ ...bidReturnDraft, qualifications: event.target.value })} placeholder={ot('One qualification per line')} />
-                </label>
-              </div>
-              <div className="modal-actions">
-                <button type="button" className="secondary-button" onClick={() => setBidPackageAction(null)}>{ot('Cancel')}</button>
-                <button className="primary-button" disabled={submitting || Number(bidReturnDraft.netAmount) <= 0 || bidReturnDraft.evidenceReference.trim().length < 3}>
-                  {submitting ? ot('Saving...') : ot('Retain return evidence')}
-                </button>
-              </div>
-            </form>
-          </section>
-        </div>
+        <DeferredActionDialog locale={operatorLocale} title={<>{ot('Record bid return')}</>} onClose={() => setBidPackageAction(null)}>
+<BidReturnModalDialog bidPackageAction={bidPackageAction} bidReturnDraft={bidReturnDraft} ot={ot} setBidPackageAction={setBidPackageAction} setBidReturnDraft={setBidReturnDraft} submitBidReturn={submitBidReturn} submitting={submitting} />
+</DeferredActionDialog>
       ) : null}
 
       {bidPackageAction?.type === 'selection' ? (
-        <div className="modal-backdrop bid-package-backdrop" role="presentation">
-          <section className="modal bid-selection-modal" role="dialog" aria-modal="true" aria-labelledby="bid-selection-modal-title" data-testid="bid-selection-modal">
-            <div className="modal-heading">
-              <div>
-                <h2 id="bid-selection-modal-title">{ot('Request preferred-bidder approval')}</h2>
-                <p>{bidPackageAction.participant.partner?.name} / {currency.format(bidPackageAction.participant.total || 0)}</p>
-              </div>
-              <button className="icon-button" aria-label={ot('Close bid selection')} onClick={() => setBidPackageAction(null)}><X size={18} /></button>
-            </div>
-            <form onSubmit={submitBidSelection}>
-              <div className="bid-selection-review">
-                <div><span>{ot('Package')}</span><strong>{bidPackageAction.bidPackage.packageNumber} / {bidPackageAction.bidPackage.title}</strong></div>
-                <div><span>{ot('Comparison')}</span><strong>{ot('{count} returns, {amount} spread', { count: bidPackageAction.bidPackage.comparison.returned, amount: currency.format(bidPackageAction.bidPackage.comparison.spread || 0) })}</strong></div>
-                <div><span>{ot('Safeguard')}</span><strong>{ot('Approval records preference only; it cannot award, order, spend, or send.')}</strong></div>
-              </div>
-              <div className="form-grid bid-selection-form">
-                <label className="form-span">
-                  {ot('Selection rationale')}
-                  <textarea required minLength="8" maxLength="1000" value={bidSelectionRationale} onChange={(event) => setBidSelectionRationale(event.target.value)} placeholder={ot('Compare price, scope, exclusions, programme, quality, risk, and compliance.')} />
-                </label>
-              </div>
-              <div className="modal-actions">
-                <button type="button" className="secondary-button" onClick={() => setBidPackageAction(null)}>{ot('Cancel')}</button>
-                <button className="primary-button" disabled={submitting || bidSelectionRationale.trim().length < 8}>
-                  {submitting ? ot('Requesting...') : ot('Request selection approval')}
-                </button>
-              </div>
-            </form>
-          </section>
-        </div>
+        <DeferredActionDialog locale={operatorLocale} title={<>{ot('Request preferred-bidder approval')}</>} onClose={() => setBidPackageAction(null)}>
+<BidSelectionModalDialog bidPackageAction={bidPackageAction} bidSelectionRationale={bidSelectionRationale} ot={ot} setBidPackageAction={setBidPackageAction} setBidSelectionRationale={setBidSelectionRationale} submitBidSelection={submitBidSelection} submitting={submitting} />
+</DeferredActionDialog>
       ) : null}
 
       {bidPackageAction?.type === 'commitment' ? (
-        <div className="modal-backdrop bid-package-backdrop" role="presentation">
-          <section
-            className="modal bid-commitment-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="bid-commitment-modal-title"
-            data-testid="bid-commitment-modal"
-            onKeyDown={(event) => {
-              if (event.key === 'Escape' && !submitting) setBidPackageAction(null)
-            }}
-          >
-            <div className="modal-heading">
-              <div>
-                <p className="eyebrow">{ot('Selected-bid control')}</p>
-                <h2 id="bid-commitment-modal-title">{ot('Prepare purchasing commitment')}</h2>
-                <p>{bidPackageAction.bidPackage.packageNumber} / {bidPackageAction.bidPackage.selectedParticipant?.partner?.name}</p>
-              </div>
-              <button className="icon-button" aria-label={ot('Close purchasing commitment')} onClick={() => setBidPackageAction(null)}><X size={18} /></button>
-            </div>
-            <form onSubmit={submitBidCommitment}>
-              <div className="bid-commitment-review">
-                <div><span>{ot('Selected net')}</span><strong>{currency.format(bidPackageAction.bidPackage.selectedParticipant?.netAmount || 0)}</strong></div>
-                <div><span>{ot('VAT / gross')}</span><strong>{bidPackageAction.bidPackage.selectedParticipant?.taxRate || 0}% / {currency.format(bidPackageAction.bidPackage.selectedParticipant?.total || 0)}</strong></div>
-                <div><span>{ot('Scope')}</span><strong>{bidPackageAction.bidPackage.scope}</strong></div>
-                <div><span>{ot('Source')}</span><strong>{bidPackageAction.bidPackage.selectedParticipant?.evidenceReference}</strong></div>
-              </div>
-              <div className="form-grid bid-commitment-form">
-                <label>
-                  {ot('Required by')}
-                  <input autoFocus required type="date" min={futureDateInput(1)} value={bidCommitmentDraft.requiredBy} onChange={(event) => setBidCommitmentDraft({ ...bidCommitmentDraft, requiredBy: event.target.value })} />
-                </label>
-                <label>
-                  {ot('Cost code')}
-                  <input required minLength="2" maxLength="80" value={bidCommitmentDraft.costCode} onChange={(event) => setBidCommitmentDraft({ ...bidCommitmentDraft, costCode: event.target.value })} />
-                </label>
-                <label className="form-span">
-                  {ot('Purchasing notes')}
-                  <textarea maxLength="4000" value={bidCommitmentDraft.notes} onChange={(event) => setBidCommitmentDraft({ ...bidCommitmentDraft, notes: event.target.value })} placeholder={ot('Record interfaces, required evidence, exclusions, qualifications, and reviewer context.')} />
-                </label>
-                <p className="workflow-note form-span">
-                  {ot('The selected return, scope, exclusions, qualifications, partner, amount, date, and cost code will be frozen behind SHA-256 verification. This creates an internal approval only; it cannot contact the supplier, issue an award or order, sign a subcontract, or move money.')}
-                </p>
-              </div>
-              <div className="modal-actions">
-                <button type="button" className="secondary-button" disabled={submitting} onClick={() => setBidPackageAction(null)}>{ot('Cancel')}</button>
-                <button className="primary-button" disabled={submitting || !bidCommitmentDraft.requiredBy || bidCommitmentDraft.costCode.trim().length < 2}>
-                  <ShieldCheck size={15} /> {submitting ? ot('Preparing...') : ot('Freeze and request approval')}
-                </button>
-              </div>
-            </form>
-          </section>
-        </div>
+        <DeferredActionDialog locale={operatorLocale} title={<>{ot('Prepare purchasing commitment')}</>} onClose={() => setBidPackageAction(null)}>
+<BidCommitmentModalDialog bidCommitmentDraft={bidCommitmentDraft} bidPackageAction={bidPackageAction} ot={ot} setBidCommitmentDraft={setBidCommitmentDraft} setBidPackageAction={setBidPackageAction} submitBidCommitment={submitBidCommitment} submitting={submitting} />
+</DeferredActionDialog>
       ) : null}
 
       {bidPackageAction?.type === 'order_package' ? (
-        <div className="modal-backdrop bid-package-backdrop" role="presentation">
-          <section
-            className="modal bid-order-package-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="bid-order-package-modal-title"
-            data-testid="bid-order-package-modal"
-            onKeyDown={(event) => {
-              if (event.key === 'Escape' && !submitting) setBidPackageAction(null)
-            }}
-          >
-            <div className="modal-heading">
-              <div>
-                <p className="eyebrow">{ot('Controlled order issue')}</p>
-                <h2 id="bid-order-package-modal-title">{ot('Prepare purchase-order package')}</h2>
-                <p>{bidPackageAction.bidPackage.packageNumber} / {bidPackageAction.bidPackage.commitment?.purchaseOrder?.supplier}</p>
-              </div>
-              <button className="icon-button" aria-label={ot('Close purchase-order package')} onClick={() => setBidPackageAction(null)}><X size={18} /></button>
-            </div>
-            <form onSubmit={submitBidOrderPackage}>
-              <div className="bid-commitment-review">
-                <div><span>{ot('Approved net')}</span><strong>{currency.format(bidPackageAction.bidPackage.commitment?.purchaseOrder?.amount || 0)}</strong></div>
-                <div><span>{ot('Required by')}</span><strong>{formatDate(bidPackageAction.bidPackage.commitment?.purchaseOrder?.requiredBy)}</strong></div>
-                <div><span>{ot('Source')}</span><strong>{bidPackageAction.bidPackage.commitment?.purchaseOrder?.data?.source?.terms?.costCode || 'SUBCONTRACT'}</strong></div>
-                <div><span>{ot('Integrity')}</span><strong>{bidPackageAction.bidPackage.commitment?.integrityValid ? ot('Current source verified') : ot('Source verification failed')}</strong></div>
-              </div>
-              <div className="form-grid bid-commitment-form">
-                <label>
-                  {ot('Supplier recipient')}
-                  <input
-                    autoFocus
-                    required
-                    type="email"
-                    value={bidOrderDraft.recipient}
-                    onChange={(event) => setBidOrderDraft({ ...bidOrderDraft, recipient: event.target.value })}
-                    placeholder="orders@supplier.example"
-                  />
-                </label>
-                <label>
-                  {ot('Delivery channel')}
-                  <select value={bidOrderDraft.channel} onChange={(event) => setBidOrderDraft({ ...bidOrderDraft, channel: event.target.value })}>
-                    <option value="email">{ot('Email integration')}</option>
-                    <option value="supplier_portal">{ot('Supplier portal integration')}</option>
-                  </select>
-                </label>
-                <p className="workflow-note form-span">
-                  {ot('This freezes a durable PO number plus human-readable HTML and generic OASIS UBL 2.1 Order attachments. It creates a separate transmission approval and does not send, certify Peppol delivery, sign a subcontract, or move money.')}
-                </p>
-              </div>
-              <div className="modal-actions">
-                <button type="button" className="secondary-button" disabled={submitting} onClick={() => setBidPackageAction(null)}>{ot('Cancel')}</button>
-                <button className="primary-button" disabled={submitting || !bidOrderDraft.recipient.trim()}>
-                  <PackageCheck size={15} /> {submitting ? ot('Preparing...') : ot('Freeze package and request approval')}
-                </button>
-              </div>
-            </form>
-          </section>
-        </div>
+        <DeferredActionDialog locale={operatorLocale} title={<>{ot('Prepare purchase-order package')}</>} onClose={() => setBidPackageAction(null)}>
+<BidOrderPackageModalDialog bidOrderDraft={bidOrderDraft} bidPackageAction={bidPackageAction} ot={ot} setBidOrderDraft={setBidOrderDraft} setBidPackageAction={setBidPackageAction} submitBidOrderPackage={submitBidOrderPackage} submitting={submitting} />
+</DeferredActionDialog>
       ) : null}
 
       {bidPackageAction?.type === 'order_delivery' ? (
-        <div className="modal-backdrop bid-package-backdrop" role="presentation">
-          <section
-            className="modal bid-order-delivery-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="bid-order-delivery-modal-title"
-            data-testid="bid-order-delivery-modal"
-            onKeyDown={(event) => {
-              if (event.key === 'Escape' && !submitting) setBidPackageAction(null)
-            }}
-          >
-            <div className="modal-heading">
-              <div>
-                <p className="eyebrow">{ot('Verified delivery evidence')}</p>
-                <h2 id="bid-order-delivery-modal-title">{ot('Record provider receipt')}</h2>
-                <p>{bidPackageAction.bidPackage.commitment?.issuePackage?.issueReference} / {bidPackageAction.bidPackage.commitment?.issuePackage?.communication?.data?.recipient}</p>
-              </div>
-              <button className="icon-button" aria-label={ot('Close provider receipt')} onClick={() => setBidPackageAction(null)}><X size={18} /></button>
-            </div>
-            <form onSubmit={submitBidOrderDelivery}>
-              <div className="form-grid bid-commitment-form">
-                <label>
-                  {ot('Configured integration ID')}
-                  <input
-                    autoFocus
-                    required
-                    minLength="2"
-                    maxLength="120"
-                    value={bidOrderDeliveryDraft.integration}
-                    onChange={(event) => setBidOrderDeliveryDraft({ ...bidOrderDeliveryDraft, integration: event.target.value })}
-                    placeholder="verified_supplier_gateway"
-                  />
-                </label>
-                <label>
-                  {ot('Provider message ID')}
-                  <input
-                    required
-                    minLength="3"
-                    maxLength="240"
-                    value={bidOrderDeliveryDraft.providerMessageId}
-                    onChange={(event) => setBidOrderDeliveryDraft({ ...bidOrderDeliveryDraft, providerMessageId: event.target.value })}
-                    placeholder="provider-order-000123"
-                  />
-                </label>
-                <label>
-                  {ot('Provider sent at')}
-                  <input
-                    required
-                    type="datetime-local"
-                    value={bidOrderDeliveryDraft.sentAt}
-                    onChange={(event) => setBidOrderDeliveryDraft({ ...bidOrderDeliveryDraft, sentAt: event.target.value })}
-                  />
-                </label>
-                <p className="workflow-note form-span">
-                  {ot('Record this only after the configured provider has returned delivery evidence for the approved recipient and package. This action marks the purchase order as externally committed; it does not perform the delivery itself or initiate payment.')}
-                </p>
-              </div>
-              <div className="modal-actions">
-                <button type="button" className="secondary-button" disabled={submitting} onClick={() => setBidPackageAction(null)}>{ot('Cancel')}</button>
-                <button className="primary-button" disabled={submitting || bidOrderDeliveryDraft.integration.trim().length < 2 || bidOrderDeliveryDraft.providerMessageId.trim().length < 3 || !bidOrderDeliveryDraft.sentAt}>
-                  <MailCheck size={15} /> {submitting ? ot('Recording...') : ot('Record verified receipt')}
-                </button>
-              </div>
-            </form>
-          </section>
-        </div>
+        <DeferredActionDialog locale={operatorLocale} title={<>{ot('Record provider receipt')}</>} onClose={() => setBidPackageAction(null)}>
+<BidOrderDeliveryModalDialog bidOrderDeliveryDraft={bidOrderDeliveryDraft} bidPackageAction={bidPackageAction} ot={ot} setBidOrderDeliveryDraft={setBidOrderDeliveryDraft} setBidPackageAction={setBidPackageAction} submitBidOrderDelivery={submitBidOrderDelivery} submitting={submitting} />
+</DeferredActionDialog>
       ) : null}
 
       {bidPackageAction?.type === 'add_participants' ? (
-        <div className="modal-backdrop bid-package-backdrop" role="presentation">
-          <section className="modal bid-add-participants-modal" role="dialog" aria-modal="true" aria-labelledby="bid-add-participants-title" data-testid="bid-add-participants-modal">
-            <div className="modal-heading">
-              <div>
-                <h2 id="bid-add-participants-title">{ot('Add internal bidders')}</h2>
-                <p>{bidPackageAction.bidPackage.packageNumber} / {ot('no invitation or message will be sent')}</p>
-              </div>
-              <button className="icon-button" aria-label={ot('Close add bidders')} onClick={() => setBidPackageAction(null)}><X size={18} /></button>
-            </div>
-            <form onSubmit={submitBidParticipants}>
-              <fieldset className="bid-partner-picker bid-add-partner-picker">
-                <legend>{ot('Available trade partners')}</legend>
-                <div>
-                  {(data.tradePartners || EMPTY_LIST)
-                    .filter((partner) => partner.status === 'active' && !bidPackageAction.bidPackage.participants.some((participant) => participant.tradePartnerId === partner.id))
-                    .map((partner) => (
-                      <label key={partner.id}>
-                        <input
-                          type="checkbox"
-                          checked={bidAddPartnerIds.includes(partner.id)}
-                          onChange={(event) => setBidAddPartnerIds((current) => event.target.checked ? [...current, partner.id] : current.filter((id) => id !== partner.id))}
-                        />
-                        <span><strong>{partner.name}</strong><small>{ot(String(partner.partnerType || 'supplier').replaceAll('_', ' '))} / {ot(String(partner.compliance?.status || 'needs_review').replaceAll('_', ' '))}</small></span>
-                      </label>
-                    ))}
-                </div>
-              </fieldset>
-              <div className="modal-actions">
-                <button type="button" className="secondary-button" onClick={() => setBidPackageAction(null)}>{ot('Cancel')}</button>
-                <button className="primary-button" disabled={submitting || !bidAddPartnerIds.length}>{submitting ? ot('Adding...') : ot('Add bidders internally')}</button>
-              </div>
-            </form>
-          </section>
-        </div>
+        <DeferredActionDialog locale={operatorLocale} title={<>{ot('Add internal bidders')}</>} onClose={() => setBidPackageAction(null)}>
+<BidAddParticipantsModalDialog bidAddPartnerIds={bidAddPartnerIds} bidPackageAction={bidPackageAction} data={data} ot={ot} setBidAddPartnerIds={setBidAddPartnerIds} setBidPackageAction={setBidPackageAction} submitBidParticipants={submitBidParticipants} submitting={submitting} />
+</DeferredActionDialog>
       ) : null}
 
-      {showIntake ? (
-        <div className="modal-backdrop" role="presentation">
-          <section className="modal" role="dialog" aria-modal="true" aria-labelledby="intake-title">
-            <div className="modal-heading">
-              <div>
-                <h2 id="intake-title">New intake</h2>
-                <p>Create an auditable local job record.</p>
-              </div>
-              <button className="icon-button" aria-label="Close intake" onClick={() => setShowIntake(false)}>
-                <X size={18} />
-              </button>
-            </div>
-            <form onSubmit={createIntake}>
-              <div className="form-grid">
-                <label>
-                  Client name
-                  <input
-                    required
-                    value={intake.clientName}
-                    onChange={(event) => setIntake({ ...intake, clientName: event.target.value })}
-                  />
-                </label>
-                <label>
-                  Job title
-                  <input required value={intake.title} onChange={(event) => setIntake({ ...intake, title: event.target.value })} />
-                </label>
-                <label>
-                  Service
-                  <input
-                    value={intake.service}
-                    onChange={(event) => setIntake({ ...intake, service: event.target.value })}
-                    placeholder="Renovation, maintenance..."
-                  />
-                </label>
-                <label>
-                  Location
-                  <input value={intake.address} onChange={(event) => setIntake({ ...intake, address: event.target.value })} />
-                </label>
-                <label>
-                  Priority
-                  <select value={intake.priority} onChange={(event) => setIntake({ ...intake, priority: event.target.value })}>
-                    <option value="low">Low</option>
-                    <option value="medium">Medium</option>
-                    <option value="high">High</option>
-                    <option value="critical">Critical</option>
-                  </select>
-                </label>
-                <label className="form-span">
-                  Scope
-                  <textarea
-                    value={intake.description}
-                    onChange={(event) => setIntake({ ...intake, description: event.target.value })}
-                    placeholder="Describe the work, constraints and desired timing."
-                  />
-                </label>
-              </div>
-              <div className="modal-actions">
-                <button type="button" className="secondary-button" onClick={() => setShowIntake(false)}>
-                  Cancel
-                </button>
-                <button className="primary-button" disabled={submitting}>
-                  {submitting ? 'Saving...' : 'Create intake'}
-                </button>
-              </div>
-            </form>
-          </section>
-        </div>
+      {canCoordinate ? (
+        <IntakeDialog key={outboxScope} open={showIntake} scope={outboxScope} enabled={draftRecoveryEnabled}
+          submitting={submitting} onClose={() => setShowIntake(false)} onSave={createIntake}
+          onCreated={() => { setShowIntake(false); void refresh() }} />
       ) : null}
       {materialReceiptEditor ? (
-        <div className="modal-backdrop" role="presentation">
-          <section className="modal material-receipt-modal" role="dialog" aria-modal="true" aria-labelledby="material-receipt-title" data-testid="material-receipt-modal">
-            <div className="modal-heading">
-              <div>
-                <p className="eyebrow">Immutable goods-receipt evidence</p>
-                <h2 id="material-receipt-title">Record material delivery</h2>
-                <p>Accepted quantities update material readiness; every exception remains visible to operations and finance.</p>
-              </div>
-              <button type="button" className="icon-button" aria-label="Close material receipt" onClick={closeMaterialReceiptEditor}><X size={18} /></button>
-            </div>
-            <form onSubmit={saveMaterialReceipt}>
-              <div className="form-grid">
-                <label>
-                  Job
-                  <select required disabled={Boolean(materialReceiptDraft.purchaseOrderId)} value={materialReceiptDraft.jobId} onChange={(event) => setMaterialReceiptDraft({ ...materialReceiptDraft, jobId: event.target.value })}>
-                    <option value="">Select an active job</option>
-                    {activeJobs.map((job) => <option key={job.id} value={job.id}>{job.title}</option>)}
-                  </select>
-                </label>
-                <label>
-                  Delivery-note reference
-                  <input autoFocus required minLength="3" maxLength="160" value={materialReceiptDraft.receiptReference} onChange={(event) => setMaterialReceiptDraft({ ...materialReceiptDraft, receiptReference: event.target.value })} />
-                </label>
-                <label>
-                  Delivered at
-                  <input required type="datetime-local" max={toLocalDateTimeInput(new Date())} value={materialReceiptDraft.deliveredAt} onChange={(event) => setMaterialReceiptDraft({ ...materialReceiptDraft, deliveredAt: event.target.value })} />
-                </label>
-                <label>
-                  Received by
-                  <input required minLength="2" maxLength="160" value={materialReceiptDraft.receivedBy} onChange={(event) => setMaterialReceiptDraft({ ...materialReceiptDraft, receivedBy: event.target.value })} />
-                </label>
-                <label>
-                  Location
-                  <input maxLength="240" value={materialReceiptDraft.location} onChange={(event) => setMaterialReceiptDraft({ ...materialReceiptDraft, location: event.target.value })} />
-                </label>
-                <label className="form-span">
-                  Evidence reference
-                  <input required minLength="3" maxLength="240" value={materialReceiptDraft.evidenceReference} onChange={(event) => setMaterialReceiptDraft({ ...materialReceiptDraft, evidenceReference: event.target.value })} placeholder="Signed ticket, photo, or private document reference" />
-                </label>
-                <div className="form-span material-receipt-lines">
-                  <div className="panel-heading">
-                    <div><h3>Delivered lines</h3><p>Accepted plus damaged cannot exceed the physically received quantity.</p></div>
-                    <button type="button" className="secondary-button" onClick={() => setMaterialReceiptDraft({ ...materialReceiptDraft, lines: [...materialReceiptDraft.lines, emptyMaterialReceiptLine()] })}><Plus size={15} /> Add line</button>
-                  </div>
-                  {materialReceiptDraft.lines.map((line, index) => (
-                    <div className="form-grid material-receipt-line" key={`${line.lineKey || 'manual'}-${index}`}>
-                      <label>Item<input required minLength="2" maxLength="240" value={line.itemName} onChange={(event) => setMaterialReceiptDraft({ ...materialReceiptDraft, lines: materialReceiptDraft.lines.map((item, itemIndex) => itemIndex === index ? { ...item, itemName: event.target.value } : item) })} /></label>
-                      <label>Unit<input required maxLength="40" value={line.unit} onChange={(event) => setMaterialReceiptDraft({ ...materialReceiptDraft, lines: materialReceiptDraft.lines.map((item, itemIndex) => itemIndex === index ? { ...item, unit: event.target.value } : item) })} /></label>
-                      <label>Received<input required type="number" min="0.000001" step="any" value={line.receivedQuantity} onChange={(event) => setMaterialReceiptDraft({ ...materialReceiptDraft, lines: materialReceiptDraft.lines.map((item, itemIndex) => itemIndex === index ? { ...item, receivedQuantity: event.target.value } : item) })} /></label>
-                      <label>Accepted<input required type="number" min="0" step="any" value={line.acceptedQuantity} onChange={(event) => setMaterialReceiptDraft({ ...materialReceiptDraft, lines: materialReceiptDraft.lines.map((item, itemIndex) => itemIndex === index ? { ...item, acceptedQuantity: event.target.value } : item) })} /></label>
-                      <label>Damaged<input required type="number" min="0" step="any" value={line.damagedQuantity} onChange={(event) => setMaterialReceiptDraft({ ...materialReceiptDraft, lines: materialReceiptDraft.lines.map((item, itemIndex) => itemIndex === index ? { ...item, damagedQuantity: event.target.value } : item) })} /></label>
-                      {materialReceiptDraft.lines.length > 1 ? <button type="button" className="icon-button" title="Remove line" aria-label={`Remove delivery line ${index + 1}`} onClick={() => setMaterialReceiptDraft({ ...materialReceiptDraft, lines: materialReceiptDraft.lines.filter((_, itemIndex) => itemIndex !== index) })}><X size={16} /></button> : null}
-                    </div>
-                  ))}
-                </div>
-                <label className="form-span">Notes<textarea maxLength="4000" value={materialReceiptDraft.notes} onChange={(event) => setMaterialReceiptDraft({ ...materialReceiptDraft, notes: event.target.value })} /></label>
-                <label className="checkbox-label form-span"><input type="checkbox" checked={materialReceiptDraft.finalDelivery} onChange={(event) => setMaterialReceiptDraft({ ...materialReceiptDraft, finalDelivery: event.target.checked })} /> This is the final delivery against the order</label>
-                <p className="workflow-note form-span">Saving retains the ticket and derives discrepancy evidence. It does not contact a supplier, accept commercial terms, or authorize payment.</p>
-              </div>
-              <div className="modal-actions">
-                <button type="button" className="secondary-button" disabled={submitting} onClick={closeMaterialReceiptEditor}>Cancel</button>
-                <button className="primary-button" disabled={submitting}><PackageCheck size={15} /> {submitting ? 'Recording...' : 'Retain delivery'}</button>
-              </div>
-            </form>
-          </section>
-        </div>
+        <DeferredActionDialog locale={operatorLocale} title={<>Record material delivery</>} onClose={closeMaterialReceiptEditor}>
+<MaterialReceiptModalDialog activeJobs={activeJobs} closeMaterialReceiptEditor={closeMaterialReceiptEditor} emptyMaterialReceiptLine={emptyMaterialReceiptLine} materialReceiptDraft={materialReceiptDraft} saveMaterialReceipt={saveMaterialReceipt} setMaterialReceiptDraft={setMaterialReceiptDraft} submitting={submitting} />
+</DeferredActionDialog>
       ) : null}
       {materialReceiptReversal ? (
-        <div className="modal-backdrop" role="presentation">
-          <section className="modal" role="dialog" aria-modal="true" aria-labelledby="material-receipt-reversal-title">
-            <div className="modal-heading">
-              <div><p className="eyebrow">Compensating ledger action</p><h2 id="material-receipt-reversal-title">Request receipt reversal</h2><p>{materialReceiptReversal.receiptReference} / {materialReceiptReversal.jobTitle}</p></div>
-              <button type="button" className="icon-button" aria-label="Close receipt reversal" onClick={() => setMaterialReceiptReversal(null)}><X size={18} /></button>
-            </div>
-            <form onSubmit={requestMaterialReceiptReversal}>
-              <label>Reason<textarea autoFocus required minLength="8" maxLength="1000" value={materialReceiptReversalReason} onChange={(event) => setMaterialReceiptReversalReason(event.target.value)} placeholder="Explain the wrong allocation, duplicate ticket, or corrected evidence." /></label>
-              <p className="workflow-note">The original ticket remains in history. Quantities stay active until an approver accepts the reversal, and active supplier payables block reversal.</p>
-              <div className="modal-actions"><button type="button" className="secondary-button" disabled={submitting} onClick={() => setMaterialReceiptReversal(null)}>Cancel</button><button className="danger-button" disabled={submitting || materialReceiptReversalReason.trim().length < 8}><ShieldCheck size={15} /> {submitting ? 'Requesting...' : 'Request reversal'}</button></div>
-            </form>
-          </section>
-        </div>
+        <DeferredActionDialog locale={operatorLocale} title={<>Request receipt reversal</>} onClose={() => setMaterialReceiptReversal(null)}>
+<MaterialReceiptReversalDialog materialReceiptReversal={materialReceiptReversal} materialReceiptReversalReason={materialReceiptReversalReason} requestMaterialReceiptReversal={requestMaterialReceiptReversal} setMaterialReceiptReversal={setMaterialReceiptReversal} setMaterialReceiptReversalReason={setMaterialReceiptReversalReason} submitting={submitting} />
+</DeferredActionDialog>
       ) : null}
       {resourceAction ? (
-        <div className="modal-backdrop" role="presentation">
-          <section
-            className="modal resource-control-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="resource-control-title"
-            data-testid="resource-control-modal"
-          >
-            <div className="modal-heading">
-              <div>
-                <p className="eyebrow">Retained resource control</p>
-                <h2 id="resource-control-title">{resourceAction.label}</h2>
-                <p>
-                  {resourceAction.item.jobTitle} /{' '}
-                  {resourceAction.material?.name ||
-                    resourceAction.procurementOrder?.supplier ||
-                    resourceActionDraft.workerName ||
-                    'Resource record'}
-                </p>
-              </div>
-              <button className="icon-button" aria-label="Close resource control" onClick={closeResourceControl}>
-                <X size={18} />
-              </button>
-            </div>
-            <form onSubmit={submitResourceControl}>
-              <div className="form-grid">
-                <div className="field-record-context form-span">
-                  <span>Queue state</span>
-                  <strong>{formatStatus(resourceAction.item.workforceStatus || resourceAction.item.inventoryStatus)}</strong>
-                  <p>{resourceAction.action.label}</p>
-                </div>
-
-                {['complete_worker_orientation', 'prepare_site_access'].includes(resourceAction.action.type) ? (
-                  <>
-                    <label>
-                      Worker name
-                      <input
-                        required
-                        value={resourceActionDraft.workerName}
-                        onChange={(event) => setResourceActionDraft({ ...resourceActionDraft, workerName: event.target.value })}
-                      />
-                    </label>
-                    <label>
-                      Company
-                      <input
-                        required
-                        value={resourceActionDraft.company}
-                        onChange={(event) => setResourceActionDraft({ ...resourceActionDraft, company: event.target.value })}
-                      />
-                    </label>
-                    {resourceAction.action.type === 'complete_worker_orientation' ? (
-                      <label className="form-span">
-                        Orientation verification reference
-                        <input
-                          required
-                          value={resourceActionDraft.reference}
-                          onChange={(event) => setResourceActionDraft({ ...resourceActionDraft, reference: event.target.value })}
-                          placeholder="Induction record, credential, or signed evidence reference"
-                        />
-                      </label>
-                    ) : null}
-                  </>
-                ) : null}
-
-                {resourceAction.action.type === 'record_time_log' ? (
-                  <>
-                    <label>
-                      Worker name
-                      <input
-                        required
-                        value={resourceActionDraft.workerName}
-                        onChange={(event) => setResourceActionDraft({ ...resourceActionDraft, workerName: event.target.value })}
-                      />
-                    </label>
-                    <label>
-                      Work date
-                      <input
-                        required
-                        type="date"
-                        value={resourceActionDraft.workDate}
-                        onChange={(event) => setResourceActionDraft({ ...resourceActionDraft, workDate: event.target.value })}
-                      />
-                    </label>
-                    <label>
-                      Hours
-                      <input
-                        required
-                        type="number"
-                        min="0.25"
-                        max="24"
-                        step="0.25"
-                        value={resourceActionDraft.hours}
-                        onChange={(event) => setResourceActionDraft({ ...resourceActionDraft, hours: event.target.value })}
-                      />
-                    </label>
-                    <label>
-                      Hourly rate (EUR)
-                      <input
-                        required
-                        type="number"
-                        min="0"
-                        step="0.01"
-                        value={resourceActionDraft.rate}
-                        onChange={(event) => setResourceActionDraft({ ...resourceActionDraft, rate: event.target.value })}
-                      />
-                    </label>
-                    <label>
-                      Cost code
-                      <input
-                        value={resourceActionDraft.costCode}
-                        onChange={(event) => setResourceActionDraft({ ...resourceActionDraft, costCode: event.target.value })}
-                      />
-                    </label>
-                    <label>
-                      Time evidence reference
-                      <input
-                        value={resourceActionDraft.reference}
-                        onChange={(event) => setResourceActionDraft({ ...resourceActionDraft, reference: event.target.value })}
-                        placeholder="Timesheet, field report, or supervisor reference"
-                      />
-                    </label>
-                  </>
-                ) : null}
-
-                {resourceAction.action.type === 'review_material_status' ? (
-                  <>
-                    <label>
-                      Internal state
-                      <select
-                        value={resourceActionDraft.materialStatus}
-                        onChange={(event) => setResourceActionDraft({ ...resourceActionDraft, materialStatus: event.target.value })}
-                      >
-                        <option value="available">Available</option>
-                        <option value="received">Received</option>
-                        <option value="allocated">Allocated to job</option>
-                        <option value="loaded">Loaded for dispatch</option>
-                        <option value="used">Used on job</option>
-                      </select>
-                    </label>
-                    <label>
-                      Verified quantity
-                      <input
-                        required
-                        type="number"
-                        min="0.01"
-                        step="0.01"
-                        value={resourceActionDraft.availableQuantity}
-                        onChange={(event) => setResourceActionDraft({ ...resourceActionDraft, availableQuantity: event.target.value })}
-                      />
-                    </label>
-                    <label>
-                      Storage or job location
-                      <input
-                        required
-                        value={resourceActionDraft.location}
-                        onChange={(event) => setResourceActionDraft({ ...resourceActionDraft, location: event.target.value })}
-                        placeholder="Warehouse bay, vehicle, or job area"
-                      />
-                    </label>
-                    <label>
-                      Verification reference
-                      <input
-                        required
-                        value={resourceActionDraft.reference}
-                        onChange={(event) => setResourceActionDraft({ ...resourceActionDraft, reference: event.target.value })}
-                        placeholder="Delivery note, count sheet, or inspection reference"
-                      />
-                    </label>
-                  </>
-                ) : null}
-
-                {resourceAction.action.type === 'request_procurement_approval' ? (
-                  <>
-                    <label className="form-span">
-                      Trade partner
-                      <select
-                        required
-                        value={resourceActionDraft.tradePartnerId}
-                        onChange={(event) => {
-                          const partner = tradePartners.find((candidate) => candidate.id === event.target.value)
-                          setResourceActionDraft({
-                            ...resourceActionDraft,
-                            tradePartnerId: partner?.id || '',
-                            supplier: partner?.name || '',
-                          })
-                        }}
-                      >
-                        <option value="">Select a retained supplier</option>
-                        {tradePartners
-                          .filter((partner) => partner.status !== 'retired')
-                          .map((partner) => (
-                            <option key={partner.id} value={partner.id}>
-                              {partner.name} / {formatStatus(partner.compliance?.status || 'needs_review')}
-                            </option>
-                          ))}
-                      </select>
-                    </label>
-                    <div className="partner-selection-note form-span">
-                      <p>
-                        {resourceActionDraft.tradePartnerId
-                          ? 'Compliance is checked again when an approver resolves this request.'
-                          : 'A retained partner with current registration, tax, and required safety evidence is mandatory.'}
-                      </p>
-                      <button type="button" className="secondary-button" onClick={openTradePartnerDirectory}>
-                        <Building2 size={15} />
-                        Manage trade partners
-                      </button>
-                    </div>
-                    <label>
-                      Order value (EUR)
-                      <input
-                        required
-                        type="number"
-                        min="0.01"
-                        step="0.01"
-                        value={resourceActionDraft.amount}
-                        onChange={(event) => setResourceActionDraft({ ...resourceActionDraft, amount: event.target.value })}
-                      />
-                    </label>
-                    <label>
-                      Required by
-                      <input
-                        required
-                        type="date"
-                        value={resourceActionDraft.requiredBy}
-                        onChange={(event) => setResourceActionDraft({ ...resourceActionDraft, requiredBy: event.target.value })}
-                      />
-                    </label>
-                  </>
-                ) : null}
-
-                <label className="form-span">
-                  Internal evidence and notes
-                  <textarea
-                    required
-                    value={resourceActionDraft.notes}
-                    onChange={(event) => setResourceActionDraft({ ...resourceActionDraft, notes: event.target.value })}
-                    placeholder="Record what was checked, by whom, and what this status can safely be used for."
-                  />
-                </label>
-                <p className="workflow-note form-span">
-                  This screen changes retained internal evidence only. It cannot clear site access without approval, contact a worker or
-                  supplier, place an order, commit spend, or submit payroll.
-                </p>
-              </div>
-              <div className="modal-actions">
-                <button type="button" className="secondary-button" onClick={closeResourceControl}>
-                  Cancel
-                </button>
-                <button
-                  className="primary-button"
-                  disabled={
-                    submitting ||
-                    !resourceActionDraft.notes.trim() ||
-                    (resourceAction.action.type === 'request_procurement_approval' &&
-                      (!resourceActionDraft.tradePartnerId || !(Number(resourceActionDraft.amount) > 0) || !resourceActionDraft.requiredBy))
-                  }
-                >
-                  <ShieldCheck size={16} />
-                  {submitting
-                    ? ot('Recording...')
-                    : resourceAction.action.type === 'complete_worker_orientation'
-                      ? 'Request orientation approval'
-                      : resourceAction.action.type === 'prepare_site_access'
-                        ? 'Create access gate'
-                        : resourceAction.action.type === 'request_procurement_approval'
-                          ? 'Request procurement approval'
-                          : 'Record internal evidence'}
-                </button>
-              </div>
-            </form>
-          </section>
-        </div>
+        <DialogBoundary locale={operatorLocale} title={resourceAction.label} onClose={closeResourceControl}>
+        <Suspense fallback={<DialogLoading locale={operatorLocale} title={resourceAction.label} onClose={closeResourceControl} />}>
+          <ResourceActionDialog
+            resourceAction={resourceAction}
+            resourceActionDraft={resourceActionDraft}
+            closeResourceControl={closeResourceControl}
+            submitResourceControl={submitResourceControl}
+            setResourceActionDraft={setResourceActionDraft}
+            tradePartners={tradePartners}
+            openTradePartnerDirectory={openTradePartnerDirectory}
+            submitting={submitting}
+            ot={ot}
+          />
+        </Suspense>
+        </DialogBoundary>
       ) : null}
       {invoiceJob ? (
-        <div className="modal-backdrop" role="presentation">
-          <section
-            className="modal invoice-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="invoice-draft-title"
-            data-testid="invoice-draft-modal"
-          >
-            <div className="modal-heading">
-              <div>
-                <p className="eyebrow">Approval-gated finance</p>
-                <h2 id="invoice-draft-title">{invoiceJob.billingMilestone ? 'Draft milestone invoice' : 'Draft invoice'}</h2>
-                <p>
-                  {invoiceJob.jobTitle} / {invoiceJob.clientName || 'Client not set'}
-                </p>
-              </div>
-              <button className="icon-button" aria-label="Close invoice draft" onClick={closeInvoiceDraft}>
-                <X size={18} />
-              </button>
-            </div>
-            <form onSubmit={createInvoiceDraft}>
-              <div className="form-grid">
-                {invoiceJob.billingMilestone ? (
-                  <div className="workflow-result form-span" data-testid="invoice-milestone-source">
-                    <div>
-                      <strong>
-                        Milestone {invoiceJob.billingMilestone.sequenceNumber}: {invoiceJob.billingMilestone.title}
-                      </strong>
-                      <span>The approved net amount, VAT rate, and payment date are locked to this retained billing plan.</span>
-                    </div>
-                    <span className="tag tag-green">Approved source</span>
-                  </div>
-                ) : null}
-                <label>
-                  Net amount (EUR)
-                  <input
-                    required
-                    readOnly={Boolean(invoiceDraft.billingMilestoneId)}
-                    type="number"
-                    min="0.01"
-                    step="0.01"
-                    value={invoiceDraft.amount}
-                    onChange={(event) => setInvoiceDraft({ ...invoiceDraft, amount: event.target.value })}
-                  />
-                </label>
-                <label>
-                  VAT rate (%)
-                  <input
-                    required
-                    readOnly={Boolean(invoiceDraft.billingMilestoneId)}
-                    type="number"
-                    min="0"
-                    max="100"
-                    step="0.01"
-                    value={invoiceDraft.taxRate}
-                    onChange={(event) => setInvoiceDraft({ ...invoiceDraft, taxRate: event.target.value })}
-                  />
-                </label>
-                <label>
-                  Due date
-                  <input
-                    required
-                    readOnly={Boolean(invoiceDraft.billingMilestoneId)}
-                    type="date"
-                    value={invoiceDraft.dueAt}
-                    onChange={(event) => setInvoiceDraft({ ...invoiceDraft, dueAt: event.target.value })}
-                  />
-                </label>
-                <label className="checkbox-label">
-                  <input
-                    type="checkbox"
-                    checked={invoiceDraft.peppolReady}
-                    onChange={(event) => setInvoiceDraft({ ...invoiceDraft, peppolReady: event.target.checked })}
-                  />
-                  Prepare Peppol BIS / UBL 2.1 export
-                </label>
-                {invoiceDraft.peppolReady ? (
-                  <>
-                    <label>
-                      Buyer reference
-                      <input
-                        required={!invoiceDraft.purchaseOrderReference.trim()}
-                        value={invoiceDraft.buyerReference}
-                        onChange={(event) => setInvoiceDraft({ ...invoiceDraft, buyerReference: event.target.value })}
-                        placeholder="Reference supplied by the buyer"
-                      />
-                    </label>
-                    <label>
-                      Purchase-order reference
-                      <input
-                        required={!invoiceDraft.buyerReference.trim()}
-                        value={invoiceDraft.purchaseOrderReference}
-                        onChange={(event) => setInvoiceDraft({ ...invoiceDraft, purchaseOrderReference: event.target.value })}
-                      />
-                    </label>
-                    <label className="form-span">
-                      Buyer legal name
-                      <input
-                        required
-                        value={invoiceDraft.buyerLegalName}
-                        onChange={(event) => setInvoiceDraft({ ...invoiceDraft, buyerLegalName: event.target.value })}
-                      />
-                    </label>
-                    <label>
-                      Buyer KVK / OIN
-                      <input
-                        value={invoiceDraft.buyerRegistrationNumber}
-                        onChange={(event) => setInvoiceDraft({ ...invoiceDraft, buyerRegistrationNumber: event.target.value })}
-                      />
-                    </label>
-                    <label>
-                      Endpoint scheme
-                      <input
-                        required
-                        value={invoiceDraft.buyerEndpointScheme}
-                        onChange={(event) => setInvoiceDraft({ ...invoiceDraft, buyerEndpointScheme: event.target.value })}
-                        placeholder="0106 for KVK"
-                      />
-                    </label>
-                    <label>
-                      Buyer electronic address
-                      <input
-                        required
-                        value={invoiceDraft.buyerEndpointId}
-                        onChange={(event) => setInvoiceDraft({ ...invoiceDraft, buyerEndpointId: event.target.value })}
-                      />
-                    </label>
-                    <label className="form-span">
-                      Buyer street address
-                      <input
-                        required
-                        value={invoiceDraft.buyerAddress}
-                        onChange={(event) => setInvoiceDraft({ ...invoiceDraft, buyerAddress: event.target.value })}
-                      />
-                    </label>
-                    <label>
-                      Buyer postal code
-                      <input
-                        required
-                        value={invoiceDraft.buyerPostalCode}
-                        onChange={(event) => setInvoiceDraft({ ...invoiceDraft, buyerPostalCode: event.target.value })}
-                      />
-                    </label>
-                    <label>
-                      Buyer city
-                      <input
-                        required
-                        value={invoiceDraft.buyerCity}
-                        onChange={(event) => setInvoiceDraft({ ...invoiceDraft, buyerCity: event.target.value })}
-                      />
-                    </label>
-                    <label>
-                      Buyer country
-                      <input
-                        required
-                        maxLength="2"
-                        value={invoiceDraft.buyerCountry}
-                        onChange={(event) => setInvoiceDraft({ ...invoiceDraft, buyerCountry: event.target.value.toUpperCase() })}
-                      />
-                    </label>
-                  </>
-                ) : null}
-                <label className="form-span">
-                  Internal finance note
-                  <textarea
-                    value={invoiceDraft.notes}
-                    onChange={(event) => setInvoiceDraft({ ...invoiceDraft, notes: event.target.value })}
-                  />
-                </label>
-                <div className="invoice-preview form-span" aria-label="Invoice calculation">
-                  <span>
-                    Net <strong>{currency.format(invoiceAmount)}</strong>
-                  </span>
-                  <span>
-                    VAT <strong>{currency.format(invoiceTaxAmount)}</strong>
-                  </span>
-                  <span>
-                    Total <strong>{currency.format(invoiceTotal)}</strong>
-                  </span>
-                </div>
-                <p className="workflow-note form-span">
-                  This creates a retained draft and approval record only. Structured export is generated after invoice approval; delivery
-                  and Peppol transport remain blocked until separately verified.
-                </p>
-              </div>
-              <div className="modal-actions">
-                <button type="button" className="secondary-button" onClick={closeInvoiceDraft}>
-                  Cancel
-                </button>
-                <button className="primary-button" disabled={submitting || invoiceAmount <= 0}>
-                  <ReceiptEuro size={16} />
-                  {submitting ? 'Creating...' : 'Create approval-gated draft'}
-                </button>
-              </div>
-            </form>
-          </section>
-        </div>
+        <DeferredActionDialog locale={operatorLocale} title={<>{invoiceJob.billingMilestone ? 'Draft milestone invoice' : 'Draft invoice'}</>} onClose={closeInvoiceDraft}>
+<InvoiceDraftModalDialog closeInvoiceDraft={closeInvoiceDraft} createInvoiceDraft={createInvoiceDraft} invoiceAmount={invoiceAmount} invoiceDraft={invoiceDraft} invoiceJob={invoiceJob} invoiceTaxAmount={invoiceTaxAmount} invoiceTotal={invoiceTotal} setInvoiceDraft={setInvoiceDraft} submitting={submitting} />
+</DeferredActionDialog>
       ) : null}
       {clientAction ? (
-        <div className="modal-backdrop" role="presentation">
-          <section
-            className="modal client-action-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="client-action-title"
-            data-testid="client-lifecycle-modal"
-          >
-            <div className="modal-heading">
-              <div>
-                <p className="eyebrow">{ot('Retained client lifecycle')}</p>
-                <h2 id="client-action-title">{clientAction.label}</h2>
-                <p>
-                  {clientAction.item.jobTitle} / {clientAction.item.clientName || ot('Client record')}
-                </p>
-              </div>
-              <button className="icon-button" aria-label={ot('Close client lifecycle review')} onClick={closeClientLifecycle}>
-                <X size={18} />
-              </button>
-            </div>
-            <form onSubmit={submitClientLifecycle}>
-              <div className="form-grid">
-                {clientAction.type === 'selection' ? (
-                  <>
-                    <label>
-                      {ot('Retained option')}
-                      <select required value={clientActionOption} onChange={(event) => setClientActionOption(event.target.value)}>
-                        <option value="">{ot('Select the confirmed option')}</option>
-                        {(clientAction.record?.options || []).map((option) => (
-                          <option key={option} value={option}>
-                            {option}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <label>
-                      {ot('Client confirmation reference')}
-                      <input
-                        required
-                        value={clientActionReference}
-                        onChange={(event) => setClientActionReference(event.target.value)}
-                        placeholder={ot('Portal reply, signed form, email, or call record')}
-                      />
-                    </label>
-                  </>
-                ) : null}
-                <label className="form-span">
-                  {ot('Evidence and outcome')}
-                  <textarea
-                    required
-                    value={clientActionNotes}
-                    onChange={(event) => setClientActionNotes(event.target.value)}
-                    placeholder={ot('Record what was inspected, completed, agreed, or still needs review.')}
-                  />
-                </label>
-                <p className="workflow-note form-span">
-                  {clientAction.type === 'aftercare'
-                    ? ot('Completing aftercare updates the internal ledger only. It does not send a client message.')
-                    : clientAction.type === 'selection'
-                      ? ot('The selected option remains pending until an approver reviews the confirmation evidence. No procurement, scope, price, or schedule commitment is made here.')
-                      : ot('The requested resolution remains pending until an approver reviews it. No acceptance or warranty commitment is communicated from this screen.')}
-                </p>
-              </div>
-              <div className="modal-actions">
-                <button type="button" className="secondary-button" onClick={closeClientLifecycle}>
-                  Cancel
-                </button>
-                <button
-                  className="primary-button"
-                  disabled={
-                    submitting ||
-                    !clientActionNotes.trim() ||
-                    (clientAction.type === 'selection' && (!clientActionOption || !clientActionReference.trim()))
-                  }
-                >
-                  <ShieldCheck size={16} />
-                  {submitting
-                    ? 'Recording...'
-                    : clientAction.type === 'aftercare'
-                      ? ot('Complete internal follow-up')
-                      : clientAction.type === 'selection'
-                        ? ot('Request selection approval')
-                        : ot('Request resolution approval')}
-                </button>
-              </div>
-            </form>
-          </section>
-        </div>
+        <DeferredActionDialog locale={operatorLocale} title={<>{clientAction.label}</>} onClose={closeClientLifecycle}>
+<ClientLifecycleModalDialog clientAction={clientAction} clientActionNotes={clientActionNotes} clientActionOption={clientActionOption} clientActionReference={clientActionReference} closeClientLifecycle={closeClientLifecycle} ot={ot} setClientActionNotes={setClientActionNotes} setClientActionOption={setClientActionOption} setClientActionReference={setClientActionReference} submitClientLifecycle={submitClientLifecycle} submitting={submitting} />
+</DeferredActionDialog>
       ) : null}
       {financeOrderDelivery ? (
-        <div className="modal-backdrop" role="presentation">
-          <section
-            className="modal finance-order-delivery-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="finance-order-delivery-title"
-            data-testid="finance-order-delivery-modal"
-            onKeyDown={(event) => {
-              if (event.key === 'Escape' && !submitting) closeFinanceOrderDelivery()
-            }}
-          >
-            <div className="modal-heading">
-              <div>
-                <p className="eyebrow">Verified supplier delivery</p>
-                <h2 id="finance-order-delivery-title">Record provider receipt</h2>
-                <p>
-                  {financeOrderDelivery.action.issueReference || 'Purchase order'} /{' '}
-                  {financeOrderDelivery.action.recipient || financeOrderDelivery.action.supplier || 'retained supplier'}
-                </p>
-              </div>
-              <button className="icon-button" aria-label="Close order delivery" onClick={closeFinanceOrderDelivery}>
-                <X size={18} />
-              </button>
-            </div>
-            <form onSubmit={submitFinanceOrderDelivery}>
-              <div className="form-grid">
-                <label>
-                  Configured integration ID
-                  <input
-                    autoFocus
-                    required
-                    minLength="2"
-                    maxLength="120"
-                    value={financeOrderDeliveryDraft.integration}
-                    onChange={(event) =>
-                      setFinanceOrderDeliveryDraft({ ...financeOrderDeliveryDraft, integration: event.target.value })
-                    }
-                    placeholder="verified_supplier_gateway"
-                  />
-                </label>
-                <label>
-                  Provider message ID
-                  <input
-                    required
-                    minLength="3"
-                    maxLength="240"
-                    value={financeOrderDeliveryDraft.providerMessageId}
-                    onChange={(event) =>
-                      setFinanceOrderDeliveryDraft({ ...financeOrderDeliveryDraft, providerMessageId: event.target.value })
-                    }
-                    placeholder="provider-order-000123"
-                  />
-                </label>
-                <label>
-                  Provider sent at
-                  <input
-                    required
-                    type="datetime-local"
-                    value={financeOrderDeliveryDraft.sentAt}
-                    onChange={(event) =>
-                      setFinanceOrderDeliveryDraft({ ...financeOrderDeliveryDraft, sentAt: event.target.value })
-                    }
-                  />
-                </label>
-                <p className="workflow-note form-span">
-                  Record this only after the configured provider has returned delivery evidence for the approved recipient and immutable
-                  order attachments. This records an existing delivery receipt; it does not contact the supplier or initiate payment.
-                </p>
-              </div>
-              <div className="modal-actions">
-                <button type="button" className="secondary-button" disabled={submitting} onClick={closeFinanceOrderDelivery}>
-                  {ot('Cancel')}
-                </button>
-                <button
-                  className="primary-button"
-                  disabled={
-                    submitting ||
-                    financeOrderDeliveryDraft.integration.trim().length < 2 ||
-                    financeOrderDeliveryDraft.providerMessageId.trim().length < 3 ||
-                    !financeOrderDeliveryDraft.sentAt
-                  }
-                >
-                  <MailCheck size={15} /> {submitting ? 'Recording...' : 'Record verified receipt'}
-                </button>
-              </div>
-            </form>
-          </section>
-        </div>
+        <DeferredActionDialog locale={operatorLocale} title={<>Record provider receipt</>} onClose={closeFinanceOrderDelivery}>
+<FinanceOrderDeliveryModalDialog closeFinanceOrderDelivery={closeFinanceOrderDelivery} financeOrderDelivery={financeOrderDelivery} financeOrderDeliveryDraft={financeOrderDeliveryDraft} ot={ot} setFinanceOrderDeliveryDraft={setFinanceOrderDeliveryDraft} submitFinanceOrderDelivery={submitFinanceOrderDelivery} submitting={submitting} />
+</DeferredActionDialog>
       ) : null}
       {environmentalReversal ? (
-        <div className="modal-backdrop" role="presentation">
-          <section className="modal" role="dialog" aria-modal="true" aria-labelledby="environmental-reversal-title" data-testid="environmental-reversal-modal">
-            <div className="modal-heading">
-              <div>
-                <p className="eyebrow">Compensating correction</p>
-                <h2 id="environmental-reversal-title">Reverse environmental activity</h2>
-                <p>{environmentalReversal.description}</p>
-              </div>
-              <button type="button" className="icon-button" aria-label="Close environmental reversal" onClick={() => {
+        <DeferredActionDialog locale={operatorLocale} title={<>Reverse environmental activity</>} onClose={() => {
                 setEnvironmentalReversal(null)
                 setEnvironmentalReversalReason('')
               }}>
-                <X size={18} />
-              </button>
-            </div>
-            <form onSubmit={submitEnvironmentalReversal}>
-              <div className="form-grid">
-                <div className="field-record-context form-span">
-                  <span>Recognized source</span>
-                  <strong>{roundDisplay(environmentalReversal.emissionsKgCo2e)} kg CO2e</strong>
-                  <p>{roundDisplay(environmentalReversal.quantity)} {environmentalReversal.unit} / {environmentalReversal.factorSource}</p>
-                </div>
-                <label className="form-span">
-                  Correction reason
-                  <textarea required minLength="8" maxLength="1000" autoFocus value={environmentalReversalReason} onChange={(event) => setEnvironmentalReversalReason(event.target.value)} placeholder="Identify the corrected source or allocation evidence." />
-                </label>
-                <p className="workflow-note form-span">Approval removes this amount from the current recognized register only. The original activity, source evidence, factor provenance, and historical report packages remain retained.</p>
-              </div>
-              <div className="modal-actions">
-                <button type="button" className="secondary-button" disabled={submitting} onClick={() => {
-                  setEnvironmentalReversal(null)
-                  setEnvironmentalReversalReason('')
-                }}>Cancel</button>
-                <button className="primary-button" disabled={submitting || environmentalReversalReason.trim().length < 8}>
-                  <Undo2 size={16} />
-                  {submitting ? 'Requesting...' : 'Request reversal approval'}
-                </button>
-              </div>
-            </form>
-          </section>
-        </div>
+<EnvironmentalReversalModalDialog environmentalReversal={environmentalReversal} environmentalReversalReason={environmentalReversalReason} setEnvironmentalReversal={setEnvironmentalReversal} setEnvironmentalReversalReason={setEnvironmentalReversalReason} submitEnvironmentalReversal={submitEnvironmentalReversal} submitting={submitting} />
+</DeferredActionDialog>
       ) : null}
       {financeAction ? (
-        <div className="modal-backdrop" role="presentation">
-          <section
-            className="modal finance-control-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="finance-control-title"
-            data-testid="finance-control-modal"
-          >
-            <div className="modal-heading">
-              <div>
-                <p className="eyebrow">Retained finance control</p>
-                <h2 id="finance-control-title">{financeAction.label}</h2>
-                <p>
-                  {financeAction.item.jobTitle} / {financeAction.item.clientName || 'Client finance record'}
-                </p>
-              </div>
-              <button className="icon-button" aria-label="Close finance control" onClick={closeFinanceControl}>
-                <X size={18} />
-              </button>
-            </div>
-            <form onSubmit={submitFinanceControl}>
-              <div className="form-grid">
-                <div className="field-record-context form-span">
-                  <span>Ledger context</span>
-                  <strong>{formatStatus(financeAction.item.financeStatus)}</strong>
-                  <p>
-                    Contract {currency.format(financeAction.item.money?.contractValue || 0)} / unpaid{' '}
-                    {currency.format(financeAction.item.money?.unpaidValue || 0)} / received{' '}
-                    {currency.format(financeAction.item.money?.receivedValue || 0)}
-                  </p>
-                </div>
-
-                {financeAction.action.type === 'request_expense_reversal' ? (
-                  <div className="invoice-preview form-span" aria-label="Expense reversal context">
-                    <span>
-                      Receipt <strong>{financeAction.action.receiptReference || financeAction.action.expenseId}</strong>
-                    </span>
-                    <span>
-                      Vendor <strong>{financeAction.action.vendor || 'Retained vendor'}</strong>
-                    </span>
-                    <span>
-                      Gross total <strong>{currency.format(financeAction.action.totalAmount || 0)}</strong>
-                    </span>
-                    <span>
-                      Recognized cost <strong>{currency.format(financeAction.action.amount || 0)}</strong>
-                    </span>
-                  </div>
-                ) : null}
-
-                {financeAction.action.type === 'create_credit_note' ? (
-                  <>
-                    <label>
-                      Net credit amount (EUR)
-                      <input
-                        required
-                        type="number"
-                        min="0.01"
-                        max={financeAction.action.availableNetAmount || undefined}
-                        step="0.01"
-                        value={financeActionDraft.amount}
-                        onChange={(event) => setFinanceActionDraft({ ...financeActionDraft, amount: event.target.value })}
-                      />
-                    </label>
-                    <label>
-                      VAT rate (%)
-                      <input readOnly value={financeCreditTaxRate} />
-                    </label>
-                    <label className="form-span">
-                      Credit-line description
-                      <input
-                        maxLength={500}
-                        value={financeActionDraft.description}
-                        onChange={(event) => setFinanceActionDraft({ ...financeActionDraft, description: event.target.value })}
-                        placeholder={`Correction for invoice ${financeAction.action.invoiceReference || ''}`}
-                      />
-                    </label>
-                    <div className="invoice-preview form-span" aria-label="Credit note calculation">
-                      <span>
-                        Net credit <strong>{currency.format(financeControlAmount)}</strong>
-                      </span>
-                      <span>
-                        VAT correction <strong>{currency.format(financeCreditTax)}</strong>
-                      </span>
-                      <span>
-                        Total credit <strong>{currency.format(financeCreditTotal)}</strong>
-                      </span>
-                    </div>
-                    <p className="workflow-note form-span">
-                      Available invoice balance: {currency.format(financeAction.action.availableAmount || 0)}. The draft reserves that
-                      amount against concurrent payment or credit requests; only approved immutable package preparation reduces the
-                      receivable. Delivery and Peppol transport remain separately gated.
-                    </p>
-                  </>
-                ) : null}
-
-                {financeAction.action.type === 'record_supplier_invoice' ? (
-                  <>
-                    <label>
-                      Supplier
-                      <input
-                        required
-                        maxLength={240}
-                        value={financeActionDraft.vendor}
-                        onChange={(event) => setFinanceActionDraft({ ...financeActionDraft, vendor: event.target.value })}
-                      />
-                    </label>
-                    <label>
-                      Supplier invoice number
-                      <input
-                        required
-                        maxLength={120}
-                        value={financeActionDraft.invoiceNumber}
-                        onChange={(event) => setFinanceActionDraft({ ...financeActionDraft, invoiceNumber: event.target.value })}
-                      />
-                    </label>
-                    <label>
-                      Invoice date
-                      <input
-                        required
-                        type="date"
-                        value={financeActionDraft.invoiceDate}
-                        onChange={(event) => setFinanceActionDraft({ ...financeActionDraft, invoiceDate: event.target.value })}
-                      />
-                    </label>
-                    <label>
-                      Due date
-                      <input
-                        required
-                        type="date"
-                        min={financeActionDraft.invoiceDate}
-                        value={financeActionDraft.dueAt}
-                        onChange={(event) => setFinanceActionDraft({ ...financeActionDraft, dueAt: event.target.value })}
-                      />
-                    </label>
-                    <label>
-                      Net amount (EUR)
-                      <input
-                        required
-                        type="number"
-                        min="0.01"
-                        step="0.01"
-                        value={financeActionDraft.amount}
-                        onChange={(event) => setFinanceActionDraft({ ...financeActionDraft, amount: event.target.value })}
-                      />
-                    </label>
-                    <label>
-                      VAT amount (EUR)
-                      <input
-                        required
-                        type="number"
-                        min="0"
-                        step="0.01"
-                        value={financeActionDraft.taxAmount}
-                        onChange={(event) => setFinanceActionDraft({ ...financeActionDraft, taxAmount: event.target.value })}
-                      />
-                    </label>
-                    {financeAction.action.materialReceipts?.length ? (
-                      <label className="form-span">
-                        Retained goods receipt
-                        <select
-                          value={financeActionDraft.materialReceiptId}
-                          onChange={(event) => {
-                            const receipt = financeAction.action.materialReceipts.find((item) => item.id === event.target.value)
-                            setFinanceActionDraft({
-                              ...financeActionDraft,
-                              materialReceiptId: event.target.value,
-                              deliveryReference: receipt?.receiptReference || financeActionDraft.deliveryReference,
-                            })
-                          }}
-                        >
-                          <option value="">Use service or other retained evidence</option>
-                          {financeAction.action.materialReceipts.map((receipt) => (
-                            <option key={receipt.id} value={receipt.id} disabled={receipt.status !== 'received'}>
-                              {receipt.receiptReference} / {formatDate(receipt.deliveredAt)} / {formatStatus(receipt.status)}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                    ) : null}
-                    <label className="form-span">
-                      Delivery or service evidence reference
-                      <input
-                        required={!financeActionDraft.materialReceiptId}
-                        maxLength={240}
-                        value={financeActionDraft.deliveryReference}
-                        onChange={(event) => setFinanceActionDraft({ ...financeActionDraft, deliveryReference: event.target.value })}
-                        placeholder="Goods receipt, signed work ticket, or retained document reference"
-                      />
-                    </label>
-                    <div className="invoice-preview form-span" aria-label="Supplier invoice calculation">
-                      <span>
-                        Purchase commitment <strong>{currency.format(financeAction.action.committedAmount || 0)}</strong>
-                      </span>
-                      <span>
-                        Net invoice <strong>{currency.format(financeControlAmount)}</strong>
-                      </span>
-                      <span>
-                        VAT <strong>{currency.format(financeSupplierTax)}</strong>
-                      </span>
-                      <span>
-                        Total payable <strong>{currency.format(financeSupplierTotal)}</strong>
-                      </span>
-                    </div>
-                    <p className="workflow-note form-span">
-                      A current retained goods receipt enables a verified three-way match. Free-text service evidence is retained as an
-                      explicit matching exception. Supplier, currency, amount, duplicate invoice, and compliance checks still apply.
-                    </p>
-                  </>
-                ) : null}
-
-                {financeAction.action.type === 'record_supplier_payment' ? (
-                  <>
-                    <div className="field-record-context form-span">
-                      <span>Supplier payable</span>
-                      <strong>{financeAction.action.supplierInvoiceNumber || financeAction.action.supplierInvoiceId}</strong>
-                      <p>
-                        {financeAction.action.supplier || 'Retained supplier'} / available{' '}
-                        {currency.format(financeAction.action.availableAmount || financeAction.action.outstandingAmount || 0)}
-                      </p>
-                    </div>
-                    <label>
-                      Payment amount (EUR)
-                      <input
-                        required
-                        type="number"
-                        min="0.01"
-                        max={financeAction.action.availableAmount || financeAction.action.outstandingAmount || undefined}
-                        step="0.01"
-                        value={financeActionDraft.amount}
-                        onChange={(event) => setFinanceActionDraft({ ...financeActionDraft, amount: event.target.value })}
-                      />
-                    </label>
-                    <label>
-                      Payment date
-                      <input
-                        required
-                        type="date"
-                        value={financeActionDraft.paidAt}
-                        onChange={(event) => setFinanceActionDraft({ ...financeActionDraft, paidAt: event.target.value })}
-                      />
-                    </label>
-                    <label>
-                      Payment method
-                      <select
-                        value={financeActionDraft.method}
-                        onChange={(event) => setFinanceActionDraft({ ...financeActionDraft, method: event.target.value })}
-                      >
-                        <option value="bank_transfer">Bank transfer</option>
-                        <option value="direct_debit">Direct debit</option>
-                        <option value="card">Card</option>
-                        <option value="cash">Cash</option>
-                        <option value="other">Other retained evidence</option>
-                      </select>
-                    </label>
-                    <label>
-                      Bank or bookkeeping reference
-                      <input
-                        required
-                        maxLength={240}
-                        value={financeActionDraft.reference}
-                        onChange={(event) => setFinanceActionDraft({ ...financeActionDraft, reference: event.target.value })}
-                      />
-                    </label>
-                    <p className="workflow-note form-span">
-                      This confirms evidence of a payment made outside Contractor.AI. Approval is required before the payable balance
-                      changes; this action cannot initiate or schedule funds movement.
-                    </p>
-                  </>
-                ) : null}
-
-                {financeAction.action.type === 'record_payment_reconciliation' ? (
-                  <>
-                    <label>
-                      Reconciliation type
-                      <select
-                        value={financeActionDraft.outcome}
-                        onChange={(event) => setFinanceActionDraft({ ...financeActionDraft, outcome: event.target.value })}
-                      >
-                        <option value="received">Payment received</option>
-                        <option value="written_off">Approved write-off request</option>
-                      </select>
-                    </label>
-                    <label>
-                      Settlement amount (EUR)
-                      <input
-                        required
-                        type="number"
-                        min="0.01"
-                        max={financeAction.action.availableAmount || financeAction.action.outstandingAmount || undefined}
-                        step="0.01"
-                        value={financeActionDraft.amount}
-                        onChange={(event) => setFinanceActionDraft({ ...financeActionDraft, amount: event.target.value })}
-                      />
-                    </label>
-                    {financeActionDraft.outcome === 'received' ? (
-                      <>
-                        <label>
-                          Received date
-                          <input
-                            required
-                            type="date"
-                            value={financeActionDraft.paidAt}
-                            onChange={(event) => setFinanceActionDraft({ ...financeActionDraft, paidAt: event.target.value })}
-                          />
-                        </label>
-                        <label>
-                          Payment method
-                          <select
-                            value={financeActionDraft.method}
-                            onChange={(event) => setFinanceActionDraft({ ...financeActionDraft, method: event.target.value })}
-                          >
-                            <option value="bank_transfer">Bank transfer</option>
-                            <option value="card">Card</option>
-                            <option value="cash">Cash</option>
-                            <option value="direct_debit">Direct debit</option>
-                            <option value="other">Other retained evidence</option>
-                          </select>
-                        </label>
-                      </>
-                    ) : null}
-                    <label className="form-span">
-                      Payment or authority reference
-                      <input
-                        required
-                        maxLength={240}
-                        value={financeActionDraft.reference}
-                        onChange={(event) => setFinanceActionDraft({ ...financeActionDraft, reference: event.target.value })}
-                        placeholder="Bank statement ID or approved write-off authority"
-                      />
-                    </label>
-                    <p className="workflow-note form-span">
-                      Available to reconcile:{' '}
-                      {currency.format(financeAction.action.availableAmount || financeAction.action.outstandingAmount || 0)}. Approval
-                      updates the invoice to partially paid, paid, or settled; duplicate references and overpayments are refused.
-                    </p>
-                  </>
-                ) : null}
-
-                {financeAction.action.type === 'record_payment_follow_up' ? (
-                  <>
-                    <label>
-                      Outcome
-                      <select
-                        value={financeActionDraft.outcome}
-                        onChange={(event) => setFinanceActionDraft({ ...financeActionDraft, outcome: event.target.value })}
-                      >
-                        <option value="follow_up_recorded">Internal collection note</option>
-                        <option value="received">Confirm payment received</option>
-                        <option value="written_off">Request write-off</option>
-                      </select>
-                    </label>
-                    <label>
-                      Receivable amount (EUR)
-                      <input
-                        required
-                        type="number"
-                        min="0.01"
-                        step="0.01"
-                        value={financeActionDraft.amount}
-                        onChange={(event) => setFinanceActionDraft({ ...financeActionDraft, amount: event.target.value })}
-                      />
-                    </label>
-                    <label>
-                      Next follow-up date
-                      <input
-                        required
-                        type="date"
-                        value={financeActionDraft.dueAt}
-                        onChange={(event) => setFinanceActionDraft({ ...financeActionDraft, dueAt: event.target.value })}
-                      />
-                    </label>
-                    <label>
-                      Internal channel
-                      <select
-                        value={financeActionDraft.followUpChannel}
-                        onChange={(event) => setFinanceActionDraft({ ...financeActionDraft, followUpChannel: event.target.value })}
-                      >
-                        <option value="internal">Internal review</option>
-                        <option value="phone">Phone evidence</option>
-                        <option value="email">Email evidence</option>
-                        <option value="portal">Portal evidence</option>
-                      </select>
-                    </label>
-                    {financeActionDraft.outcome !== 'follow_up_recorded' ? (
-                      <label className="form-span">
-                        Payment or authority reference
-                        <input
-                          required
-                          value={financeActionDraft.reference}
-                          onChange={(event) => setFinanceActionDraft({ ...financeActionDraft, reference: event.target.value })}
-                          placeholder="Bank reference, statement ID, or approved write-off authority"
-                        />
-                      </label>
-                    ) : null}
-                  </>
-                ) : null}
-
-                {financeAction.action.type === 'prepare_finance_handoff' ? (
-                  <>
-                    <label>
-                      Bookkeeping target
-                      <select
-                        value={financeActionDraft.targetSystem}
-                        onChange={(event) => setFinanceActionDraft({ ...financeActionDraft, targetSystem: event.target.value })}
-                      >
-                        <option value="FAB">FAB</option>
-                        <option value="Exact Online">Exact Online</option>
-                        <option value="Twinfield">Twinfield</option>
-                        <option value="AFAS">AFAS</option>
-                        <option value="Internal accounting">Internal accounting</option>
-                      </select>
-                    </label>
-                    <label>
-                      Package format
-                      <select
-                        value={financeActionDraft.exportFormat}
-                        onChange={(event) => setFinanceActionDraft({ ...financeActionDraft, exportFormat: event.target.value })}
-                      >
-                        <option value="json">Structured JSON</option>
-                        <option value="csv">CSV package</option>
-                        <option value="ubl">UBL metadata</option>
-                      </select>
-                    </label>
-                  </>
-                ) : null}
-
-                {financeAction.action.type === 'record_time_expense' ? (
-                  <>
-                    <label>
-                      Record date
-                      <input
-                        required
-                        type="date"
-                        max={futureDateInput(0)}
-                        value={financeActionDraft.dueAt}
-                        onChange={(event) => setFinanceActionDraft({ ...financeActionDraft, dueAt: event.target.value })}
-                      />
-                    </label>
-                    <label>
-                      Cost code
-                      <input
-                        value={financeActionDraft.costCode}
-                        onChange={(event) => setFinanceActionDraft({ ...financeActionDraft, costCode: event.target.value })}
-                      />
-                    </label>
-                    <label>
-                      Hours
-                      <input
-                        type="number"
-                        min="0"
-                        max="24"
-                        step="0.25"
-                        value={financeActionDraft.hours}
-                        onChange={(event) => setFinanceActionDraft({ ...financeActionDraft, hours: event.target.value })}
-                      />
-                    </label>
-                    {financeControlHours > 0 ? (
-                      <label>
-                        Worker
-                        <select
-                          required
-                          value={financeActionDraft.workerId}
-                          onChange={(event) => setFinanceActionDraft({ ...financeActionDraft, workerId: event.target.value })}
-                        >
-                          <option value="">Select active worker</option>
-                          {workers
-                            .filter((worker) => !['retired', 'inactive'].includes(worker.status))
-                            .map((worker) => (
-                              <option key={worker.id} value={worker.id}>
-                                {worker.name} / {worker.role || formatStatus(worker.status)}
-                              </option>
-                            ))}
-                        </select>
-                      </label>
-                    ) : null}
-                    <label>
-                      Hourly rate (EUR)
-                      <input
-                        type="number"
-                        min="0"
-                        step="0.01"
-                        value={financeActionDraft.rate}
-                        onChange={(event) => setFinanceActionDraft({ ...financeActionDraft, rate: event.target.value })}
-                      />
-                    </label>
-                    <label>
-                      Expense amount (EUR)
-                      <input
-                        type="number"
-                        min="0"
-                        step="0.01"
-                        value={financeActionDraft.expenseAmount}
-                        onChange={(event) => setFinanceActionDraft({ ...financeActionDraft, expenseAmount: event.target.value })}
-                      />
-                    </label>
-                    <label>
-                      Expense category
-                      <select
-                        value={financeActionDraft.category}
-                        onChange={(event) => setFinanceActionDraft({ ...financeActionDraft, category: event.target.value })}
-                      >
-                        <option value="materials">Materials</option>
-                        <option value="equipment">Equipment</option>
-                        <option value="subcontractor">Subcontractor</option>
-                        <option value="travel">Travel</option>
-                        <option value="general">General</option>
-                      </select>
-                    </label>
-                    {financeControlExpense > 0 ? (
-                      <>
-                        <label>
-                          Vendor
-                          <input
-                            required
-                            value={financeActionDraft.vendor}
-                            onChange={(event) => setFinanceActionDraft({ ...financeActionDraft, vendor: event.target.value })}
-                          />
-                        </label>
-                        <label>
-                          Receipt reference
-                          <input
-                            required
-                            minLength="3"
-                            maxLength="240"
-                            value={financeActionDraft.reference}
-                            onChange={(event) => setFinanceActionDraft({ ...financeActionDraft, reference: event.target.value })}
-                          />
-                        </label>
-                        <label>
-                          VAT amount (EUR)
-                          <input
-                            required
-                            type="number"
-                            min="0"
-                            max={financeActionDraft.expenseAmount || undefined}
-                            step="0.01"
-                            value={financeActionDraft.taxAmount}
-                            onChange={(event) => setFinanceActionDraft({ ...financeActionDraft, taxAmount: event.target.value })}
-                          />
-                        </label>
-                        <label>
-                          VAT treatment
-                          <select
-                            value={financeActionDraft.taxTreatment}
-                            onChange={(event) => setFinanceActionDraft({
-                              ...financeActionDraft,
-                              taxTreatment: event.target.value,
-                              taxAmount: ['exempt', 'reverse_charge'].includes(event.target.value) ? '0' : financeActionDraft.taxAmount,
-                            })}
-                          >
-                            <option value="recoverable">Recoverable VAT</option>
-                            <option value="non_recoverable">Non-recoverable VAT</option>
-                            <option value="exempt">VAT exempt</option>
-                            <option value="reverse_charge">Reverse charge</option>
-                          </select>
-                        </label>
-                        <label>
-                          Payment method
-                          <select value={financeActionDraft.paymentMethod} onChange={(event) => setFinanceActionDraft({ ...financeActionDraft, paymentMethod: event.target.value })}>
-                            <option value="company_card">Company card</option>
-                            <option value="personal_card">Personal card</option>
-                            <option value="cash">Cash</option>
-                            <option value="bank_transfer">Bank transfer</option>
-                            <option value="direct_debit">Direct debit</option>
-                            <option value="other">Other</option>
-                          </select>
-                        </label>
-                      </>
-                    ) : null}
-                  </>
-                ) : null}
-
-                {financeAction.action.type === 'create_budget_line' ? (
-                  <>
-                    <label>
-                      Budget amount (EUR)
-                      <input
-                        required
-                        type="number"
-                        min="0.01"
-                        step="0.01"
-                        value={financeActionDraft.amount}
-                        onChange={(event) => setFinanceActionDraft({ ...financeActionDraft, amount: event.target.value })}
-                      />
-                    </label>
-                    <label>
-                      Forecast amount (EUR)
-                      <input
-                        required
-                        type="number"
-                        min="0"
-                        step="0.01"
-                        value={financeActionDraft.forecastAmount}
-                        onChange={(event) => setFinanceActionDraft({ ...financeActionDraft, forecastAmount: event.target.value })}
-                      />
-                    </label>
-                    <label>
-                      Cost code
-                      <input
-                        required
-                        value={financeActionDraft.costCode}
-                        onChange={(event) => setFinanceActionDraft({ ...financeActionDraft, costCode: event.target.value })}
-                      />
-                    </label>
-                    <label>
-                      Category
-                      <select
-                        value={financeActionDraft.category}
-                        onChange={(event) => setFinanceActionDraft({ ...financeActionDraft, category: event.target.value })}
-                      >
-                        <option value="general">General</option>
-                        <option value="labor">Labor</option>
-                        <option value="materials">Materials</option>
-                        <option value="equipment">Equipment</option>
-                        <option value="subcontractor">Subcontractor</option>
-                      </select>
-                    </label>
-                    <label className="form-span">
-                      Budget description
-                      <input
-                        required
-                        value={financeActionDraft.description}
-                        onChange={(event) => setFinanceActionDraft({ ...financeActionDraft, description: event.target.value })}
-                      />
-                    </label>
-                  </>
-                ) : null}
-
-                {financeAction.action.type === 'create_billing_milestone' ? (
-                  <>
-                    <label>
-                      Net milestone (EUR)
-                      <input
-                        required
-                        type="number"
-                        min="0.01"
-                        step="0.01"
-                        value={financeActionDraft.amount}
-                        onChange={(event) => setFinanceActionDraft({ ...financeActionDraft, amount: event.target.value })}
-                      />
-                    </label>
-                    <label>
-                      VAT rate (%)
-                      <input
-                        required
-                        type="number"
-                        min="0"
-                        max="100"
-                        step="0.01"
-                        value={financeActionDraft.taxRate}
-                        onChange={(event) => setFinanceActionDraft({ ...financeActionDraft, taxRate: event.target.value })}
-                      />
-                    </label>
-                    <label>
-                      Planned invoice date
-                      <input
-                        required
-                        type="date"
-                        value={financeActionDraft.plannedIssueAt}
-                        onChange={(event) => setFinanceActionDraft({ ...financeActionDraft, plannedIssueAt: event.target.value })}
-                      />
-                    </label>
-                    <label>
-                      Payment due date
-                      <input
-                        required
-                        type="date"
-                        value={financeActionDraft.dueAt}
-                        onChange={(event) => setFinanceActionDraft({ ...financeActionDraft, dueAt: event.target.value })}
-                      />
-                    </label>
-                    <label className="form-span">
-                      Milestone description
-                      <input
-                        required
-                        value={financeActionDraft.description}
-                        onChange={(event) => setFinanceActionDraft({ ...financeActionDraft, description: event.target.value })}
-                      />
-                    </label>
-                    <div className="invoice-preview form-span" aria-label="Billing milestone calculation">
-                      <span>
-                        Net <strong>{currency.format(financeControlAmount)}</strong>
-                      </span>
-                      <span>
-                        VAT{' '}
-                        <strong>
-                          {currency.format(roundMoney((financeControlAmount * (Number(financeActionDraft.taxRate) || 0)) / 100))}
-                        </strong>
-                      </span>
-                      <span>
-                        Total{' '}
-                        <strong>
-                          {currency.format(roundMoney(financeControlAmount * (1 + (Number(financeActionDraft.taxRate) || 0) / 100)))}
-                        </strong>
-                      </span>
-                    </div>
-                  </>
-                ) : null}
-
-                {financeAction.action.type === 'create_draw_request' ? (
-                  <>
-                    <label>
-                      Draw amount (EUR)
-                      <input
-                        required
-                        type="number"
-                        min="0.01"
-                        step="0.01"
-                        value={financeActionDraft.amount}
-                        onChange={(event) => setFinanceActionDraft({ ...financeActionDraft, amount: event.target.value })}
-                      />
-                    </label>
-                    <label>
-                      Work complete (%)
-                      <input
-                        required
-                        type="number"
-                        min="0"
-                        max="100"
-                        step="1"
-                        value={financeActionDraft.percentComplete}
-                        onChange={(event) => setFinanceActionDraft({ ...financeActionDraft, percentComplete: event.target.value })}
-                      />
-                    </label>
-                    <label>
-                      Review due date
-                      <input
-                        required
-                        type="date"
-                        value={financeActionDraft.dueAt}
-                        onChange={(event) => setFinanceActionDraft({ ...financeActionDraft, dueAt: event.target.value })}
-                      />
-                    </label>
-                  </>
-                ) : null}
-
-                {financeAction.action.type === 'request_lien_waiver' ? (
-                  <>
-                    <label>
-                      Waiver amount (EUR)
-                      <input
-                        required
-                        type="number"
-                        min="0.01"
-                        step="0.01"
-                        value={financeActionDraft.amount}
-                        onChange={(event) => setFinanceActionDraft({ ...financeActionDraft, amount: event.target.value })}
-                      />
-                    </label>
-                    <label>
-                      Supplier or party
-                      <input
-                        required
-                        value={financeActionDraft.vendor}
-                        onChange={(event) => setFinanceActionDraft({ ...financeActionDraft, vendor: event.target.value })}
-                      />
-                    </label>
-                    <label>
-                      Waiver type
-                      <select
-                        value={financeActionDraft.waiverType}
-                        onChange={(event) => setFinanceActionDraft({ ...financeActionDraft, waiverType: event.target.value })}
-                      >
-                        <option value="conditional">Conditional</option>
-                        <option value="unconditional">Unconditional</option>
-                      </select>
-                    </label>
-                    <label>
-                      Request due date
-                      <input
-                        required
-                        type="date"
-                        value={financeActionDraft.dueAt}
-                        onChange={(event) => setFinanceActionDraft({ ...financeActionDraft, dueAt: event.target.value })}
-                      />
-                    </label>
-                  </>
-                ) : null}
-
-                <label className="form-span">
-                  Internal evidence and notes
-                  <textarea
-                    required
-                    value={financeActionDraft.notes}
-                    onChange={(event) => setFinanceActionDraft({ ...financeActionDraft, notes: event.target.value })}
-                    placeholder="Record the source evidence, calculation, collection history, receipt, or review basis."
-                    minLength={financeAction.action.type === 'request_expense_reversal' ? 8 : undefined}
-                  />
-                </label>
-                <p className="workflow-note form-span">
-                  This screen only changes the retained ledger. It cannot move funds, contact a client or supplier, submit a draw, release a
-                  waiver, or export bookkeeping data.
-                </p>
-              </div>
-              <div className="modal-actions">
-                <button type="button" className="secondary-button" onClick={closeFinanceControl}>
-                  Cancel
-                </button>
-                <button className="primary-button" disabled={submitting || !financeActionDraft.notes.trim()}>
-                  <ShieldCheck size={16} />
-                  {submitting
-                    ? 'Recording...'
-                    : financeAction.action.type === 'create_credit_note'
-                      ? 'Request credit-note approval'
-                      : financeAction.action.type === 'request_expense_reversal'
-                        ? 'Request expense reversal'
-                      : financeAction.action.type === 'record_supplier_invoice'
-                        ? 'Request payable approval'
-                        : financeAction.action.type === 'record_supplier_payment'
-                          ? 'Request payment confirmation'
-                          : financeAction.action.type === 'create_billing_milestone'
-                            ? 'Request milestone approval'
-                            : financeAction.action.type === 'record_time_expense'
-                              ? 'Record ledger costs'
-                              : financeAction.action.type === 'request_lien_waiver'
-                                ? 'Retain waiver request'
-                                : financeAction.action.type === 'record_payment_follow_up' &&
-                                    financeActionDraft.outcome === 'follow_up_recorded'
-                                  ? 'Record internal follow-up'
-                                  : 'Request approver review'}
-                </button>
-              </div>
-            </form>
-          </section>
-        </div>
+        <DialogBoundary locale={operatorLocale} title={financeAction.label} onClose={closeFinanceControl}>
+        <Suspense fallback={<DialogLoading locale={operatorLocale} title={financeAction.label} onClose={closeFinanceControl} />}>
+          <FinanceActionDialog
+            financeAction={financeAction}
+            closeFinanceControl={closeFinanceControl}
+            submitFinanceControl={submitFinanceControl}
+            financeActionDraft={financeActionDraft}
+            setFinanceActionDraft={setFinanceActionDraft}
+            financeCreditTaxRate={financeCreditTaxRate}
+            financeControlAmount={financeControlAmount}
+            financeCreditTax={financeCreditTax}
+            financeCreditTotal={financeCreditTotal}
+            financeSupplierTax={financeSupplierTax}
+            financeSupplierTotal={financeSupplierTotal}
+            financeControlHours={financeControlHours}
+            workers={workers}
+            financeControlExpense={financeControlExpense}
+            roundMoney={roundMoney}
+            submitting={submitting}
+          />
+        </Suspense>
+        </DialogBoundary>
       ) : null}
       {fieldAction ? (
-        <div className="modal-backdrop" role="presentation">
-          <section
-            className="modal field-action-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="field-action-title"
-            data-testid="field-assurance-modal"
-          >
-            <div className="modal-heading">
-              <div>
-                <p className="eyebrow">{ot('Retained assurance review')}</p>
-                <h2 id="field-action-title">{fieldAction.label}</h2>
-                <p>
-                  {fieldAction.item.jobTitle} /{' '}
-                  {fieldAction.record?.title ||
-                    fieldAction.record?.material ||
-                    fieldAction.record?.workerName ||
-                    ot(formatStatus(fieldAction.type))}
-                </p>
-              </div>
-              <button className="icon-button" aria-label={ot('Close assurance review')} onClick={closeFieldReview}>
-                <X size={18} />
-              </button>
-            </div>
-            <form onSubmit={submitFieldReview}>
-              <div className="form-grid">
-                <div className="field-record-context form-span">
-                  <span>{ot('Current state')}</span>
-                  <strong>{ot(formatStatus(fieldAction.record?.status))}</strong>
-                  {fieldAction.record?.question ? <p>{fieldAction.record.question}</p> : null}
-                  {fieldAction.record?.workerName ? (
-                    <p>
-                      {ot('Worker')}: {fieldAction.record.workerName}
-                      {fieldAction.record.company ? ' / ' + fieldAction.record.company : ''}
-                    </p>
-                  ) : null}
-                  {fieldAction.record?.hazards?.length ? (
-                    <p>
-                      {fieldAction.record.hazards.length === 1
-                        ? ot('{count} hazard retained with controls for review.', { count: fieldAction.record.hazards.length })
-                        : ot('{count} hazards retained with controls for review.', { count: fieldAction.record.hazards.length })}
-                    </p>
-                  ) : null}
-                  {fieldAction.record?.defects?.length ? (
-                    <p>
-                      {fieldAction.record.defects.length === 1
-                        ? ot('{count} retained defect requires resolution evidence.', { count: fieldAction.record.defects.length })
-                        : ot('{count} retained defects require resolution evidence.', { count: fieldAction.record.defects.length })}
-                    </p>
-                  ) : null}
-                  {fieldAction.record?.expiresAt ? <p>{ot('Current expiry')}: {formatDate(fieldAction.record.expiresAt)}</p> : null}
-                </div>
-                {['permit', 'sds'].includes(fieldAction.type) ? (
-                  <label>
-                    {fieldAction.type === 'sds' ? ot('SDS expiry') : ot('Proposed expiry')}
-                    <input required type="date" value={fieldActionDate} onChange={(event) => setFieldActionDate(event.target.value)} />
-                  </label>
-                ) : null}
-                {fieldAction.type === 'sds' ? (
-                  <label className="form-span">
-                    {ot('SDS document reference')}
-                    <input
-                      required
-                      value={fieldActionReference}
-                      onChange={(event) => setFieldActionReference(event.target.value)}
-                      placeholder={ot('Storage reference, controlled document ID, or verified source')}
-                    />
-                  </label>
-                ) : null}
-                {fieldAction.type === 'safety_meeting' ? (
-                  <label className="form-span">
-                    {ot('Attendees')}
-                    <input
-                      required
-                      value={fieldActionReference}
-                      onChange={(event) => setFieldActionReference(event.target.value)}
-                      placeholder={ot('Names or retained attendance reference')}
-                    />
-                  </label>
-                ) : null}
-                {fieldAction.type === 'orientation' ? (
-                  <label className="form-span">
-                    {ot('Verification reference')}
-                    <input
-                      required
-                      value={fieldActionReference}
-                      onChange={(event) => setFieldActionReference(event.target.value)}
-                      placeholder={ot('Induction record, credential, or checked evidence reference')}
-                    />
-                  </label>
-                ) : null}
-                {fieldAction.type === 'document' ? (
-                  <label className="form-span">
-                    {ot('Document review reference')}
-                    <input
-                      required
-                      value={fieldActionReference}
-                      onChange={(event) => setFieldActionReference(event.target.value)}
-                      placeholder={ot('Controlled document revision, reviewer record, or storage reference')}
-                    />
-                  </label>
-                ) : null}
-                <label className="form-span">
-                  {fieldAction.type === 'rfi' ? ot('Response and evidence') : ot('Evidence and decision')}
-                  <textarea
-                    required
-                    value={fieldActionNotes}
-                    onChange={(event) => setFieldActionNotes(event.target.value)}
-                    placeholder={ot('Record the source, inspection, corrective work, or decision evidence an approver should rely on.')}
-                  />
-                </label>
-                <p className="workflow-note form-span">
-                  {ot('This records a proposed lifecycle transition. Field reliance, acceptance, publication, and external commitments remain blocked until the approval is resolved.')}
-                </p>
-              </div>
-              <div className="modal-actions">
-                <button type="button" className="secondary-button" onClick={closeFieldReview}>
-                  {ot('Cancel')}
-                </button>
-                <button
-                  className="primary-button"
-                  disabled={
-                    submitting ||
-                    !fieldActionNotes.trim() ||
-                    (['permit', 'sds'].includes(fieldAction.type) && !fieldActionDate) ||
-                    (['sds', 'safety_meeting', 'orientation', 'document'].includes(fieldAction.type) && !fieldActionReference.trim())
-                  }
-                >
-                  <ShieldCheck size={16} />
-                  {submitting ? ot('Recording...') : ot('Request approver review')}
-                </button>
-              </div>
-            </form>
-          </section>
-        </div>
+        <DeferredActionDialog locale={operatorLocale} title={<>{fieldAction.label}</>} onClose={closeFieldReview}>
+<FieldAssuranceModalDialog closeFieldReview={closeFieldReview} fieldAction={fieldAction} fieldActionDate={fieldActionDate} fieldActionNotes={fieldActionNotes} fieldActionReference={fieldActionReference} ot={ot} setFieldActionDate={setFieldActionDate} setFieldActionNotes={setFieldActionNotes} setFieldActionReference={setFieldActionReference} submitFieldReview={submitFieldReview} submitting={submitting} />
+</DeferredActionDialog>
       ) : null}
       {automationControlDialog ? (
         <Suspense fallback={null}>
@@ -19952,157 +14049,9 @@ function App() {
         </Suspense>
       ) : null}
       {showResourcePlanner && selectedJob ? (
-        <div className="modal-backdrop resource-backdrop" role="presentation">
-          <section
-            className="modal resource-planner"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="resource-planner-title"
-            data-testid="resource-planner"
-          >
-            <div className="modal-heading">
-              <div>
-                <p className="eyebrow">Internal work plan</p>
-                <h2 id="resource-planner-title">Crew and equipment</h2>
-                <p>
-                  {selectedJob.title} · {formatDate(scheduleDraft.plannedStart)}
-                </p>
-              </div>
-              <button className="icon-button" aria-label="Close resource planner" onClick={() => setShowResourcePlanner(false)}>
-                <X size={18} />
-              </button>
-            </div>
-            <div className="resource-planner-body">
-              <p className="workflow-note">
-                Planning remains internal. Conflicts become approval records; this screen cannot contact crew, suppliers, or clients.
-              </p>
-              <div className="resource-forms">
-                <form className="form-grid compact-form" onSubmit={assignWorker}>
-                  <label className="form-span">
-                    Crew member
-                    <select
-                      aria-label="Crew member"
-                      required
-                      value={resourceDraft.workerId}
-                      onChange={(event) => setResourceDraft({ ...resourceDraft, workerId: event.target.value })}
-                    >
-                      <option value="">Select a ledger worker</option>
-                      {resourceOptions.workers.map((worker) => (
-                        <option key={worker.id} value={worker.id}>
-                          {worker.name} · {worker.role || 'Contractor'} · {formatStatus(worker.status)}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <div className="form-actions form-span">
-                    <button className="secondary-button" disabled={submitting || !resourceOptions.workers.length}>
-                      <Users size={16} />
-                      Add crew assignment
-                    </button>
-                  </div>
-                </form>
-                <form className="form-grid compact-form" onSubmit={reserveTool}>
-                  <label className="form-span">
-                    Equipment
-                    <select
-                      aria-label="Equipment"
-                      required
-                      value={resourceDraft.toolId}
-                      onChange={(event) => setResourceDraft({ ...resourceDraft, toolId: event.target.value })}
-                    >
-                      <option value="">Select registered equipment</option>
-                      {resourceOptions.tools.map((tool) => (
-                        <option key={tool.id} value={tool.id}>
-                          {tool.name} · {tool.category || 'Equipment'} · {formatStatus(tool.status)}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <div className="form-actions form-span">
-                    <button className="secondary-button" disabled={submitting || !resourceOptions.tools.length}>
-                      <Wrench size={16} />
-                      Reserve equipment
-                    </button>
-                  </div>
-                </form>
-              </div>
-              <div className="resource-ledger">
-                <section>
-                  <h3>Crew plan</h3>
-                  {selectedJob.assignments?.length ? (
-                    <div className="activity-list">
-                      {selectedJob.assignments.map((assignment) => (
-                        <div className="activity-row" key={assignment.id}>
-                          <div>
-                            <strong>
-                              {assignment.workerName || 'Ledger worker'} · {assignment.role || 'Contractor'}
-                            </strong>
-                            <small>
-                              {formatDate(assignment.scheduledStart)} · {formatStatus(assignment.status)}
-                              {assignment.requiresApproval ? ' · approval required' : ''}
-                            </small>
-                          </div>
-                          {!['released', 'cancelled', 'completed', 'closed', 'rejected', 'declined'].includes(assignment.status) ? (
-                            <button
-                              type="button"
-                              className="secondary-button"
-                              disabled={submitting}
-                              aria-label={`Release assignment for ${assignment.workerName || 'worker'}`}
-                              onClick={() => releaseAssignment(assignment.id)}
-                            >
-                              <Ban size={15} />
-                              Release
-                            </button>
-                          ) : (
-                            <span className={`status status-${assignment.status}`}>{formatStatus(assignment.status)}</span>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <p className="workflow-note">No crew member is allocated to this job window.</p>
-                  )}
-                </section>
-                <section>
-                  <h3>Equipment plan</h3>
-                  {selectedJob.tools?.length ? (
-                    <div className="activity-list">
-                      {selectedJob.tools.map((reservation) => (
-                        <div className="activity-row" key={reservation.id}>
-                          <div>
-                            <strong>{reservation.toolName}</strong>
-                            <small>
-                              {formatDate(reservation.neededFrom)} · {formatStatus(reservation.status)}
-                              {reservation.requiresApproval ? ' · approval required' : ''}
-                            </small>
-                          </div>
-                          {!['released', 'returned', 'cancelled', 'rejected', 'declined', 'completed', 'closed'].includes(
-                            reservation.status,
-                          ) ? (
-                            <button
-                              type="button"
-                              className="secondary-button"
-                              disabled={submitting}
-                              aria-label={`Release ${reservation.toolName}`}
-                              onClick={() => releaseToolReservation(reservation.id)}
-                            >
-                              <Ban size={15} />
-                              Release
-                            </button>
-                          ) : (
-                            <span className={`status status-${reservation.status}`}>{formatStatus(reservation.status)}</span>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <p className="workflow-note">No equipment is reserved for this job window.</p>
-                  )}
-                </section>
-              </div>
-            </div>
-          </section>
-        </div>
+        <DeferredActionDialog locale={operatorLocale} title={<>Crew and equipment</>} onClose={() => setShowResourcePlanner(false)}>
+<ResourcePlannerDialog assignWorker={assignWorker} releaseAssignment={releaseAssignment} releaseToolReservation={releaseToolReservation} reserveTool={reserveTool} resourceDraft={resourceDraft} resourceOptions={resourceOptions} scheduleDraft={scheduleDraft} selectedJob={selectedJob} setResourceDraft={setResourceDraft} setShowResourcePlanner={setShowResourcePlanner} submitting={submitting} />
+</DeferredActionDialog>
       ) : null}
       {mobileNavOpen ? <button className="nav-scrim" aria-label="Close navigation overlay" onClick={() => setMobileNavOpen(false)} /> : null}
     </div>

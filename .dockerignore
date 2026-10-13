@@ -6,6 +6,10 @@ release
 tmp
 .git
 .env*
+**/*.authority-key.json
+**/*.authority.json
+**/*.authority.json.*.pending
+identity-companies.json
 .pytest_cache
 coverage
 playwright-report

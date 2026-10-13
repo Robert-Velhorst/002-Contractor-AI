@@ -9,6 +9,7 @@ const test = require('node:test');
 const { ContractorOperatingLedger } = require('../operating-ledger');
 const { BACKUP_MANIFEST_V3, signBackupManifest } = require('../backup-manifest');
 const { restore, verifySqliteBackupDatabase } = require('../scripts/restore-local-backup');
+const { nodeTestEnvironment } = require('../scripts/run-node-tests');
 
 const backupSigningKey = 'contractor-ai-restore-test-backup-signing-key-2026';
 
@@ -38,6 +39,8 @@ function createBackupLedger(file, title) {
   }, { actor: 'restore_fixture' });
   const issuedAt = new Date(Date.now() - 60_000).toISOString();
   const expiresAt = new Date(Date.now() + 3_600_000).toISOString();
+  for (const kind of ['login', 'session']) ledger.db.prepare('INSERT INTO identity_runtime_sessions (kind, id_hash, sealed_payload, expires_at) VALUES (?, ?, ?, ?)')
+    .run(kind, crypto.randomBytes(32).toString('hex'), 'opaque-test-fixture', expiresAt);
   ledger.createOperatorSession({
     sessionIdHash: `session-hash-${title.replace(/[^a-z0-9]/gi, '-').toLowerCase()}`,
     operatorId: 'restore-fixture-owner',
@@ -891,7 +894,7 @@ test('backup verification rejects a migration 047 ledger with missing governed d
   );
 });
 
-test('stopped-runtime restore keeps v1 backup compatibility and creates a pre-restore safety copy', t => {
+test('stopped-runtime restore keeps v1 backup compatibility and creates a pre-restore safety copy', async t => {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'contractor-ai-restore-'));
   t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
   const backupId = '2026-07-10T13-30-00-000Z';
@@ -905,6 +908,14 @@ test('stopped-runtime restore keeps v1 backup compatibility and creates a pre-re
   const backupLedger = path.join(backupDir, 'contractor-ledger.sqlite');
   fs.writeFileSync(backupState, 'restored-state');
   const restoredJobId = createBackupLedger(backupLedger, 'Restored v1 ledger fixture');
+  const sourceLedger = new ContractorOperatingLedger({ dbFile: backupLedger });
+  const board = new (require('../work-board').WorkBoard)(sourceLedger);
+  let applicant;
+  try {
+    applicant = await board.register({ name: 'Restore worker', email: 'restore-worker@example.test', password: 'Restore passphrase 12345', phone: '0612345678', skills: ['Carpenter'], region: 'Arnhem', privacyAccepted: true });
+    board.admit(applicant.id, { reference: 'Fixture admission check' }, 'owner');
+    await board.login({ email: applicant.email, password: 'Restore passphrase 12345' });
+  } finally { sourceLedger.close(); }
   fs.writeFileSync(path.join(backupDir, 'manifest.json'), JSON.stringify({
     format: 'contractor-ai-backup-manifest/v1',
     backupId,
@@ -921,7 +932,7 @@ test('stopped-runtime restore keeps v1 backup compatibility and creates a pre-re
     '--backup-id', backupId,
     '--allow-legacy-unsigned',
     '--confirm', `RESTORE_${backupId}`
-  ], { encoding: 'utf8' });
+  ], { encoding: 'utf8', env: nodeTestEnvironment() });
   const result = JSON.parse(output);
   assert.equal(result.success, true);
   assert.equal(result.restartRequired, true);
@@ -930,12 +941,16 @@ test('stopped-runtime restore keeps v1 backup compatibility and creates a pre-re
   assert.equal(result.databaseVerification.auditIntegrity.supported, true);
   assert.equal(result.databaseVerification.auditIntegrity.valid, true);
   assert.equal(result.invalidatedOperatorSessions, 1);
+  assert.equal(result.invalidatedWorkerSessions, 1);
   assert.equal(result.deactivatedManagedOperators, 1);
   assert.equal(result.clearedAuthenticationRateLimits, 1);
   assert.equal(result.clearedApiRateLimits, 1);
   const restoredDatabase = new DatabaseSync(ledgerFile, { readOnly: true });
+  assert.equal(restoredDatabase.prepare('SELECT status FROM work_board_accounts WHERE id = ?').get(applicant.id).status, 'suspended');
+  assert.equal(restoredDatabase.prepare('SELECT revocation_reason FROM work_board_sessions WHERE account_id = ?').get(applicant.id).revocation_reason, 'database_restore');
   assert.equal(restoredDatabase.prepare('SELECT title FROM jobs WHERE id = ?').get(restoredJobId).title, 'Restored v1 ledger fixture');
   assert.equal(Number(restoredDatabase.prepare('SELECT COUNT(*) AS count FROM operator_sessions WHERE revoked_at IS NULL').get().count), 0);
+  assert.equal(Number(restoredDatabase.prepare('SELECT COUNT(*) AS count FROM identity_runtime_sessions').get().count), 0);
   assert.equal(Number(restoredDatabase.prepare("SELECT COUNT(*) AS count FROM managed_operator_accounts WHERE status = 'active'").get().count), 0);
   assert.equal(Number(restoredDatabase.prepare("SELECT COUNT(*) AS count FROM managed_operator_accounts WHERE status = 'deactivated'").get().count), 1);
   assert.equal(Number(restoredDatabase.prepare('SELECT COUNT(*) AS count FROM auth_rate_limits').get().count), 0);
@@ -988,10 +1003,11 @@ test('stopped-runtime v2 restore replaces evidence only after preserving the cur
     '--backup-id', backupId,
     '--allow-legacy-unsigned',
     '--confirm', `RESTORE_${backupId}`
-  ], { encoding: 'utf8' });
+  ], { encoding: 'utf8', env: nodeTestEnvironment() });
   const result = JSON.parse(output);
   assert.equal(result.success, true);
   assert.equal(result.evidenceRestored, true);
+  assert.equal(fs.readFileSync(stateFile, 'utf8'), 'restored-state-v2');
   assert.equal(result.restoredEvidenceFiles, 1);
   assert.equal(result.databaseVerification.valid, true);
   assert.equal(result.databaseVerification.auditIntegrity.supported, true);

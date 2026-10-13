@@ -49,6 +49,7 @@ test('permit approval, crew acceptance, stop work, closeout, and mobile layout s
   }
 
   await page.goto('/');
+  await page.getByLabel(/^(Language|Taal)$/).selectOption('en-GB');
   let panel = await openPermit(page, job.id);
   const permitTitle = `Distribution isolation permit ${suffix}`;
   await panel.getByLabel('Permit type', { exact: true }).selectOption('electrical_isolation');

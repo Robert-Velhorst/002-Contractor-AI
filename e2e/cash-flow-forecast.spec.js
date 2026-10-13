@@ -1,15 +1,24 @@
 const { test, expect } = require('@playwright/test');
 const { expectNoAxeViolations } = require('./accessibility-helpers');
+const os = require('node:os');
+const path = require('node:path');
 
 function dateInput(days) {
   return new Date(Date.now() + days * 86_400_000).toISOString().slice(0, 10);
 }
 
 test('operator retains, approves, and archives a 13-week cash-flow assumption', async ({ page }) => {
+  const pageErrors = [];
+  page.on('pageerror', error => pageErrors.push(error.message));
+  page.on('console', message => { if (message.type() === 'error') pageErrors.push(message.text()); });
+  await page.setViewportSize({ width: 1440, height: 1000 });
   const key = Date.now();
   const title = `Browser payroll reserve ${key}`;
 
   await page.goto('/');
+  await expect(page).toHaveTitle(/Contractor/i);
+  expect(new URL(page.url()).pathname).toBe('/');
+  await expect(page.locator('vite-error-overlay')).toHaveCount(0);
   await page.getByRole('button', { name: 'Finance', exact: true }).click();
 
   const finance = page.getByTestId('finance-workspace');
@@ -19,6 +28,7 @@ test('operator retains, approves, and archives a 13-week cash-flow assumption', 
   await page.getByRole('combobox', { name: 'Language' }).selectOption('nl-NL');
   await expect(cashFlow.getByRole('heading', { name: 'Liquiditeitsprognose voor 13 weken' })).toBeVisible();
   await expect(cashFlow.getByLabel('Beginsaldo kas')).toBeVisible();
+  await cashFlow.getByTestId('cash-flow-week-row').nth(2).hover();
   await expectNoAxeViolations(page, 'Dutch cash-flow forecast');
   await page.reload();
   await page.getByRole('button', { name: 'Financien', exact: true }).click();
@@ -27,8 +37,11 @@ test('operator retains, approves, and archives a 13-week cash-flow assumption', 
   await expect(cashFlow.getByRole('heading', { name: '13-week cash-flow forecast' })).toBeVisible();
 
   await cashFlow.getByLabel('Opening cash').fill('2500');
+  await expect(cashFlow.getByLabel('Opening cash')).toHaveValue('2500');
+  await expect(cashFlow.getByRole('button', { name: 'Request approval' })).toBeDisabled();
   await cashFlow.getByRole('button', { name: 'Recalculate' }).click();
   await expect(cashFlow.getByLabel('Opening cash')).toHaveValue('2500');
+  await expect(cashFlow.getByRole('button', { name: 'Request approval' })).toBeEnabled();
 
   await cashFlow.getByRole('button', { name: 'Add assumption' }).click();
   const form = cashFlow.getByTestId('cash-flow-assumption-form');
@@ -69,7 +82,12 @@ test('operator retains, approves, and archives a 13-week cash-flow assumption', 
   await expect(assumption).toHaveCount(0);
   await expect(cashFlow.locator('.tag').filter({ hasText: /CF-\d{4}-\d{6} stale/ })).toHaveCount(1);
 
+  await cashFlow.evaluate(element => element.scrollIntoView({ block: 'start' }));
+  const desktop = path.join(os.tmpdir(), `contractor-cash-flow-${key}-desktop.png`);
+  await page.screenshot({ path: desktop });
+
   await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.locator('.side-nav')).toBeHidden();
   await expect(cashFlow.getByRole('heading', { name: '13-week cash-flow forecast' })).toBeVisible();
   const containment = await page.evaluate(() => ({
     viewportWidth: window.innerWidth,
@@ -79,4 +97,9 @@ test('operator retains, approves, and archives a 13-week cash-flow assumption', 
   }));
   expect(containment.documentWidth).toBeLessThanOrEqual(containment.viewportWidth + 1);
   expect(containment.tableScrollWidth).toBeGreaterThan(containment.tableClientWidth);
+  await cashFlow.evaluate(element => element.scrollIntoView({ block: 'start' }));
+  const mobile = path.join(os.tmpdir(), `contractor-cash-flow-${key}-mobile.png`);
+  await page.screenshot({ path: mobile });
+  console.log(JSON.stringify({ cashFlowScreenshots: { desktop, mobile } }));
+  expect(pageErrors).toEqual([]);
 });

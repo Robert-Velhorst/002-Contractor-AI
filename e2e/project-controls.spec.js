@@ -11,7 +11,20 @@ async function createJob(request, title) {
     }
   });
   expect(response.ok()).toBeTruthy();
-  return response.json();
+  const intake = await response.json();
+  const upload = await request.post('/api/ledger/upload', {
+    headers: { 'Idempotency-Key': `project-control-submittal-pdf-${Date.now()}` },
+    multipart: {
+      evidenceFile: { name: 'lintel-data-sheet.pdf', mimeType: 'application/pdf',
+        buffer: Buffer.from('%PDF-1.7\n1 0 obj\n<< /Type /Catalog >>\nendobj\nLintel product data\n%%EOF') },
+      jobId: intake.job.id,
+      category: 'drawing_pdf',
+      notes: 'Verified technical data for submittal attachment test.'
+    }
+  });
+  expect(upload.ok()).toBeTruthy();
+  intake.submittalDocument = (await upload.json()).ledgerDocument;
+  return intake;
 }
 
 async function jobDetail(request, jobId) {
@@ -29,7 +42,8 @@ async function approve(request, approvalId, reason) {
 
 async function openJob(page, title) {
   await page.goto('/');
-  await expect(page.getByRole('heading', { name: 'Today' })).toBeVisible();
+  await page.getByLabel(/^(Language|Taal)$/).selectOption('en-GB');
+  await expect(page.getByRole('heading', { level: 1, exact: true, name: 'Today' })).toBeVisible();
   await page.getByRole('button', { name: `Open ${title}` }).first().click();
   const workspace = page.getByTestId('job-workspace');
   await expect(workspace.getByRole('heading', { name: title })).toBeVisible();
@@ -74,11 +88,14 @@ test('operator manages RFIs, submittals, and approval-backed controlled revision
   const submittalForm = controls.getByTestId('create-submittal-form');
   await submittalForm.getByLabel('Submittal title').fill('Lintel product data');
   await submittalForm.getByLabel('Package / spec section').fill('05 50 00');
-  await submittalForm.getByLabel('Material').fill('Galvanized steel lintel');
-  await submittalForm.getByLabel('Attachment references').fill('private:lintel-data-sheet');
+  await submittalForm.getByRole('textbox', { name: 'Material' }).fill('Galvanized steel lintel');
+  await submittalForm.getByRole('group', { name: 'Retained PDF attachments' }).getByRole('checkbox').check();
   await submittalForm.getByRole('button', { name: 'Retain submittal' }).click();
   await expect(page.getByText('Submittal draft retained for technical review.')).toBeVisible();
   const submittalRow = controls.locator('.project-control-row').filter({ hasText: 'Lintel product data' });
+  detail = await jobDetail(request, intake.job.id);
+  const retainedSubmittal = detail.submittals.find(record => record.title === 'Lintel product data');
+  expect(retainedSubmittal.attachments).toContain(intake.submittalDocument.id);
   await submittalRow.getByRole('button', { name: 'Submit' }).click();
   const submitReview = controls.getByTestId('project-control-review-form');
   await submitReview.getByRole('button', { name: 'Mark submitted' }).click();

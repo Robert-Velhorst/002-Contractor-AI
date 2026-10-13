@@ -1,10 +1,12 @@
-import { useEffect, useMemo, useState } from 'react'
+import { memo, useEffect, useMemo, useState } from 'react'
+import { companyApiUrl } from '../company-request.mjs'
 import {
   Archive,
   ArrowUpRight,
   Ban,
   Building2,
   CalendarOff,
+  CalendarClock,
   ChevronRight,
   ClipboardCheck,
   ClipboardList,
@@ -23,6 +25,7 @@ import {
   Undo2,
   Users,
   Wrench,
+  X,
 } from 'lucide-react'
 import {
   currency,
@@ -37,7 +40,11 @@ import {
 } from '../dashboard-format'
 import Empty from './EmptyState'
 import FiveSWorkspace from './FiveSWorkspace'
+import SharedMaterialStockControl from './SharedMaterialStockControl'
+import SupplierPerformanceControl from './SupplierPerformanceControl'
+import ListPagination from './ListPagination'
 import { operatorText } from '../operator-locale'
+import { useRowSearchIndex, crewSearchFields, equipmentSearchFields, partnerSearchFields, receiptSearchFields, qualificationSearchFields, availabilitySearchFields } from '../resource-search'
 
 function identityText(key, variables = {}) {
   return Object.entries(variables).reduce(
@@ -46,9 +53,25 @@ function identityText(key, variables = {}) {
   )
 }
 
+function usePagedRows(rows, query, filter) {
+  const [page, setPage] = useState(0)
+  const [pageSize, setPageSize] = useState(25)
+  const pageCount = Math.max(1, Math.ceil(rows.length / pageSize))
+  const currentPage = Math.min(page, pageCount - 1)
+  const pageRows = rows.slice(currentPage * pageSize, (currentPage + 1) * pageSize)
+
+  useEffect(() => setPage(0), [filter, query, pageSize])
+  useEffect(() => {
+    if (page !== currentPage) setPage(currentPage)
+  }, [currentPage, page])
+
+  return { pageRows, page: currentPage, pageCount, pageSize, setPage, setPageSize }
+}
+
 function WorkerDirectory({ t = identityText, workers, summary, canCoordinate, canApprove, submitting, onCreate, onEdit, onRetire, onOpenApprovals }) {
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState('active')
+  const searchIndex = useRowSearchIndex(workers, query, crewSearchFields)
   const visibleWorkers = useMemo(() => {
     const search = query.trim().toLowerCase()
     return (workers || []).filter((worker) => {
@@ -56,18 +79,10 @@ function WorkerDirectory({ t = identityText, workers, summary, canCoordinate, ca
       if (filter === 'unavailable' && (worker.status === 'retired' || worker.status === 'available')) return false
       if (filter === 'retired' && worker.status !== 'retired') return false
       if (!search) return true
-      return JSON.stringify({
-        name: worker.name,
-        role: worker.role,
-        email: worker.email,
-        phone: worker.phone,
-        homeRegion: worker.homeRegion,
-        skills: worker.skills,
-      })
-        .toLowerCase()
-        .includes(search)
+      return searchIndex.get(worker).includes(search)
     })
-  }, [filter, query, workers])
+  }, [filter, query, workers, searchIndex])
+  const pagination = usePagedRows(visibleWorkers, query, filter)
 
   return (
     <div className="trade-partner-directory worker-directory" data-testid="worker-directory" role="tabpanel">
@@ -120,7 +135,7 @@ function WorkerDirectory({ t = identityText, workers, summary, canCoordinate, ca
         ) : null}
       </div>
       <div className="trade-partner-list worker-list">
-        {visibleWorkers.map((worker) => (
+        {pagination.pageRows.map((worker) => (
           <article className="trade-partner-row worker-row" key={worker.id}>
             <div className="trade-partner-identity worker-identity">
               <span className="partner-icon">
@@ -190,6 +205,7 @@ function WorkerDirectory({ t = identityText, workers, summary, canCoordinate, ca
         {!visibleWorkers.length ? (
           <Empty title={t('No matching crew members')} detail={t('Retained people records matching this view will appear here.')} />
         ) : null}
+        <ListPagination t={t} total={visibleWorkers.length} {...pagination} />
       </div>
     </div>
   )
@@ -198,24 +214,22 @@ function WorkerDirectory({ t = identityText, workers, summary, canCoordinate, ca
 function QualificationWorkspace({ t = identityText, register, workers, canCoordinate, canApprove, submitting, onAddCredential, onCreateRequirement, onRetireRequirement, onOpenApprovals, onOpenJob }) {
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState('all')
-  const workerRows = register?.workers?.length
+  const workerRows = useMemo(() => register?.workers?.length
     ? register.workers
-    : (workers || EMPTY_LIST).map((worker) => ({ worker, qualification: worker.qualification || { credentials: [], status: 'missing' } }))
+    : (workers || EMPTY_LIST).map((worker) => ({ worker, qualification: worker.qualification || { credentials: [], status: 'missing' } })), [register?.workers, workers])
+  const searchIndex = useRowSearchIndex(workerRows, query, qualificationSearchFields)
   const visibleWorkers = useMemo(() => {
     const search = query.trim().toLowerCase()
     return workerRows.filter((row) => {
       if (filter !== 'all' && row.qualification?.status !== filter) return false
       if (!search) return true
-      return JSON.stringify({
-        name: row.worker?.name,
-        role: row.worker?.role,
-        credentials: row.qualification?.credentials?.map((item) => [item.title, item.issuer, item.credentialNumber]),
-      }).toLowerCase().includes(search)
+      return searchIndex.get(row).includes(search)
     })
-  }, [filter, query, workerRows])
+  }, [filter, query, workerRows, searchIndex])
+  const pagination = usePagedRows(visibleWorkers, query, filter)
   const summary = register?.summary || {}
   const requirements = register?.requirements || EMPTY_LIST
-  const jobsById = new Map((register?.jobs || EMPTY_LIST).map((job) => [job.jobId, job]))
+  const jobsById = useMemo(() => new Map((register?.jobs || EMPTY_LIST).map((job) => [job.jobId, job])), [register?.jobs])
 
   return (
     <div className="qualification-workspace" role="tabpanel" data-testid="qualification-workspace">
@@ -261,52 +275,11 @@ function QualificationWorkspace({ t = identityText, register, workers, canCoordi
           <span>{t(visibleWorkers.length === 1 ? '{count} worker' : '{count} workers', { count: visibleWorkers.length })}</span>
         </div>
         <div className="qualification-worker-list">
-          {visibleWorkers.map((row) => {
-            const worker = row.worker
-            const qualification = row.qualification || {}
-            const credentials = qualification.credentials || EMPTY_LIST
-            const pending = credentials.find((item) => item.status === 'pending_approval')
-            return (
-              <article className="qualification-worker-row" key={worker.id}>
-                <div className="qualification-worker-identity">
-                  <span className="qualification-icon"><ShieldCheck size={17} /></span>
-                  <div>
-                    <div className="qualification-title-line">
-                      <h4>{worker.name}</h4>
-                      <span className={`status status-${qualification.status || 'missing'}`}>{formatStatus(qualification.status || 'missing')}</span>
-                    </div>
-                    <p>{worker.role || t('Role not retained')} / {t(worker.activeAssignmentCount === 1 ? '{count} active assignment' : '{count} active assignments', { count: worker.activeAssignmentCount || 0 })}</p>
-                  </div>
-                </div>
-                <div className="credential-list">
-                  {credentials.map((credential) => (
-                    <div className="credential-line" key={credential.id}>
-                      <span className={`credential-state credential-state-${credential.status}`}>{formatStatus(credential.status)}</span>
-                      <strong>{credential.title}</strong>
-                      <span>{credential.issuer || t('Issuer not retained')}</span>
-                      <span>{credential.expiresOn ? t('Expires {date}', { date: formatDate(credential.expiresOn) }) : t('No expiry retained')}</span>
-                    </div>
-                  ))}
-                  {!credentials.length ? <span className="qualification-empty">{t('No current or pending credential evidence.')}</span> : null}
-                </div>
-                <div className="qualification-row-actions">
-                  {pending && canApprove ? (
-                    <button type="button" className="secondary-button" disabled={submitting} onClick={() => onOpenApprovals({ approvalId: pending.approvalId })}>
-                      <ClipboardCheck size={15} />
-                      {t('Review')}
-                    </button>
-                  ) : null}
-                  {canCoordinate && worker.status !== 'retired' ? (
-                    <button type="button" className="secondary-button" disabled={submitting} onClick={() => onAddCredential(worker)}>
-                      <Plus size={15} />
-                      {t(qualification.approved ? 'Add revision' : 'Add evidence')}
-                    </button>
-                  ) : null}
-                </div>
-              </article>
-            )
-          })}
+          {pagination.pageRows.map(row => (
+            <QualificationWorkerRow key={row.worker.id} row={row} t={t} canApprove={canApprove} canCoordinate={canCoordinate} submitting={submitting} onOpenApprovals={onOpenApprovals} onAddCredential={onAddCredential} />
+          ))}
           {!visibleWorkers.length ? <Empty title={t('No matching qualification records')} detail={t('Workers matching this credential state will appear here.')} /> : null}
+          <ListPagination t={t} total={visibleWorkers.length} {...pagination} />
         </div>
       </section>
 
@@ -363,10 +336,75 @@ function QualificationWorkspace({ t = identityText, register, workers, canCoordi
   )
 }
 
-function AvailabilityWorkspace({ t = identityText, register, workers, canCoordinate, canApprove, submitting, onCreate, onCancel, onOpenApprovals }) {
+const QualificationWorkerRow = memo(function QualificationWorkerRow({ row, t, canApprove, canCoordinate, submitting, onOpenApprovals, onAddCredential }) {
+  const worker = row.worker
+  const qualification = row.qualification || {}
+  const credentials = qualification.credentials || EMPTY_LIST
+  const pending = credentials.find(item => item.status === 'pending_approval')
+  return (
+    <article className="qualification-worker-row">
+      <div className="qualification-worker-identity">
+        <span className="qualification-icon"><ShieldCheck size={17} /></span>
+        <div>
+          <div className="qualification-title-line">
+            <h4>{worker.name}</h4>
+            <span className={`status status-${qualification.status || 'missing'}`}>{formatStatus(qualification.status || 'missing')}</span>
+          </div>
+          <p>{worker.role || t('Role not retained')} / {t(worker.activeAssignmentCount === 1 ? '{count} active assignment' : '{count} active assignments', { count: worker.activeAssignmentCount || 0 })}</p>
+        </div>
+      </div>
+      <div className="credential-list">
+        {credentials.map(credential => (
+          <div className="credential-line" key={credential.id}>
+            <span className={`credential-state credential-state-${credential.status}`}>{formatStatus(credential.status)}</span>
+            <strong>{credential.title}</strong>
+            <span>{credential.issuer || t('Issuer not retained')}</span>
+            <span>{credential.expiresOn ? t('Expires {date}', { date: formatDate(credential.expiresOn) }) : t('No expiry retained')}</span>
+          </div>
+        ))}
+        {!credentials.length ? <span className="qualification-empty">{t('No current or pending credential evidence.')}</span> : null}
+      </div>
+      <div className="qualification-row-actions">
+        {pending && canApprove ? (
+          <button type="button" className="secondary-button" disabled={submitting} onClick={() => onOpenApprovals({ approvalId: pending.approvalId })}>
+            <ClipboardCheck size={15} />
+            {t('Review')}
+          </button>
+        ) : null}
+        {canCoordinate && worker.status !== 'retired' ? (
+          <button type="button" className="secondary-button" disabled={submitting} onClick={() => onAddCredential(worker)}>
+            <Plus size={15} />
+            {t(qualification.approved ? 'Add revision' : 'Add evidence')}
+          </button>
+        ) : null}
+      </div>
+    </article>
+  )
+})
+
+function MaterialImpactNote({ impact, t }) {
+  const materials = (impact?.materialLines || impact?.materialShortfalls || [])
+    .filter(line => line.shortfallQuantity > 0 || line.affectedTasks?.length)
+  if (!materials.length) return null
+  const blocked = impact.schedule?.status === 'blocked' || impact.schedule?.materialBlockers?.length > 0
+  return (
+    <small className="workflow-note">
+      {materials.map(line => `${line.itemName}: ${roundDisplay(line.shortfallQuantity)} ${line.unit} ${t('short')}${line.affectedTasks?.length ? ` (${line.affectedTasks.map(task => task.title).join(', ')})` : ''}`).join('; ')}
+      {blocked ? ` / ${t('Blocked')}` : ''}
+    </small>
+  )
+}
+
+function AvailabilityWorkspace({ t = identityText, register, workers, canCoordinate, canApprove, submitting, onCreate, onCancel, onOpenApprovals, onOpenJob, onRequestAssignmentReplacement, onRequestAvailabilityReplacementPlan }) {
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState('all')
+  const [replacementDraft, setReplacementDraft] = useState(null)
+  const [replacementReason, setReplacementReason] = useState('')
+  const [planDraft, setPlanDraft] = useState(null)
+  const [planSelections, setPlanSelections] = useState({})
+  const [planReason, setPlanReason] = useState('')
   const periods = register?.periods || EMPTY_LIST
+  const searchIndex = useRowSearchIndex(periods, query, availabilitySearchFields)
   const conflictsByPeriod = useMemo(() => {
     const grouped = new Map()
     for (const conflict of register?.conflicts || EMPTY_LIST) {
@@ -386,26 +424,50 @@ function AvailabilityWorkspace({ t = identityText, register, workers, canCoordin
       if (filter === 'pending' && period.status !== 'pending_cancellation') return false
       if (filter === 'conflict' && !conflictsByPeriod.has(period.id)) return false
       if (!search) return true
-      return JSON.stringify({
-        workerName: period.workerName,
-        workerRole: period.workerRole,
-        title: period.title,
-        periodType: period.periodLabel,
-        notes: period.data?.operationalNotes,
-      }).toLowerCase().includes(search)
+      return searchIndex.get(period).includes(search)
     })
-  }, [conflictsByPeriod, filter, periods, query])
+  }, [conflictsByPeriod, filter, periods, query, searchIndex])
+  const pagination = usePagedRows(visiblePeriods, query, filter)
   const summary = register?.summary || {}
+  const conflictListComplete = register?.conflictListComplete === true
+  async function submitReplacement(event) {
+    event.preventDefault()
+    if (!replacementDraft || replacementReason.trim().length < 8 || submitting) return
+    const success = await onRequestAssignmentReplacement?.({ ...replacementDraft, reason: replacementReason.trim() })
+    if (success) {
+      setReplacementDraft(null)
+      setReplacementReason('')
+    }
+  }
+
+  async function submitReplacementPlan(event) {
+    event.preventDefault()
+    if (!planDraft || planReason.trim().length < 8 || submitting) return
+    const selections = planDraft.conflicts.map(conflict => ({
+      assignmentId: conflict.assignmentId,
+      workerId: planSelections[conflict.assignmentId],
+    }))
+    if (selections.some(item => !item.workerId)) return
+    const success = await onRequestAvailabilityReplacementPlan?.({ period: planDraft.period, selections, reason: planReason.trim() })
+    if (success) {
+      setPlanDraft(null)
+      setPlanSelections({})
+      setPlanReason('')
+    }
+  }
 
   return (
     <div className="availability-workspace" role="tabpanel" data-testid="availability-workspace">
       <div className="resource-summary availability-summary" aria-label={t('Worker availability summary')}>
-        <div><span>{t('Active periods')}</span><strong>{summary.activePeriods || 0}</strong></div>
+        <div><span>{t('Follow-up due')}</span><strong>{summary.followUpDue || 0}</strong></div>
         <div><span>{t('Unavailable now')}</span><strong>{summary.currentUnavailable || 0}</strong></div>
+        <div><span>{t('Standby now')}</span><strong>{summary.currentStandby || 0}</strong></div>
         <div><span>{t('Upcoming')}</span><strong>{summary.upcoming || 0}</strong></div>
+        <div><span>{t('Upcoming standby')}</span><strong>{summary.upcomingStandby || 0}</strong></div>
         <div><span>{t('Cancellation review')}</span><strong>{summary.pendingCancellation || 0}</strong></div>
-        <div><span>{t('Assignment conflicts')}</span><strong>{summary.assignmentConflicts || 0}</strong></div>
+        <div><span>{t('Assignment conflicts')}</span><strong>{summary.assignmentConflicts || 0}{!conflictListComplete ? '+' : ''}</strong></div>
       </div>
+      {!conflictListComplete ? <p className="availability-policy" role="status">{t('Only the first 250 availability conflicts are shown. Cross-job replacement is disabled until the complete conflict list can be reviewed.')}</p> : null}
       <div className="availability-toolbar">
         <label className="search-control">
           <Search size={16} />
@@ -437,13 +499,13 @@ function AvailabilityWorkspace({ t = identityText, register, workers, canCoordin
         <p>{t('Operational capacity only. Do not retain diagnosis, illness, HR case, payroll entitlement, or location tracking data.')}</p>
       </div>
       <div className="availability-list">
-        {visiblePeriods.map((period) => {
+        {pagination.pageRows.map((period) => {
           const conflicts = conflictsByPeriod.get(period.id) || EMPTY_LIST
           const displayState = period.status === 'pending_cancellation' ? period.status : period.phase
           return (
             <article className="availability-row" key={period.id}>
               <div className="availability-identity">
-                <span className="availability-icon"><CalendarOff size={17} /></span>
+                <span className="availability-icon">{period.periodType === 'standby' ? <CalendarClock size={17} /> : <CalendarOff size={17} />}</span>
                 <div>
                   <div className="availability-title-line">
                     <h3>{period.workerName}</h3>
@@ -455,7 +517,15 @@ function AvailabilityWorkspace({ t = identityText, register, workers, canCoordin
               </div>
               <div className="availability-window">
                 <strong>{period.title}</strong>
-                <span>{t('{start} to {end}', { start: formatDateTime(period.startsAt), end: formatDateTime(period.endsAt) })}</span>
+                {period.returnUnknown ? (
+                  <>
+                    <span>{t('Return date unknown')}</span>
+                    <small className={period.followUpDue ? 'availability-followup-due' : ''}>
+                      {t(period.followUpDue ? 'Availability follow-up due' : 'Review availability by {date}', { date: formatDate(period.followUpAt) })}
+                    </small>
+                  </>
+                ) : <span>{t('{start} to {end}', { start: formatDateTime(period.startsAt), end: formatDateTime(period.endsAt) })}</span>}
+                {period.recurrence ? <small>{t('Weekly')} / {period.recurrence.daysOfWeek.map(day => ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][day]).join(', ')} / {t('through {date}', { date: formatDate(period.recurrence.until) })}{period.nextOccurrence ? ` / ${t('Next: {date}', { date: formatDateTime(period.nextOccurrence.startsAt) })}` : ''}</small> : null}
                 {period.data?.operationalNotes ? <small>{period.data.operationalNotes}</small> : null}
               </div>
               <div className="availability-actions">
@@ -468,20 +538,137 @@ function AvailabilityWorkspace({ t = identityText, register, workers, canCoordin
                 {period.status === 'active' && canCoordinate ? (
                   <button type="button" className="secondary-button" disabled={submitting} onClick={() => onCancel(period)}>
                     <Ban size={15} />
-                    {t('Request cancellation')}
+                    {t(period.recurrence ? 'Request cancellation for full series' : period.returnUnknown ? 'Review return status' : 'Request cancellation')}
                   </button>
                 ) : null}
               </div>
+              {conflicts.length ? (
+                <section className="availability-recovery" aria-label={t('Affected assignments')}>
+                  {conflicts.length > 1 && canCoordinate && onRequestAvailabilityReplacementPlan ? (
+                    <button type="button" className="primary-button availability-plan-action" disabled={submitting || !conflictListComplete || conflicts.some(conflict => !conflict.replacementCandidates?.length)} onClick={() => {
+                      setPlanDraft({ period, conflicts })
+                      setPlanSelections(Object.fromEntries(conflicts.map(conflict => [conflict.assignmentId, ''])))
+                      setPlanReason('')
+                    }}>
+                      <ClipboardCheck size={15} />
+                      {t('Coordinate all {count} replacements', { count: conflicts.length })}
+                    </button>
+                  ) : null}
+                  {conflicts.map((conflict) => (
+                    <div className="availability-recovery-job" key={conflict.assignmentId}>
+                      <div className="availability-recovery-heading">
+                        <div>
+                          <strong>{conflict.jobTitle}</strong>
+                          <span>{t('{start} to {end}', { start: formatDateTime(conflict.scheduledStart), end: formatDateTime(conflict.scheduledEnd) })}</span>
+                        </div>
+                      </div>
+                      <MaterialImpactNote impact={conflict.disruptionImpact} t={t} />
+                      <div className="availability-candidates">
+                        {conflict.replacementCandidates?.length ? conflict.replacementCandidates.map((candidate) => (
+                          <div className="availability-candidate" key={candidate.worker.id}>
+                            <strong>{candidate.worker.name}</strong>
+                            <span>{candidate.worker.role} / {t(candidate.worker.status)}</span>
+                            {candidate.matchedSkills.length ? <small>{t('Matches: {skills}', { skills: candidate.matchedSkills.join(', ') })}</small> : null}
+                            {candidate.qualificationWarnings.map((warning) => <small key={warning} className="availability-candidate-warning">{warning}</small>)}
+                            {onOpenJob && canCoordinate ? (
+                              <button
+                                type="button"
+                                className="secondary-button availability-candidate-action"
+                                disabled={submitting}
+                                onClick={() => onOpenJob({
+                                  id: conflict.jobId,
+                                  replacementWorkerId: candidate.worker.id,
+                                  replacementScheduledStart: conflict.scheduledStart,
+                                  replacementScheduledEnd: conflict.scheduledEnd,
+                                  openResourcePlanner: true,
+                                })}
+                              >
+                                <ArrowUpRight size={15} />
+                                {t('Plan with {name}', { name: candidate.worker.name })}
+                              </button>
+                            ) : null}
+                            {canCoordinate && onRequestAssignmentReplacement ? (
+                              <button type="button" className="secondary-button availability-candidate-action" disabled={submitting} onClick={() => {
+                                setReplacementDraft({ period, conflict, candidate })
+                                setReplacementReason('')
+                              }}>
+                                <ClipboardCheck size={15} />
+                                {t('Request swap')}
+                              </button>
+                            ) : null}
+                          </div>
+                        )) : (
+                          <p className="availability-no-candidates">{t('No available replacement meets the retained role, schedule, and mandatory qualification checks.')}</p>
+                        )}
+                      </div>
+                      <p className="availability-recovery-note">{t('Suggestions exclude workers with an overlapping on-call window. Schedule, approval, safety and dispatch checks run again when you plan a replacement.')}</p>
+                    </div>
+                  ))}
+                </section>
+              ) : null}
             </article>
           )
         })}
         {!visiblePeriods.length ? (
           <Empty
             title={t('No matching availability periods')}
-            detail={t('Time-bounded operational unavailability will appear here and participate in scheduling immediately.')}
+            detail={t('Retained unavailability and return-date reviews will appear here and participate in scheduling immediately.')}
           />
         ) : null}
+        <ListPagination t={t} total={visiblePeriods.length} {...pagination} />
       </div>
+      {replacementDraft ? (
+        <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !submitting) setReplacementDraft(null) }}>
+          <form className="modal form-grid availability-replacement-dialog" role="dialog" aria-modal="true" aria-labelledby="replacement-dialog-title" onSubmit={submitReplacement}>
+            <div className="modal-heading availability-replacement-heading">
+              <div><h2 id="replacement-dialog-title">{t('Replace worker')}</h2><p>{t('Approval required to proceed.')}</p></div>
+              <button type="button" className="icon-button" aria-label={t('Close')} disabled={submitting} onClick={() => setReplacementDraft(null)}><X size={16} /></button>
+            </div>
+            <div className="resource-summary availability-replacement-summary">
+              <div><span>{t('Job')}</span><strong>{replacementDraft.conflict.jobTitle}</strong></div>
+              <div><span>{t('Now')}</span><strong>{replacementDraft.conflict.workerName}</strong></div>
+              <div><span>{t('Replacement')}</span><strong>{replacementDraft.candidate.worker.name}</strong></div>
+              <div><span>{t('Schedule')}</span><strong>{t('{start} to {end}', { start: formatDateTime(replacementDraft.conflict.scheduledStart), end: formatDateTime(replacementDraft.conflict.scheduledEnd) })}</strong></div>
+            </div>
+            <label className="availability-replacement-reason">{t('Operational reason')}
+              <textarea autoFocus required minLength="8" maxLength="1000" value={replacementReason} onChange={(event) => setReplacementReason(event.target.value)} placeholder={t('Explain the change.')} />
+            </label>
+            <div className="availability-replacement-actions">
+              <button type="button" className="secondary-button" disabled={submitting} onClick={() => setReplacementDraft(null)}>{t('Cancel')}</button>
+              <button type="submit" className="primary-button" disabled={submitting || replacementReason.trim().length < 8}><ClipboardCheck size={16} />{t('Submit for approval')}</button>
+            </div>
+          </form>
+        </div>
+      ) : null}
+      {planDraft ? (
+        <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !submitting) setPlanDraft(null) }}>
+          <form className="modal form-grid availability-replacement-dialog availability-replacement-plan-dialog" role="dialog" aria-modal="true" aria-labelledby="replacement-plan-title" onSubmit={submitReplacementPlan}>
+            <div className="modal-heading availability-replacement-heading">
+              <div><h2 id="replacement-plan-title">{t('Coordinate assignment replacements')}</h2><p>{t('{count} affected assignments / one approval', { count: planDraft.conflicts.length })}</p></div>
+              <button type="button" className="icon-button" aria-label={t('Close')} disabled={submitting} onClick={() => setPlanDraft(null)}><X size={16} /></button>
+            </div>
+            <div className="availability-plan-assignments">
+              {planDraft.conflicts.map(conflict => (
+                <label className="availability-plan-assignment" key={conflict.assignmentId}>
+                  <span><strong>{conflict.jobTitle}</strong><small>{conflict.workerName} / {t('{start} to {end}', { start: formatDateTime(conflict.scheduledStart), end: formatDateTime(conflict.scheduledEnd) })}</small></span>
+                  <select aria-label={t('Replacement for {job}', { job: conflict.jobTitle })} required value={planSelections[conflict.assignmentId] || ''} onChange={event => setPlanSelections(current => ({ ...current, [conflict.assignmentId]: event.target.value }))}>
+                    <option value="">{t('Select replacement')}</option>
+                    {conflict.replacementCandidates.map(candidate => <option key={candidate.worker.id} value={candidate.worker.id}>{candidate.worker.name} / {candidate.worker.role}</option>)}
+                  </select>
+                </label>
+              ))}
+            </div>
+            <p className="availability-recovery-note">{t('All assignments remain unchanged until approval. The complete plan is rechecked before any replacement is applied.')}</p>
+            <label className="availability-replacement-reason">{t('Operational reason')}
+              <textarea autoFocus required minLength="8" maxLength="1000" value={planReason} onChange={(event) => setPlanReason(event.target.value)} placeholder={t('Explain the operational change.')} />
+            </label>
+            <div className="availability-replacement-actions">
+              <button type="button" className="secondary-button" disabled={submitting} onClick={() => setPlanDraft(null)}>{t('Cancel')}</button>
+              <button type="submit" className="primary-button" disabled={submitting || planReason.trim().length < 8 || planDraft.conflicts.some(conflict => !planSelections[conflict.assignmentId])}><ClipboardCheck size={16} />{t('Submit plan for approval')}</button>
+            </div>
+          </form>
+        </div>
+      ) : null}
     </div>
   )
 }
@@ -505,6 +692,7 @@ function EquipmentDirectory({
 }) {
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState('active')
+  const searchIndex = useRowSearchIndex(tools, query, equipmentSearchFields)
   const visibleTools = useMemo(() => {
     const search = query.trim().toLowerCase()
     return (tools || []).filter((tool) => {
@@ -519,22 +707,10 @@ function EquipmentDirectory({
         return false
       if (filter === 'retired' && tool.status !== 'retired') return false
       if (!search) return true
-      return JSON.stringify({
-        name: tool.name,
-        category: tool.category,
-        status: tool.status,
-        homeLocation: tool.homeLocation,
-        currentLocation: tool.currentLocation,
-        serialNumber: tool.data?.serialNumber,
-        inspectionStatus: tool.inspection?.status,
-        inspectionDueAt: tool.inspection?.dueAt,
-        maintenanceStatus: tool.maintenance?.status,
-        lastMaintainedAt: tool.maintenance?.lastMaintainedAt,
-      })
-        .toLowerCase()
-        .includes(search)
+      return searchIndex.get(tool).includes(search)
     })
-  }, [filter, query, tools])
+  }, [filter, query, tools, searchIndex])
+  const pagination = usePagedRows(visibleTools, query, filter)
 
   return (
     <div className="trade-partner-directory equipment-directory" data-testid="equipment-directory" role="tabpanel">
@@ -632,7 +808,7 @@ function EquipmentDirectory({
         ) : null}
       </div>
       <div className="trade-partner-list equipment-list">
-        {visibleTools.map((tool) => (
+        {pagination.pageRows.map((tool) => (
           <article className="trade-partner-row equipment-row" key={tool.id}>
             <div className="trade-partner-identity equipment-identity">
               <span className="partner-icon">
@@ -742,6 +918,7 @@ function EquipmentDirectory({
         {!visibleTools.length ? (
           <Empty title={t('No matching equipment')} detail={t('Retained equipment records matching this view will appear here.')} />
         ) : null}
+        <ListPagination t={t} total={visibleTools.length} {...pagination} />
       </div>
     </div>
   )
@@ -750,6 +927,7 @@ function EquipmentDirectory({
 function TradePartnerDirectory({ t = identityText, partners, summary, canCoordinate, canApprove, submitting, onCreate, onEdit, onRetire, onOpenApprovals }) {
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState('active')
+  const searchIndex = useRowSearchIndex(partners, query, partnerSearchFields)
   const visiblePartners = useMemo(() => {
     const search = query.trim().toLowerCase()
     return (partners || []).filter((partner) => {
@@ -757,20 +935,10 @@ function TradePartnerDirectory({ t = identityText, partners, summary, canCoordin
       if (filter === 'attention' && !['needs_review', 'expired', 'blocked', 'expiring'].includes(partner.compliance?.status)) return false
       if (filter === 'retired' && partner.status !== 'retired') return false
       if (!search) return true
-      return JSON.stringify({
-        name: partner.name,
-        partnerType: partner.partnerType,
-        contactName: partner.contactName,
-        email: partner.email,
-        city: partner.city,
-        registrationNumber: partner.registrationNumber,
-        vatNumber: partner.vatNumber,
-        specialties: partner.specialties,
-      })
-        .toLowerCase()
-        .includes(search)
+      return searchIndex.get(partner).includes(search)
     })
-  }, [filter, partners, query])
+  }, [filter, partners, query, searchIndex])
+  const pagination = usePagedRows(visiblePartners, query, filter)
 
   return (
     <div className="trade-partner-directory" data-testid="trade-partner-directory">
@@ -823,7 +991,7 @@ function TradePartnerDirectory({ t = identityText, partners, summary, canCoordin
         ) : null}
       </div>
       <div className="trade-partner-list">
-        {visiblePartners.map((partner) => {
+        {pagination.pageRows.map((partner) => {
           const compliance = partner.compliance || { status: 'needs_review', blockers: [], warnings: [] }
           const evidenceMessage =
             compliance.blockers?.[0]?.message || compliance.warnings?.[0]?.message || t('Required partner evidence is current.')
@@ -887,6 +1055,7 @@ function TradePartnerDirectory({ t = identityText, partners, summary, canCoordin
         {!visiblePartners.length ? (
           <Empty title={t('No matching trade partners')} detail={t('Supplier and subcontractor records matching this view will appear here.')} />
         ) : null}
+        <ListPagination t={t} total={visiblePartners.length} {...pagination} />
       </div>
     </div>
   )
@@ -926,7 +1095,7 @@ function TimesheetWorkspace({
         </label>
         <div className="timesheet-toolbar-actions">
           {latestExport?.integrityValid ? (
-            <a className="secondary-button" href={latestExport.downloadPath} download>
+            <a className="secondary-button" href={companyApiUrl(latestExport.downloadPath)} download>
               <FileDown size={15} />
               {t('Download latest')}
             </a>
@@ -1016,14 +1185,25 @@ function TimesheetWorkspace({
 
 function MaterialReceivingWorkspace({ t = identityText, register, canCoordinate, canApprove, submitting, onCreate, onReverse, onOpenApprovals, onOpen }) {
   const [view, setView] = useState('active')
+  const [query, setQuery] = useState('')
+  const [sort, setSort] = useState('newest')
   const receipts = register?.receipts || EMPTY_LIST
   const purchaseOrders = register?.purchaseOrders || EMPTY_LIST
   const summary = register?.summary || {}
-  const visibleReceipts = receipts.filter((receipt) => {
-    if (view === 'active') return receipt.status !== 'reversed'
-    if (view === 'exceptions') return ['discrepancy', 'pending_reversal'].includes(receipt.status)
-    return true
-  })
+  const searchIndex = useRowSearchIndex(receipts, query, receiptSearchFields)
+  const visibleReceipts = useMemo(() => {
+    const search = query.trim().toLowerCase()
+    return receipts.filter((receipt) => {
+      if (view === 'active' && receipt.status === 'reversed') return false
+      if (view === 'exceptions' && !['discrepancy', 'pending_reversal'].includes(receipt.status)) return false
+      if (!search) return true
+      return searchIndex.get(receipt).includes(search)
+    }).sort((left, right) => {
+      const direction = sort === 'oldest' ? 1 : -1
+      return direction * (Date.parse(left.deliveredAt || '') - Date.parse(right.deliveredAt || ''))
+    })
+  }, [query, receipts, sort, view, searchIndex])
+  const pagination = usePagedRows(visibleReceipts, query, `${view}:${sort}`)
   const openPlans = purchaseOrders.filter((plan) => !plan.summary?.complete)
 
   return (
@@ -1035,6 +1215,11 @@ function MaterialReceivingWorkspace({ t = identityText, register, canCoordinate,
         <div><span>{t('Accepted units')}</span><strong>{roundDisplay(summary.acceptedQuantity || 0)}</strong></div>
       </div>
       <div className="workforce-mode-toolbar">
+        <label className="search-control">
+          <Search size={16} />
+          <span className="visually-hidden">{t('Search material receipts')}</span>
+          <input type="search" value={query} onChange={event => setQuery(event.target.value)} placeholder={t('Search receipts')} />
+        </label>
         <div className="resource-tabs" role="tablist" aria-label={t('Material receipt status')}>
           {[
             ['active', 'Active'],
@@ -1046,6 +1231,12 @@ function MaterialReceivingWorkspace({ t = identityText, register, canCoordinate,
             </button>
           ))}
         </div>
+        <label className="material-receipt-sort">{t('Sort by date')}
+          <select value={sort} onChange={event => setSort(event.target.value)}>
+            <option value="newest">{t('Newest first')}</option>
+            <option value="oldest">{t('Oldest first')}</option>
+          </select>
+        </label>
         {canCoordinate ? (
           <button type="button" className="primary-button" disabled={submitting} onClick={() => onCreate()}>
             <Plus size={15} /> {t('Record delivery')}
@@ -1077,7 +1268,9 @@ function MaterialReceivingWorkspace({ t = identityText, register, canCoordinate,
         </div>
       ) : null}
       <div className="resource-readiness-list" role="tabpanel">
-        {visibleReceipts.map((receipt) => (
+        {pagination.pageRows.map((receipt) => {
+          const impact = receipt.operationalImpact
+          return (
           <article className="resource-readiness-item" key={receipt.id} data-testid={`material-receipt-${receipt.id}`}>
             <div className="resource-readiness-copy">
               <div className="resource-readiness-title">
@@ -1087,6 +1280,7 @@ function MaterialReceivingWorkspace({ t = identityText, register, canCoordinate,
               <p>{receipt.jobTitle || receipt.jobId} / {receipt.receivedBy} / {formatDateTime(receipt.deliveredAt)}</p>
               <small>{receipt.lines?.map((line) => t('{item}: {quantity} {unit} accepted', { item: line.itemName, quantity: roundDisplay(line.acceptedQuantity), unit: line.unit })).join(' / ')}</small>
               {receipt.exceptions?.length ? <p className="workflow-note">{receipt.exceptions.map((item) => item.message).join(' ')}</p> : null}
+              <MaterialImpactNote impact={impact} t={t} />
             </div>
             <div className="timesheet-row-actions">
               <button type="button" className="icon-button" title={t('Open job')} aria-label={t('Open {name}', { name: receipt.jobTitle || t('job') })} onClick={() => onOpen(receipt.jobId)}><ChevronRight size={16} /></button>
@@ -1097,9 +1291,11 @@ function MaterialReceivingWorkspace({ t = identityText, register, canCoordinate,
               ) : null}
             </div>
           </article>
-        ))}
+          )
+        })}
         {!visibleReceipts.length ? <Empty title={t('No material receipts')} detail={t('Retained delivery tickets and discrepancy evidence will appear here.')} /> : null}
       </div>
+      <ListPagination t={t} total={visibleReceipts.length} {...pagination} />
       <p className="timesheet-policy">{t('Receipts are immutable operational evidence. Corrections use an approval-gated reversal; supplier invoices can link only to current retained receipt evidence.')}</p>
     </div>
   )
@@ -1141,6 +1337,8 @@ function ResourcesWorkspace({
   onRetireQualificationRequirement,
   onCreateAvailability,
   onCancelAvailability,
+  onRequestAssignmentReplacement,
+  onRequestAvailabilityReplacementPlan,
   onCreateMaterialReceipt,
   onReverseMaterialReceipt,
   onCreateEquipment,
@@ -1162,6 +1360,7 @@ function ResourcesWorkspace({
 }) {
   const t = (key, variables = {}) => operatorText(locale, key, variables)
   const [workforceMode, setWorkforceMode] = useState('readiness')
+  const [partnerMode, setPartnerMode] = useState('directory')
   const isWorkforce = view === 'workforce'
   const isInventory = view === 'inventory'
   const isReceiving = view === 'receiving'
@@ -1195,7 +1394,7 @@ function ResourcesWorkspace({
                 : isQualifications
                   ? t('Verify retained worker credentials, enforce role-specific job requirements, and resolve expiry or evidence gaps before site work.')
                 : isAvailability
-                  ? t('Retain time-bounded operational availability and resolve assignment conflicts before scheduling or dispatch.')
+                  ? t('Retain confirmed or unknown-return availability, track follow-ups, and resolve assignment conflicts before scheduling or dispatch.')
                 : isCrewDirectory
                   ? t('Maintain retained crew identity, availability, skills, cost, and assignment safeguards.')
                   : t('Coordinate retained crew, equipment, material, procurement, and loading records before work is committed.')}
@@ -1345,18 +1544,30 @@ function ResourcesWorkspace({
           onOpenApprovals={onOpenApprovals}
         />
       ) : isPartners ? (
-        <TradePartnerDirectory
-          t={t}
-          partners={tradePartners}
-          summary={tradePartnerSummary}
-          canCoordinate={canCoordinate}
-          canApprove={canApprove}
-          submitting={submitting}
-          onCreate={onCreatePartner}
-          onEdit={onEditPartner}
-          onRetire={onRetirePartner}
-          onOpenApprovals={onOpenApprovals}
-        />
+        <>
+          <div className="workforce-mode-toolbar">
+            <div className="resource-tabs" role="tablist" aria-label={t('Trade partner workspace')}>
+              <button type="button" role="tab" aria-selected={partnerMode === 'directory'} className={partnerMode === 'directory' ? 'resource-tab-active' : ''} onClick={() => setPartnerMode('directory')}>
+                <Building2 size={15} />{t('Partners')}
+              </button>
+              <button type="button" role="tab" aria-selected={partnerMode === 'performance'} className={partnerMode === 'performance' ? 'resource-tab-active' : ''} onClick={() => setPartnerMode('performance')}>
+                <ClipboardCheck size={15} />{t('Delivery performance')}
+              </button>
+            </div>
+          </div>
+          {partnerMode === 'performance' ? <SupplierPerformanceControl request={request} locale={locale} t={t} onOpenJob={onOpen} /> : <TradePartnerDirectory
+            t={t}
+            partners={tradePartners}
+            summary={tradePartnerSummary}
+            canCoordinate={canCoordinate}
+            canApprove={canApprove}
+            submitting={submitting}
+            onCreate={onCreatePartner}
+            onEdit={onEditPartner}
+            onRetire={onRetirePartner}
+            onOpenApprovals={onOpenApprovals}
+          />}
+        </>
       ) : isEquipment ? (
         <EquipmentDirectory
           t={t}
@@ -1386,6 +1597,9 @@ function ResourcesWorkspace({
           onCreate={onCreateAvailability}
           onCancel={onCancelAvailability}
           onOpenApprovals={onOpenApprovals}
+          onOpenJob={onOpen}
+          onRequestAssignmentReplacement={onRequestAssignmentReplacement}
+          onRequestAvailabilityReplacementPlan={onRequestAvailabilityReplacementPlan}
         />
       ) : isQualifications ? (
         <QualificationWorkspace
@@ -1416,6 +1630,7 @@ function ResourcesWorkspace({
         />
       ) : (
         <>
+          {isInventory ? <SharedMaterialStockControl request={request} locale={locale} canCoordinate={canCoordinate} submitting={submitting} t={t} /> : null}
           <div className="resource-summary" aria-label={t(isWorkforce ? 'Workforce summary' : 'Inventory summary')}>
             {isWorkforce ? (
               <>

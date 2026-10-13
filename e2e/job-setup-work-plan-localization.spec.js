@@ -47,6 +47,7 @@ test('job setup and work plan round-trip locale without rewriting retained tasks
   await expect(workPlan).toContainText(retainedEnglishTask);
   await workPlan.getByLabel('Taaktitel', { exact: true }).fill(retainedDutchTask);
   await workPlan.getByLabel('Duur (uren)', { exact: true }).fill('12');
+  await workPlan.getByLabel('Vakgroep 1', { exact: true }).fill('Timmerman');
   await workPlan.getByRole('button', { name: 'Taak toevoegen', exact: true }).click();
   await expect(workPlan).toContainText(retainedDutchTask);
   const dependencyForm = workPlan.locator('.dependency-form');
@@ -78,5 +79,7 @@ test('job setup and work plan round-trip locale without rewriting retained tasks
   expect(detailResponse.ok()).toBeTruthy();
   const detail = (await detailResponse.json()).job;
   expect(detail.tasks.map(task => task.title)).toEqual(expect.arrayContaining([retainedEnglishTask, retainedDutchTask]));
+  expect(detail.tasks.find(task => task.title === retainedDutchTask).data.requiredCrewRequirements)
+    .toEqual([{ role: 'Timmerman', count: 1 }]);
   expect(consoleErrors).toEqual([]);
 });

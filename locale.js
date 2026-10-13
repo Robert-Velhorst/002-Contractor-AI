@@ -6,6 +6,23 @@ export const SUPPORTED_LOCALES = Object.freeze([
   { value: 'en-GB', shortLabel: 'EN', label: 'English' },
 ])
 
+export function detectOperatorLocale(languages = []) {
+  const candidates = Array.isArray(languages) ? languages : [languages]
+  for (const candidate of candidates) {
+    const language = String(candidate || '').trim().toLowerCase().replace(/_/g, '-')
+    if (language === 'nl' || language.startsWith('nl-')) return 'nl-NL'
+    if (language === 'en' || language.startsWith('en-')) return 'en-GB'
+  }
+  return DEFAULT_OPERATOR_LOCALE
+}
+
+export function preferredOperatorLocale(preferences, languages = []) {
+  const browserLocale = detectOperatorLocale(languages)
+  const persisted = preferences?.isPersisted === true
+    || (preferences?.isPersisted === undefined && Boolean(preferences?.updatedAt))
+  return persisted ? normalizeLocale(preferences.locale, browserLocale) : browserLocale
+}
+
 export function normalizeLocale(value, fallback = DEFAULT_OPERATOR_LOCALE) {
   const locale = String(value || '').trim().toLowerCase().replace(/_/g, '-')
   if (locale === 'nl' || locale === 'nl-nl') return 'nl-NL'
@@ -21,12 +38,14 @@ const APP_TEXT = {
     'nav.schedule': 'Schedule',
     'nav.approvals': 'Approvals',
     'nav.dispatch': 'Dispatch',
+    'nav.recovery': 'Disruptions',
     'nav.resources': 'Resources',
     'nav.finance': 'Finance',
     'nav.performance': 'Performance',
     'nav.clients': 'Clients',
     'nav.field': 'Field updates',
     'nav.operations': 'Operations',
+    'nav.help': 'Help',
     'shell.primaryNavigation': 'Primary navigation',
     'shell.closeNavigation': 'Close navigation',
     'shell.openNavigation': 'Open navigation',
@@ -53,12 +72,14 @@ const APP_TEXT = {
     'nav.schedule': 'Planning',
     'nav.approvals': 'Goedkeuringen',
     'nav.dispatch': 'Uitgifte',
+    'nav.recovery': 'Verstoringen',
     'nav.resources': 'Middelen',
     'nav.finance': 'Financien',
     'nav.performance': 'Prestaties',
     'nav.clients': 'Klanten',
     'nav.field': 'Buitendienst',
     'nav.operations': 'Beheer',
+    'nav.help': 'Hulp',
     'shell.primaryNavigation': 'Hoofdnavigatie',
     'shell.closeNavigation': 'Navigatie sluiten',
     'shell.openNavigation': 'Navigatie openen',
@@ -89,6 +110,32 @@ export function appText(locale, key, variables = {}) {
 }
 
 const PORTAL_EN = {
+  'Opleverdossier beoordelen': 'Review handover dossier',
+  'Dossier {reference}, versie {hash}. Uw reactie wordt als verklaring vastgelegd en is geen elektronische handtekening. Contractor.AI beoordeelt de reactie intern. Dit wijzigt niet automatisch de contractstatus, contractsom of betaling.': 'Dossier {reference}, version {hash}. Your response is retained as a statement, not an electronic signature. Contractor.AI reviews it internally. It does not automatically change contract status, contract value, or payment.',
+  'Download opleverdossier': 'Download handover dossier',
+  'Het opleverdossier wordt voorbereid...': 'Preparing the handover dossier...',
+  'Het opleverdossier kan niet worden gedownload.': 'The handover dossier could not be downloaded.',
+  'Opleverreactie ontvangen': 'Handover response received',
+  'De beoordeelde dossierbron is gewijzigd of niet meer actueel. Controle vereist.': 'The reviewed dossier source has changed or is no longer current. Review required.',
+  'Wacht op interne beoordeling; er is nog geen automatische acceptatie verwerkt.': 'Awaiting internal review; no automatic acceptance has been processed.',
+  'Uw reactie': 'Your response',
+  'Ik accepteer het opleverdossier': 'I accept the handover dossier',
+  'Ik accepteer met restpunten': 'I accept with outstanding items',
+  'Ik accepteer het dossier niet': 'I do not accept the dossier',
+  'Uw naam': 'Your name',
+  'Ik verklaar bevoegd te zijn om namens de opdrachtgever te reageren.': 'I confirm that I am authorised to respond on behalf of the client.',
+  'Toelichting of restpunten': 'Comments or outstanding items',
+  'Dit is geen gekwalificeerde elektronische handtekening of juridisch oordeel. Bewaar belangrijke formele afspraken ook via de overeengekomen contractuele route.': 'This is not a qualified electronic signature or legal opinion. Record important formal agreements through the agreed contractual process as well.',
+  'Opleverreactie indienen': 'Submit handover response',
+  'Uw opleverreactie wordt opgeslagen...': 'Saving your handover response...',
+  'Uw opleverreactie kon niet worden opgeslagen.': 'Your handover response could not be saved.',
+  'Uw reactie is ontvangen en wacht op interne beoordeling.': 'Your response has been received and is awaiting internal review.',
+  'Eerdere opleverreactie': 'Previous handover response',
+  'De bron is niet langer actueel. Neem contact op met de aannemer voor een nieuwe dossierbeoordeling.': 'The source is no longer current. Contact the contractor for a new dossier review.',
+  'Er is nog geen actueel, gecontroleerd en aan u verstrekt opleverdossier beschikbaar.': 'No current, checked, and delivered handover dossier is available yet.',
+  accepted: 'accepted',
+  accepted_with_items: 'accepted with outstanding items',
+  not_accepted: 'not accepted',
   'Nog niet gepland': 'Not scheduled',
   'in behandeling': 'in progress',
   'Veilige projectinzage': 'Secure project view',
@@ -174,7 +221,6 @@ const PORTAL_EN = {
   'open': 'open',
   'Beschikbare opties': 'Available options',
   'Vastgelegde keuze:': 'Recorded selection:',
-  'Uw reactie': 'Your response',
   'Ik bevestig deze keuze': 'I confirm this selection',
   'Ik wil een aanpassing': 'I want an adjustment',
   'Gekozen optie': 'Selected option',

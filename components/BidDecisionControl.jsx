@@ -120,11 +120,13 @@ export default function BidDecisionControl({
     const blockers = [
       ...(marketCriterion?.status === 'below_minimum' ? ['market_fit'] : []),
       ...manualCriteria.filter((criterion) => criterion.blocker).map((criterion) => criterion.key),
+      ...(selectedItem.evaluation?.capacityAssessment?.status === 'shortfall' ? ['capacity_available'] : []),
       ...decision.gates.filter((gate) => gate.status === 'no').map((gate) => gate.key),
     ]
     const gaps = [
       ...(!marketCriterion || marketCriterion.status === 'missing_evidence' ? ['market_fit'] : []),
       ...manualCriteria.filter((criterion) => !criterion.complete).map((criterion) => criterion.key),
+      ...(selectedItem.evaluation?.capacityAssessment?.configured && selectedItem.evaluation.capacityAssessment.status === 'unknown' ? ['capacity_forecast'] : []),
       ...decision.gates.filter((gate) => gate.status === 'unknown').map((gate) => gate.key),
     ]
     const bidThreshold = Number(activePolicy.snapshot?.policy?.bidThreshold ?? 70)
@@ -335,6 +337,39 @@ export default function BidDecisionControl({
               <TargetIcon />
                <div><strong>{t('Market fit is derived')}</strong><span>{selectedItem.evaluation?.marketFit?.current ? t('{score}% retained fit', { score: selectedItem.evaluation.marketFit.score }) : t('Retain current market-fit evidence first')}</span></div>
             </div>
+            {selectedItem.evaluation?.capacityAssessment?.configured ? <section className={`bid-capacity-check capacity-${selectedItem.evaluation.capacityAssessment.status}`} aria-label={t('Future crew capacity')} data-testid="bid-capacity-check">
+              <div className="bid-capacity-heading"><strong>{t('Future crew capacity')}</strong><span className={`tag ${selectedItem.evaluation.capacityAssessment.status === 'feasible' ? 'tag-green' : 'tag-amber'}`}>{t(selectedItem.evaluation.capacityAssessment.status)}</span></div>
+              <p>{t('Expected work window')}: {selectedItem.evaluation.capacityAssessment.window.start} - {selectedItem.evaluation.capacityAssessment.window.end}</p>
+              <ul>{selectedItem.evaluation.capacityAssessment.trades.map(trade => <li key={trade.role}>
+                <strong>{trade.role}{trade.demandKind === 'supervision' ? ` · ${t('supervision')}` : ''}</strong><span>{t('{hours} h needed', { hours: trade.requiredHours })} / {t('{hours} h known remaining', { hours: trade.knownRemainingHours })}</span>
+                {trade.demandKind === 'supervision' && trade.supervisionFor?.length ? <small>{trade.supervisionFor.map(item => `${item.crewRole}: ${item.crewSize} ${t('workers')} / ${item.workersPerSupervisor} ${t('per supervisor')} / ${item.supervisorsRequired} ${t('supervisors')} / ${item.requiredHours} h`).join(' · ')}</small> : null}
+                {trade.qualificationReadiness ? <small>{t('Required qualifications')}: {trade.qualificationReadiness.requirements.map(item => t(item.title)).join(', ')} / {t('{count} qualified workers', { count: trade.qualificationReadiness.qualifiedWorkers })}{trade.qualificationReadiness.blockedWorkers ? ` / ${t('{count} excluded for qualification evidence', { count: trade.qualificationReadiness.blockedWorkers })}` : ''}</small> : null}
+                {trade.declaredSkillReadiness ? <small data-testid={`bid-declared-skills-${trade.role}`}>{t('Declared skills')}: {trade.declaredSkillReadiness.requiredSkills.join(', ')} / {t('{count} matching workers', { count: trade.declaredSkillReadiness.matchedWorkers })} / {t('{hours} h known remaining', { hours: trade.declaredSkillReadiness.knownRemainingHours })} ({t('unverified')})</small> : null}
+                {trade.declaredSkillReadiness?.dailyDemandAssessment?.length ? <ul className="bid-capacity-days">{trade.declaredSkillReadiness.dailyDemandAssessment.map(day => <li key={`skills-${day.date}`}>
+                  <time dateTime={day.date}>{day.date}</time><span>{t('{hours} h needed', { hours: day.requiredHours })} / {t('{hours} h skill-matched', { hours: day.knownAvailableHours })}</span>
+                  {day.observedShortfall ? <strong>{t('Declared skill gap')}</strong> : null}
+                </li>)}</ul> : null}
+                {trade.dailyDemandAssessment?.length ? <ul className="bid-capacity-days">{trade.dailyDemandAssessment.map(day => <li key={day.date}>
+                  <time dateTime={day.date}>{day.date}</time><span>{t('{hours} h needed', { hours: day.requiredHours })} / {t('{hours} h known remaining', { hours: day.knownAvailableHours })}</span>
+                  {day.observedShortfall ? <strong>{t('Daily shortfall')}</strong> : null}
+                </li>)}</ul> : null}
+              </li>)}</ul>
+              {selectedItem.evaluation.capacityAssessment.gaps?.length ? <p role="status">{t('Current crew data is incomplete. Check capacity profiles, assignments, and standby dates before deciding.')}</p> : null}
+              {selectedItem.evaluation.capacityAssessment.scopeLimits?.length ? <p>{t('Trade roles are exact text matches. Skill matches use worker-declared profiles only and are not verified. Supervision is a separate estimate from the recorded peak crew and shift; overlapping work windows and legal supervision rules are not checked. Travel, task dependencies, and unregistered workers are not included.')}</p> : null}
+              <small>{t('Advisory only. It does not reserve or assign workers; capacity changes make a pending decision stale.')}</small>
+            </section> : <p className="bid-capacity-missing">{t('No expected work window and trade-hour forecast is retained for this opportunity. Capacity feasibility remains unverified.')}</p>}
+            {selectedItem.evaluation?.materialReadiness?.configured ? <section className="bid-capacity-check opportunity-material-check" aria-label={t('Material readiness')} data-testid="bid-material-readiness">
+              <div className="bid-capacity-heading"><strong>{t('Material readiness')}</strong><span className={`tag ${selectedItem.evaluation.materialReadiness.status === 'within_known_stock' ? 'tag-green' : 'tag-amber'}`}>{t(selectedItem.evaluation.materialReadiness.status)}</span></div>
+              <ul>{selectedItem.evaluation.materialReadiness.materials.map(material => <li key={material.materialId}>
+                <strong>{material.name || material.materialId}</strong>
+                {material.status === 'material_not_found' || material.status === 'unit_mismatch'
+                  ? <span>{t(material.status === 'material_not_found' ? 'Material is not in the current catalogue.' : 'Requested unit does not match the catalogue unit.')}</span>
+                  : <span>{t('{quantity} {unit} required', { quantity: material.requiredQuantity, unit: material.unit })} / {t('{quantity} {unit} currently free', { quantity: material.availableQuantity, unit: material.unit })}</span>}
+                {material.status === 'known_stock_shortfall' ? <em>{t('{quantity} {unit} short against current free stock', { quantity: material.shortfallQuantity, unit: material.unit })}</em> : null}
+                {material.status === 'pipeline_contention' ? <em>{t('Other open opportunities request {quantity} {unit}; availability is not reserved.', { quantity: material.competingPipelineQuantity, unit: material.unit })}</em> : null}
+              </li>)}</ul>
+              <small>{t('Advisory warehouse snapshot only. It excludes future supplier deliveries and does not reserve stock or create orders.')}</small>
+            </section> : <p className="bid-capacity-missing">{t('No exact material forecast is retained; material readiness remains unverified.')}</p>}
             <div className="bid-rating-list">
               {decision.criteria.map((criterion) => (
                 <fieldset className="bid-rating-row" key={criterion.key}>

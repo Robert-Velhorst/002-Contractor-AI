@@ -33,7 +33,7 @@ async function approve(request, approvalId) {
 
 async function openJob(page, title) {
   await page.goto('/');
-  await expect(page.getByRole('heading', { name: 'Today' })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, exact: true, name: 'Today' })).toBeVisible();
   await page.getByRole('button', { name: `Open ${title}` }).first().click();
   const workspace = page.getByTestId('job-workspace');
   await expect(workspace.getByRole('heading', { name: title })).toBeVisible();

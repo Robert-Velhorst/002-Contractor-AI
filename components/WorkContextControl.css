@@ -1,0 +1,22 @@
+.work-context { min-width: 0; }
+.work-context header, .context-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.work-context header { justify-content: space-between; }
+.work-context section { padding-block: 16px; border-bottom: 1px solid #d8dddf; }
+.work-context button { display: inline-flex; align-items: center; gap: 6px; min-height: 36px; }
+.work-context h4 { margin: 0; font-size: 16px; }
+.work-context .context-source-note { display: block; margin-top: 4px; color: #48545a; font-weight: 400; }
+.context-rows { padding: 0; margin: 12px 0; list-style: none; }
+.context-rows li { display: flex; gap: 12px; align-items: start; border-top: 1px solid #e5e8e9; padding: 12px 0; }
+.context-rows li > div { flex: 1; min-width: 0; }
+.context-rows span, .context-rows small { display: block; }
+.context-rows p { margin: 6px 0; }
+.context-rows p, .context-rows strong, .context-rows span, .context-rows small { overflow-wrap: anywhere; white-space: pre-wrap; }
+.context-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.work-context label { display: flex; flex-direction: column; gap: 5px; margin-block: 10px; min-width: 0; }
+.work-context input:not([type=checkbox]), .work-context select, .work-context textarea { width: 100%; max-width: 100%; min-width: 0; box-sizing: border-box; padding: 8px; }
+.work-context fieldset { min-width: 0; border: 1px solid #d8dddf; padding: 12px; margin-block: 12px; }
+.context-checks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 12px; }
+.work-context .context-check, .context-checks label { flex-direction: row; align-items: start; }
+.context-checks input, .context-check input { flex: none; margin-top: 3px; }
+.work-context textarea { min-height: 72px; resize: vertical; }
+@media (max-width: 600px) { .context-fields, .context-checks { grid-template-columns: minmax(0, 1fr); } .context-rows li { flex-wrap: wrap; } .context-rows li > div { flex-basis: 100%; } }

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react'
+import { useLayoutEffect, useMemo, useRef } from 'react'
 
 export const DRAFT_STORAGE_PREFIX = 'contractor-ai:draft:v1:'
 export const DRAFT_SCHEMA_VERSION = 1
@@ -7,6 +7,7 @@ export const MAX_DRAFT_BYTES = 128 * 1024
 export const MAX_DRAFT_STORAGE_BYTES = 1024 * 1024
 
 const SENSITIVE_KEY = /access[_-]?key|authorization|cookie|password|secret|token/i
+const coordinators = new WeakMap()
 
 function cleanSegment(value, fallback) {
   const normalized = String(value || '').trim().replace(/[^A-Za-z0-9._:-]/g, '_').slice(0, 180)
@@ -68,30 +69,12 @@ function draftEntries(storage) {
   return entries
 }
 
-function pruneDraftStorage(storage, requiredBytes, now) {
-  const entries = draftEntries(storage)
-  let retainedBytes = entries.reduce((sum, entry) => sum + entry.bytes, 0)
-  for (const entry of entries) {
-    if (!entry.updatedAt || now - entry.updatedAt > DRAFT_TTL_MS) {
-      storage.removeItem(entry.key)
-      retainedBytes -= entry.bytes
-    }
-  }
-  const survivors = draftEntries(storage).sort((left, right) => left.updatedAt - right.updatedAt)
-  for (const entry of survivors) {
-    if (retainedBytes + requiredBytes <= MAX_DRAFT_STORAGE_BYTES) break
-    storage.removeItem(entry.key)
-    retainedBytes -= entry.bytes
-  }
-  return retainedBytes + requiredBytes <= MAX_DRAFT_STORAGE_BYTES
-}
-
 export function readSessionDraft(storage, scope, name, now = Date.now()) {
   if (!storage) return { found: false, value: null }
   const key = draftStorageKey(scope, name)
-  const raw = storage.getItem(key)
-  if (!raw) return { found: false, value: null }
   try {
+    const raw = storage.getItem(key)
+    if (!raw) return { found: false, value: null }
     const entry = JSON.parse(raw)
     if (entry?.version !== DRAFT_SCHEMA_VERSION || !Number.isFinite(entry.updatedAt) || now - entry.updatedAt > DRAFT_TTL_MS) {
       storage.removeItem(key)
@@ -99,54 +82,145 @@ export function readSessionDraft(storage, scope, name, now = Date.now()) {
     }
     return { found: true, value: entry.value, updatedAt: entry.updatedAt }
   } catch {
-    storage.removeItem(key)
+    try { storage.removeItem(key) } catch { /* Storage can be unavailable in private browser modes. */ }
     return { found: false, value: null }
   }
 }
 
-export function writeSessionDraft(storage, scope, name, value, now = Date.now()) {
-  if (!storage) return false
-  const key = draftStorageKey(scope, name)
-  let raw
-  try {
-    raw = draftJson({ version: DRAFT_SCHEMA_VERSION, updatedAt: now, value })
-  } catch {
-    return false
+export function writeSessionDraftBatch(storage, drafts, now = Date.now()) {
+  const written = new Set(), pending = new Map()
+  if (!storage) return written
+  for (const { scope, name, value } of drafts) {
+    const key = draftStorageKey(scope, name)
+    try {
+      const raw = draftJson({ version: DRAFT_SCHEMA_VERSION, updatedAt: now, value })
+      const bytes = entryBytes(key, raw)
+      pending.delete(key)
+      if (!raw || bytes > MAX_DRAFT_BYTES) storage.removeItem(key)
+      else pending.set(key, { key, raw, bytes, updatedAt: now })
+    } catch { /* A cyclic value or unavailable storage cannot prevent other drafts from saving. */ }
   }
-  const bytes = entryBytes(key, raw)
-  if (!raw || bytes > MAX_DRAFT_BYTES) {
-    storage.removeItem(key)
-    return false
-  }
+  if (!pending.size) return written
+  let retainedBytes = 0
+  const inventory = new Map()
   try {
-    const previous = storage.getItem(key)
-    if (previous) storage.removeItem(key)
-    if (!pruneDraftStorage(storage, bytes, now)) {
-      if (previous) storage.setItem(key, previous)
-      return false
+    // Read and parse the inventory once for the whole flush, not once per form.
+    for (const entry of draftEntries(storage)) {
+      if (!entry.updatedAt || now - entry.updatedAt > DRAFT_TTL_MS) storage.removeItem(entry.key)
+      else { inventory.set(entry.key, entry); retainedBytes += entry.bytes }
     }
-    storage.setItem(key, raw)
-    return true
-  } catch {
-    return false
+  } catch { return written }
+  for (const entry of pending.values()) {
+    try {
+      const previousBytes = inventory.get(entry.key)?.bytes || 0
+      if (retainedBytes - previousBytes + entry.bytes > MAX_DRAFT_STORAGE_BYTES) {
+        const oldest = [...inventory.values()].filter(item => item.key !== entry.key).sort((a, b) => a.updatedAt - b.updatedAt)
+        for (const old of oldest) {
+          if (retainedBytes - previousBytes + entry.bytes <= MAX_DRAFT_STORAGE_BYTES) break
+          storage.removeItem(old.key)
+          inventory.delete(old.key)
+          written.delete(old.key)
+          retainedBytes -= old.bytes
+        }
+      }
+      if (retainedBytes - previousBytes + entry.bytes > MAX_DRAFT_STORAGE_BYTES) continue
+      storage.setItem(entry.key, entry.raw)
+      retainedBytes += entry.bytes - previousBytes
+      inventory.set(entry.key, entry)
+      written.add(entry.key)
+    } catch { /* Retain the UI value for a later explicit page-hide retry. */ }
   }
+  return written
+}
+
+export function writeSessionDraft(storage, scope, name, value, now = Date.now()) {
+  return writeSessionDraftBatch(storage, [{ scope, name, value }], now).has(draftStorageKey(scope, name))
+}
+
+function cancelPendingDrafts(storage, matches) {
+  const coordinator = coordinators.get(storage)
+  if (!coordinator) return
+  for (const entry of coordinator.entries) {
+    if (matches(entry.key)) { entry.dirty = false; entry.failed = false; entry.value = undefined }
+  }
+  coordinator.reschedule()
 }
 
 export function removeSessionDraft(storage, scope, name) {
   if (!storage) return
-  storage.removeItem(draftStorageKey(scope, name))
+  const key = draftStorageKey(scope, name)
+  cancelPendingDrafts(storage, candidate => candidate === key)
+  try { storage.removeItem(key) } catch { /* Ledger writes do not depend on draft storage. */ }
 }
 
 export function clearSessionDraftScope(storage, scope) {
   if (!storage) return 0
   const prefix = `${DRAFT_STORAGE_PREFIX}${cleanSegment(scope, 'unscoped')}:`
+  cancelPendingDrafts(storage, key => key.startsWith(prefix))
   const keys = []
-  for (let index = 0; index < storage.length; index += 1) {
-    const key = storage.key(index)
-    if (key?.startsWith(prefix)) keys.push(key)
+  let removed = 0
+  try {
+    for (let index = 0; index < storage.length; index += 1) {
+      const key = storage.key(index)
+      if (key?.startsWith(prefix)) keys.push(key)
+    }
+    for (const key of keys) { storage.removeItem(key); removed += 1 }
+  } catch { /* Return only the number actually removed. */ }
+  return removed
+}
+
+function registerDraft(storage, scope, name) {
+  let coordinator = coordinators.get(storage)
+  if (!coordinator) {
+    const entries = new Set()
+    let timer = null, scheduledAt = Infinity
+    function arm(deadline) {
+      if (deadline >= scheduledAt) return
+      if (timer !== null) clearTimeout(timer)
+      scheduledAt = deadline
+      timer = setTimeout(() => flush(false), Math.max(0, deadline - Date.now()))
+    }
+    function reschedule() {
+      if (timer !== null) clearTimeout(timer)
+      timer = null; scheduledAt = Infinity
+      for (const entry of entries) if (entry.dirty) arm(entry.deadline)
+    }
+    function flush(all) {
+      if (timer !== null) clearTimeout(timer)
+      timer = null; scheduledAt = Infinity
+      const now = Date.now()
+      const pending = [...entries].filter(entry => (entry.dirty && (all || entry.deadline <= now)) || (all && entry.failed))
+      const written = writeSessionDraftBatch(storage, pending, now)
+      for (const entry of pending) {
+        entry.dirty = false; entry.failed = !written.has(entry.key)
+        if (!entry.failed) entry.value = undefined
+      }
+      reschedule()
+    }
+    const hide = () => flush(true)
+    coordinator = { entries, arm, reschedule, hide }
+    coordinators.set(storage, coordinator)
+    window.addEventListener('pagehide', hide)
   }
-  keys.forEach(key => storage.removeItem(key))
-  return keys.length
+  const entry = { scope, name, key: draftStorageKey(scope, name), dirty: false, failed: false, value: undefined, deadline: Infinity }
+  coordinator.entries.add(entry)
+  return {
+    update(value, delayMs) {
+      if (value === null || value === false || value === undefined) { removeSessionDraft(storage, scope, name); return }
+      entry.value = value; entry.dirty = true; entry.failed = false
+      entry.deadline = Date.now() + delayMs
+      coordinator.arm(entry.deadline)
+    },
+    dispose() {
+      coordinator.entries.delete(entry)
+      entry.value = undefined
+      coordinator.reschedule()
+      if (!coordinator.entries.size) {
+        window.removeEventListener('pagehide', coordinator.hide)
+        coordinators.delete(storage)
+      }
+    },
+  }
 }
 
 export function useSessionDraftRecovery({ enabled, scope, name, value, setValue, delayMs = 180 }) {
@@ -154,10 +228,9 @@ export function useSessionDraftRecovery({ enabled, scope, name, value, setValue,
   const key = enabled && scope ? draftStorageKey(scope, name) : ''
   const hydratedKeyRef = useRef('')
   const skipPersistRef = useRef(false)
-  const writeTimerRef = useRef(null)
+  const entryRef = useRef(null)
 
-  useEffect(() => {
-    if (writeTimerRef.current) clearTimeout(writeTimerRef.current)
+  useLayoutEffect(() => {
     hydratedKeyRef.current = ''
     if (!key || !storage) return
     const restored = readSessionDraft(storage, scope, name)
@@ -166,23 +239,20 @@ export function useSessionDraftRecovery({ enabled, scope, name, value, setValue,
     if (restored.found) setValue(restored.value)
   }, [key, name, scope, setValue, storage])
 
-  useEffect(() => {
-    if (!key || !storage || hydratedKeyRef.current !== key) return undefined
+  useLayoutEffect(() => {
+    if (!key || !storage) return undefined
+    const entry = registerDraft(storage, scope, name)
+    entryRef.current = entry
+    return () => { entry.dispose(); entryRef.current = null }
+  }, [key, name, scope, storage])
+
+  // Register the current flush before navigation can observe an older committed value.
+  useLayoutEffect(() => {
+    if (!key || !storage || hydratedKeyRef.current !== key) return
     if (skipPersistRef.current) {
       skipPersistRef.current = false
-      return undefined
+      return
     }
-    if (value === null || value === false || value === undefined) {
-      removeSessionDraft(storage, scope, name)
-      return undefined
-    }
-    writeTimerRef.current = setTimeout(() => {
-      writeSessionDraft(storage, scope, name, value)
-      writeTimerRef.current = null
-    }, delayMs)
-    return () => {
-      if (writeTimerRef.current) clearTimeout(writeTimerRef.current)
-      writeTimerRef.current = null
-    }
+    entryRef.current?.update(value, delayMs)
   }, [delayMs, key, name, scope, storage, value])
 }

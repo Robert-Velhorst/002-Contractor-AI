@@ -1,6 +1,8 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const { Readable } = require('node:stream');
+const { SaxesParser } = require('saxes');
 
 const STORAGE_READINESS_PAYLOAD = Buffer.from('contractor-ai-storage-readiness/v1', 'utf8');
 
@@ -12,17 +14,79 @@ class EvidenceStorageError extends Error {
   }
 }
 
-function safeStorageName(originalName) {
+function safeStorageName(originalName, operationId = null) {
   const extension = path.extname(String(originalName || '')).slice(0, 20);
   const stem = path.basename(String(originalName || 'evidence'), extension)
     .replace(/[^\w.-]+/g, '-')
     .replace(/^-+|-+$/g, '')
     .slice(0, 80) || 'evidence';
+  if (operationId) {
+    const stableId = crypto.createHash('sha256').update(String(operationId)).digest('hex').slice(0, 32);
+    return `${stableId}-${stem}${extension}`;
+  }
   return `${Date.now()}-${crypto.randomBytes(8).toString('hex')}-${stem}${extension}`;
 }
 
 function encodeS3Path(value) {
   return String(value || '').split('/').map(segment => encodeURIComponent(segment)).join('/');
+}
+
+function encodeS3Query(query = {}) {
+  const encode = value => encodeURIComponent(String(value)).replace(/[!'()*]/g, character => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
+  return Object.entries(query)
+    .filter(([, value]) => value !== undefined && value !== null)
+    .map(([name, value]) => [encode(name), encode(value)])
+    .sort(([leftName, leftValue], [rightName, rightValue]) => {
+      const nameOrder = leftName < rightName ? -1 : leftName > rightName ? 1 : 0;
+      return nameOrder || (leftValue < rightValue ? -1 : leftValue > rightValue ? 1 : 0);
+    })
+    .map(([name, value]) => `${name}=${value}`)
+    .join('&');
+}
+
+function parseS3VersionPage(xml) {
+  const parser = new SaxesParser({ xmlns: false });
+  const stack = [];
+  const versions = [];
+  let current = null;
+  let isTruncated = false;
+  const markers = { key: null, versionId: null };
+  const markerTags = new Map([
+    ['NextKeyMarker', 'key'],
+    ['NextVersionIdMarker', 'versionId']
+  ]);
+
+  parser.on('opentag', node => {
+    stack.push(node.name);
+    if ((node.name === 'Version' || node.name === 'DeleteMarker') && stack.at(-2) === 'ListVersionsResult') {
+      current = { key: '', versionId: '' };
+    }
+  });
+  parser.on('text', value => {
+    const name = stack.at(-1);
+    if (current && (name === 'Key' || name === 'VersionId')) {
+      current[name === 'Key' ? 'key' : 'versionId'] += value;
+    } else if (name === 'IsTruncated') {
+      isTruncated = value.trim() === 'true';
+    } else if (markerTags.has(name)) {
+      markers[markerTags.get(name)] = (markers[markerTags.get(name)] || '') + value;
+    }
+  });
+  parser.on('closetag', node => {
+    const name = node.name;
+    if ((name === 'Version' || name === 'DeleteMarker') && current) {
+      versions.push(current);
+      current = null;
+    }
+    stack.pop();
+  });
+  parser.write(Buffer.isBuffer(xml) ? xml.toString('utf8') : String(xml)).close();
+  return {
+    versions,
+    isTruncated,
+    nextKeyMarker: markers.key,
+    nextVersionIdMarker: markers.versionId
+  };
 }
 
 function hasUnsafeS3Characters(value) {
@@ -79,12 +143,33 @@ class LocalEvidenceStorage {
     fs.mkdirSync(this.rootDir, { recursive: true });
   }
 
-  async store(file) {
-    const storageName = safeStorageName(file.originalName);
+  referenceFor(file, { operationId = null } = {}) {
+    const storageName = safeStorageName(file.originalName, operationId);
+    const target = path.resolve(this.rootDir, storageName);
+    if (!target.startsWith(`${this.rootDir}${path.sep}`)) {
+      throw new EvidenceStorageError('invalid_upload_path', 'Evidence storage path could not be resolved safely.', 400);
+    }
+    return path.relative(this.projectRoot, target).replace(/\\/g, '/');
+  }
+
+  async store(file, { operationId = null } = {}) {
+    const storageName = safeStorageName(file.originalName, operationId);
     const sha256 = crypto.createHash('sha256').update(file.buffer).digest('hex');
     const target = path.resolve(this.rootDir, storageName);
     if (!target.startsWith(`${this.rootDir}${path.sep}`)) {
       throw new EvidenceStorageError('invalid_upload_path', 'Evidence storage path could not be resolved safely.', 400);
+    }
+    if (operationId) {
+      try {
+        const retained = await this.read(this.referenceFor(file, { operationId }), {
+          maxBytes: file.buffer.length, expectedSize: file.buffer.length, expectedSha256: sha256
+        });
+        if (!retained.equals(file.buffer)) throw new EvidenceStorageError('evidence_retention_unverified', 'The existing local evidence does not match the retried upload.');
+        return { filename: storageName, storageRef: this.referenceFor(file, { operationId }), size: file.buffer.length,
+          mimeType: file.mimeType, sha256, reused: true };
+      } catch (error) {
+        if (error.code !== 'evidence_not_available' && error.code !== 'ENOENT') throw error;
+      }
     }
     const temporary = path.join(this.rootDir, `.${storageName}.${crypto.randomBytes(4).toString('hex')}.tmp`);
     try {
@@ -99,16 +184,20 @@ class LocalEvidenceStorage {
       storageRef: path.relative(this.projectRoot, target).replace(/\\/g, '/'),
       size: file.size,
       mimeType: file.mimeType,
-      sha256
+      sha256,
+      reused: false
     };
   }
 
-  async read(storageRef) {
+  async read(storageRef, options = {}) {
     const target = path.resolve(this.projectRoot, String(storageRef || ''));
     if (!target.startsWith(`${this.rootDir}${path.sep}`) || !fs.existsSync(target)) {
       throw new EvidenceStorageError('evidence_not_available', 'The retained evidence file is not available from this runtime.', 404);
     }
-    return fs.promises.readFile(target);
+    const { maxBytes, expectedSize, expectedSha256 } = normalizeReadOptions(options, 10 * 1024 * 1024);
+    const stat = await fs.promises.stat(target);
+    assertDeclaredSize(stat.size, maxBytes, expectedSize);
+    return readStreamBounded(fs.createReadStream(target), { maxBytes, expectedSize, expectedSha256 });
   }
 
   async remove(storageRef) {
@@ -136,7 +225,8 @@ class LocalEvidenceStorage {
 }
 
 class S3EvidenceStorage {
-  constructor({ endpoint, bucket, region, accessKeyId, secretAccessKey, prefix = 'contractor-ai/evidence', timeoutMs = 5000, fetchFn = global.fetch }) {
+  constructor({ endpoint, bucket, region, accessKeyId, secretAccessKey, prefix = 'contractor-ai/evidence', timeoutMs = 5000,
+    maxReadBytes = 10 * 1024 * 1024, fetchFn = global.fetch }) {
     if (!endpoint || !bucket || !region || !accessKeyId || !secretAccessKey) {
       throw new EvidenceStorageError('s3_configuration_required', 'S3 evidence storage requires endpoint, bucket, region, access key, and secret key.');
     }
@@ -153,6 +243,10 @@ class S3EvidenceStorage {
     this.secretAccessKey = secretAccessKey;
     this.prefix = normalizeS3Prefix(prefix);
     this.timeoutMs = Math.max(500, Number(timeoutMs) || 5000);
+    this.maxReadBytes = Number(maxReadBytes);
+    if (!Number.isSafeInteger(this.maxReadBytes) || this.maxReadBytes < 1) {
+      throw new EvidenceStorageError('invalid_s3_read_limit', 'S3 evidence storage requires a positive bounded read limit.');
+    }
     this.fetch = fetchFn;
   }
 
@@ -161,8 +255,17 @@ class S3EvidenceStorage {
     return `${this.prefix}/${month}/${storageName}`;
   }
 
-  async request(method, key, body = null, contentType = null) {
-    const objectKey = normalizeS3ObjectKey(key);
+  referenceFor(file, { operationId = null } = {}) {
+    if (!operationId) return `s3://${this.bucket}/${this.objectKey(safeStorageName(file.originalName))}`;
+    const storageName = safeStorageName(file.originalName, operationId);
+    return `s3://${this.bucket}/${this.prefix}/uploads/${storageName}`;
+  }
+
+  async request(method, key, body = null, contentType = null, {
+    maxResponseBytes = this.maxReadBytes, allowMissing = false, expectedSize = null, expectedSha256 = null,
+    query = null, allowBucketRequest = false
+  } = {}) {
+    const objectKey = allowBucketRequest && !key ? '' : normalizeS3ObjectKey(key);
     const timestamp = new Date().toISOString().replace(/[:-]|\.\d{3}/g, '');
     const dateStamp = timestamp.slice(0, 8);
     const payload = body ? Buffer.from(body) : Buffer.alloc(0);
@@ -178,13 +281,15 @@ class S3EvidenceStorage {
     const signedHeaderNames = Object.keys(headers).sort();
     const canonicalHeaders = signedHeaderNames.map(name => `${name}:${headers[name]}\n`).join('');
     const signedHeaders = signedHeaderNames.join(';');
-    const canonicalRequest = [method, canonicalUri, '', canonicalHeaders, signedHeaders, payloadHash].join('\n');
+    const canonicalQuery = encodeS3Query(query || {});
+    const canonicalRequest = [method, canonicalUri, canonicalQuery, canonicalHeaders, signedHeaders, payloadHash].join('\n');
     const credentialScope = `${dateStamp}/${this.region}/s3/aws4_request`;
     const stringToSign = ['AWS4-HMAC-SHA256', timestamp, credentialScope, crypto.createHash('sha256').update(canonicalRequest).digest('hex')].join('\n');
     const signingKey = hmac(hmac(hmac(hmac(`AWS4${this.secretAccessKey}`, dateStamp), this.region), 's3'), 'aws4_request');
     const signature = crypto.createHmac('sha256', signingKey).update(stringToSign, 'utf8').digest('hex');
     const url = new URL(this.endpoint.toString());
     url.pathname = canonicalUri;
+    url.search = canonicalQuery;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
@@ -197,12 +302,16 @@ class S3EvidenceStorage {
         body: body ? payload : undefined,
         signal: controller.signal
       });
+      if (allowMissing && method === 'GET' && response.status === 404) {
+        return { response, body: null, missing: true };
+      }
       if (!response.ok) {
         throw new EvidenceStorageError('object_storage_request_failed', `Object storage returned ${response.status}.`);
       }
       return {
         response,
-        body: method === 'GET' ? Buffer.from(await response.arrayBuffer()) : null
+        body: method === 'GET' ? await readResponseBounded(response, { maxBytes: maxResponseBytes, expectedSize, expectedSha256 }) : null,
+        missing: false
       };
     } catch (error) {
       if (error instanceof EvidenceStorageError) throw error;
@@ -215,27 +324,106 @@ class S3EvidenceStorage {
     }
   }
 
-  async store(file) {
-    const storageName = safeStorageName(file.originalName);
-    const key = this.objectKey(storageName);
-    const sha256 = crypto.createHash('sha256').update(file.buffer).digest('hex');
-    await this.request('PUT', key, file.buffer, file.mimeType || 'application/octet-stream');
+  async store(file, { operationId = null } = {}) {
+    const payload = Buffer.from(file.buffer || []);
+    if (!payload.length || payload.length > this.maxReadBytes) {
+      throw new EvidenceStorageError('evidence_size_invalid', 'Evidence upload is empty or exceeds the configured storage read limit.', 413);
+    }
+    const storageName = safeStorageName(file.originalName, operationId);
+    const key = operationId ? `${this.prefix}/uploads/${storageName}` : this.objectKey(storageName);
+    const storageRef = `s3://${this.bucket}/${key}`;
+    const sha256 = crypto.createHash('sha256').update(payload).digest('hex');
+    if (operationId) {
+      const existing = await this.request('GET', key, null, null, { maxResponseBytes: payload.length, allowMissing: true });
+      if (!existing.missing) {
+        assertRetainedObject(existing.body, payload, sha256);
+        return {
+          filename: storageName,
+          storageRef,
+          size: payload.length,
+          mimeType: file.mimeType,
+          sha256,
+          reused: true
+        };
+      }
+    }
+    await this.request('PUT', key, payload, file.mimeType || 'application/octet-stream');
+    const retained = await this.request('GET', key, null, null, { maxResponseBytes: payload.length, allowMissing: true });
+    if (retained.missing) {
+      throw new EvidenceStorageError('evidence_retention_unverified', 'Object storage acknowledged the upload but the retained evidence is not yet readable.');
+    }
+    assertRetainedObject(retained.body, payload, sha256);
     return {
       filename: storageName,
-      storageRef: `s3://${this.bucket}/${key}`,
-      size: file.size,
+      storageRef,
+      size: payload.length,
       mimeType: file.mimeType,
-      sha256
+      sha256,
+      reused: false
     };
   }
 
-  async read(storageRef) {
-    const result = await this.request('GET', this.keyFromStorageRef(storageRef));
+  async read(storageRef, options = {}) {
+    const limits = normalizeReadOptions(options, this.maxReadBytes);
+    const result = await this.request('GET', this.keyFromStorageRef(storageRef), null, null, {
+      maxResponseBytes: limits.maxBytes,
+      expectedSize: limits.expectedSize,
+      expectedSha256: limits.expectedSha256
+    });
     return result.body;
   }
 
   async remove(storageRef) {
-    await this.request('DELETE', this.keyFromStorageRef(storageRef));
+    const key = this.keyFromStorageRef(storageRef);
+    const versions = [];
+    let keyMarker = null;
+    let versionIdMarker = null;
+    let pages = 0;
+    let listingComplete = false;
+    while (!listingComplete && pages < 1000) {
+      const page = await this.request('GET', '', null, null, {
+        allowBucketRequest: true,
+        maxResponseBytes: 1024 * 1024,
+        query: {
+          versions: '',
+          prefix: key,
+          'max-keys': '100',
+          'key-marker': keyMarker,
+          'version-id-marker': versionIdMarker
+        }
+      });
+      const parsed = parseS3VersionPage(page.body);
+      versions.push(...parsed.versions.filter(version => version.key === key));
+      if (versions.length > 1000) {
+        throw new EvidenceStorageError('object_storage_version_limit_exceeded', 'The orphan has too many retained object versions for automatic cleanup.');
+      }
+      pages += 1;
+      if (!parsed.isTruncated) {
+        listingComplete = true;
+        break;
+      }
+      const nextKeyMarker = parsed.nextKeyMarker || key;
+      const nextVersionIdMarker = parsed.nextVersionIdMarker || null;
+      if (nextKeyMarker === keyMarker && nextVersionIdMarker === versionIdMarker) {
+        throw new EvidenceStorageError('object_storage_version_listing_incomplete', 'Object storage did not return safe version-list pagination markers.');
+      }
+      keyMarker = nextKeyMarker;
+      versionIdMarker = nextVersionIdMarker;
+    }
+    if (!listingComplete) {
+      throw new EvidenceStorageError('object_storage_version_listing_incomplete', 'Object storage returned too many version-list pages for automatic cleanup.');
+    }
+
+    if (versions.length) {
+      for (const version of versions) {
+        if (!version.versionId) {
+          throw new EvidenceStorageError('object_storage_version_id_missing', 'Object storage returned a version without an identifier; cleanup was not completed.');
+        }
+        await this.request('DELETE', key, null, null, { query: { versionId: version.versionId } });
+      }
+    } else {
+      await this.request('DELETE', key);
+    }
     return true;
   }
 
@@ -257,7 +445,7 @@ class S3EvidenceStorage {
     let verificationError = null;
     try {
       await this.request('PUT', key, STORAGE_READINESS_PAYLOAD, 'application/octet-stream');
-      const result = await this.request('GET', key);
+      const result = await this.request('GET', key, null, null, { maxResponseBytes: STORAGE_READINESS_PAYLOAD.length });
       if (!result.body?.equals(STORAGE_READINESS_PAYLOAD)) {
         throw new EvidenceStorageError('object_storage_verification_failed', 'Object storage did not return the readiness marker that was written.');
       }
@@ -265,7 +453,7 @@ class S3EvidenceStorage {
       verificationError = error;
     }
     try {
-      await this.request('DELETE', key);
+      await this.remove(`s3://${this.bucket}/${key}`);
     } catch {
       if (!verificationError) {
         throw new EvidenceStorageError('object_storage_cleanup_failed', 'Object storage could not remove its readiness marker.');
@@ -275,6 +463,72 @@ class S3EvidenceStorage {
       throw verificationError;
     }
     return { ready: true, mode: 's3', checkedAt: new Date().toISOString() };
+  }
+}
+
+function normalizeReadOptions(options, defaultMaxBytes) {
+  const maxBytes = options.maxBytes === undefined ? defaultMaxBytes : Number(options.maxBytes);
+  const expectedSize = options.expectedSize === undefined || options.expectedSize === null
+    ? null : Number(options.expectedSize);
+  const expectedSha256 = options.expectedSha256 ? String(options.expectedSha256).trim().toLowerCase() : null;
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) {
+    throw new EvidenceStorageError('invalid_storage_read_limit', 'Evidence read requires valid bounded size and checksum constraints.');
+  }
+  if (expectedSize !== null && (!Number.isSafeInteger(expectedSize) || expectedSize < 0)) {
+    throw new EvidenceStorageError('evidence_integrity_failed', 'Evidence ledger size metadata is invalid.', 409);
+  }
+  if (expectedSize !== null && expectedSize > maxBytes) {
+    throw new EvidenceStorageError('evidence_response_too_large', 'Evidence ledger size exceeds the permitted download boundary.', 413);
+  }
+  if (expectedSha256 && !/^[a-f0-9]{64}$/.test(expectedSha256)) {
+    throw new EvidenceStorageError('evidence_integrity_failed', 'Evidence ledger checksum metadata is invalid.', 409);
+  }
+  return { maxBytes, expectedSize, expectedSha256 };
+}
+
+function assertDeclaredSize(size, maxBytes, expectedSize) {
+  if (size > maxBytes || (expectedSize !== null && size !== expectedSize)) {
+    throw new EvidenceStorageError(size > maxBytes ? 'evidence_response_too_large' : 'evidence_integrity_failed',
+      'Retained evidence size does not match the bounded ledger record.', size > maxBytes ? 413 : 409);
+  }
+}
+
+async function readResponseBounded(response, limits) {
+  const declaredLength = response.headers?.get('content-length');
+  if (declaredLength && /^\d+$/.test(declaredLength)) {
+    const size = Number(declaredLength);
+    assertDeclaredSize(size, limits.maxBytes, limits.expectedSize);
+  }
+  return readStreamBounded(response.body || Readable.from([]), limits);
+}
+
+async function readStreamBounded(stream, { maxBytes, expectedSize, expectedSha256 }) {
+  const chunks = [];
+  const hash = crypto.createHash('sha256');
+  let size = 0;
+  for await (const value of stream) {
+    const chunk = Buffer.from(value);
+    size += chunk.length;
+    if (size > maxBytes || (expectedSize !== null && size > expectedSize)) {
+      stream.destroy?.();
+      throw new EvidenceStorageError('evidence_response_too_large', 'Evidence provider returned more bytes than the verified upload allows.', 413);
+    }
+    chunks.push(chunk);
+    hash.update(chunk);
+  }
+  if (expectedSize !== null && size !== expectedSize) {
+    throw new EvidenceStorageError('evidence_integrity_failed', 'Evidence byte count does not match the retained ledger record.', 409);
+  }
+  if (expectedSha256 && hash.digest('hex') !== expectedSha256) {
+    throw new EvidenceStorageError('evidence_integrity_failed', 'Evidence checksum does not match the retained ledger record.', 409);
+  }
+  return Buffer.concat(chunks, size);
+}
+
+function assertRetainedObject(actual, expected, expectedSha256) {
+  if (!actual || actual.length !== expected.length
+      || crypto.createHash('sha256').update(actual).digest('hex') !== expectedSha256) {
+    throw new EvidenceStorageError('evidence_retention_unverified', 'Object storage did not retain the exact evidence bytes that were uploaded.');
   }
 }
 

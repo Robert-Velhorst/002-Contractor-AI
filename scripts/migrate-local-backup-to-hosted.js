@@ -13,8 +13,11 @@ const {
   builtInInspectionTemplateRows
 } = require('../operating-ledger');
 const { createEvidenceStorage } = require('../evidence-storage');
-const { resolvePostgresConnectionOptions } = require('../postgres-sync-database');
+const { PostgresSyncDatabase, resolvePostgresConnectionOptions } = require('../postgres-sync-database');
 const { BACKUP_MANIFEST_V3, verifyBackupManifestAuthenticity } = require('../backup-manifest');
+const { assertSameCompany, normalizeCompanyId, readCompanyRuntime } = require('../company-runtime');
+const { readAuthority, validatePreparedPackage, authorityRecord, authorityHistoryRecord, retainTargetVerification, readPrivateKeyFile, verifyAuthorityHistory } = require('../company-authority');
+const { readDocument, privateOutput } = require('../company-handover');
 
 const projectRoot = path.resolve(__dirname, '..');
 const MIGRATION_LOCK_ID = 2_024_070_013;
@@ -100,7 +103,12 @@ function verifyBackupDirectory(backupDirectory, options = {}) {
   }
   const sqliteFiles = files.filter(entry => !entry.file.includes('/') && isSqliteFile(entry.target));
   if (sqliteFiles.length !== 1) throw new Error('Backup must contain exactly one top-level SQLite ledger database.');
+  const source = new DatabaseSync(sqliteFiles[0].target, { readOnly: true });
+  let company;
+  try { company = readCompanyRuntime(source); } finally { source.close(); }
+  if (manifest.company) assertSameCompany(manifest.company, company);
   return {
+    company,
     backupDir,
     manifest,
     manifestHash: sha256File(manifestFile),
@@ -208,6 +216,86 @@ function tableDigest(table, columns, rows) {
   return sha256Buffer(Buffer.from(encodedRows.join('\n'), 'utf8'));
 }
 
+const RECONCILIATION_EXCLUDED_TABLES = new Set(['audit_events', 'audit_chain_state', 'company_authority', 'company_authority_history']);
+
+function migrationReceiptId(backupId, manifestHash) {
+  return `migration_${sha256Buffer(Buffer.from(`${backupId}\0${manifestHash}`)).slice(0, 24)}`;
+}
+
+async function verifyCommittedHostedMigration({ backupDir, databaseUrl, companyId, storage = null, signingKey, handover }) {
+  if (!databaseUrl) throw new Error('A hosted PostgreSQL database URL is required.');
+  const connection = resolvePostgresConnectionOptions(databaseUrl);
+  if (connection.sslMode !== 'verify-full') throw new Error('Hosted migration verification requires PostgreSQL certificate and hostname verification with sslmode=verify-full.');
+  const verification = verifyBackupDirectory(backupDir, { signingKey });
+  const scopeCheck = new DatabaseSync(verification.ledgerFile, { readOnly: true });
+  let targetAuthority;
+  try {
+    targetAuthority = validatePreparedPackage({ sourceDb: scopeCheck, permit: handover?.permit, key: handover?.key,
+      company: verification.company, manifestSha256: verification.manifestHash });
+  } finally { scopeCheck.close(); }
+  assertSameCompany({ id: companyId || verification.company?.id, ledgerId: verification.company?.ledgerId }, verification.company);
+  assertHostedCompanyStorage(companyId || verification.company?.id, storage);
+
+  const ledger = new ContractorOperatingLedger({ databaseUrl, authorityMaintenance: true });
+  try {
+    const company = readCompanyRuntime(ledger.db);
+    assertSameCompany(verification.company, company);
+    const authority = readAuthority(ledger.db);
+    if (!authority || authority.status !== 'staged' || authority.environmentId !== targetAuthority.environmentId
+      || authority.publicKey !== targetAuthority.publicKey || authority.transferId !== targetAuthority.transferId
+      || authority.generation !== targetAuthority.generation || authority.details.permit?.body?.manifestSha256 !== verification.manifestHash) {
+      throw Object.assign(new Error('The hosted database is not the exact staged target for this signed backup and permit.'), { code: 'hosted_target_mismatch' });
+    }
+    if (!verifyAuthorityHistory(ledger.db).valid) throw Object.assign(new Error('Hosted authority history failed verification.'), { code: 'authority_history_invalid' });
+
+    const receiptId = migrationReceiptId(verification.manifest.backupId, verification.manifestHash);
+    const migrationEvent = ledger.db.prepare("SELECT * FROM audit_events WHERE id = ? AND entity_type = 'operational_migration' AND action = 'migrate_local_backup_to_hosted'").get(receiptId);
+    if (!migrationEvent) throw Object.assign(new Error('The committed migration audit receipt was not found.'), { code: 'migration_receipt_missing' });
+    const metadata = JSON.parse(migrationEvent.metadata_json || '{}');
+    if (metadata.sourceBackupId !== verification.manifest.backupId || metadata.manifestSha256 !== verification.manifestHash
+      || metadata.tables !== metadata.tableDigests?.length || !Array.isArray(metadata.evidenceSha256)) {
+      throw Object.assign(new Error('The retained migration audit receipt does not bind complete reconciliation evidence.'), { code: 'migration_receipt_incomplete' });
+    }
+    const digestMaterial = metadata.tableDigests.map(item => `${item.table}:${item.rows}:${item.sha256}`).join('\n');
+    if (sha256Buffer(Buffer.from(digestMaterial)) !== metadata.databaseSha256) throw Object.assign(new Error('The retained migration table-digest summary is invalid.'), { code: 'migration_receipt_invalid' });
+
+    for (const item of metadata.tableDigests) {
+      if (RECONCILIATION_EXCLUDED_TABLES.has(item.table)) continue;
+      if (!/^[a-z][a-z0-9_]*$/.test(item.table) || !Array.isArray(item.columns) || !item.columns.length
+        || item.columns.some(column => !/^[a-z][a-z0-9_]*$/.test(column)) || !Number.isSafeInteger(item.rows) || item.rows < 0
+        || !/^[a-f0-9]{64}$/.test(item.sha256)) throw Object.assign(new Error('The retained per-table migration evidence is invalid.'), { code: 'migration_receipt_invalid' });
+      const rows = ledger.db.prepare(`SELECT ${item.columns.map(quotedIdentifier).join(', ')} FROM ${quotedIdentifier(item.table)}`).all();
+      if (rows.length !== item.rows || tableDigest(item.table, item.columns, rows) !== item.sha256) {
+        throw Object.assign(new Error(`Hosted table reconciliation failed: ${item.table}.`), { code: 'migration_table_mismatch' });
+      }
+    }
+
+    if (metadata.evidenceSha256.length && (!storage || typeof storage.read !== 'function')) {
+      throw Object.assign(new Error('Hosted evidence verification requires the configured object-storage reader.'), { code: 'migration_evidence_verifier_required' });
+    }
+    for (const item of metadata.evidenceSha256) {
+      if (typeof item.storageRef !== 'string' || !Number.isSafeInteger(item.bytes) || !/^[a-f0-9]{64}$/.test(item.sha256)) {
+        throw Object.assign(new Error('The retained evidence migration record is invalid.'), { code: 'migration_receipt_invalid' });
+      }
+      const bytes = Buffer.from(await storage.read(item.storageRef));
+      if (bytes.length !== item.bytes || sha256Buffer(bytes) !== item.sha256) {
+        throw Object.assign(new Error(`Hosted evidence reconciliation failed: ${item.source || 'unknown source'}.`), { code: 'migration_evidence_mismatch' });
+      }
+    }
+
+    const diagnostics = ledger.diagnose();
+    if (!diagnostics.valid) throw Object.assign(new Error('Hosted ledger diagnostics failed during migration reconciliation.'), { code: 'migration_diagnostics_failed' });
+    const auditIntegrity = ledger.verifyAuditIntegrity();
+    if (!auditIntegrity.valid) throw Object.assign(new Error('Hosted audit-chain verification failed during migration reconciliation.'), { code: 'migration_audit_invalid' });
+    const result = { manifestSha256: verification.manifestHash, databaseSha256: metadata.databaseSha256,
+      receiptId, evidenceFiles: metadata.evidenceSha256.length, diagnostics: { valid: true }, auditIntegrity };
+    const handoverReceipt = retainTargetVerification(ledger.db, { key: handover.key, result });
+    return { success: true, reconciled: true, backupId: verification.manifest.backupId, receiptId,
+      tablesVerified: metadata.tableDigests.length - metadata.tableDigests.filter(item => RECONCILIATION_EXCLUDED_TABLES.has(item.table)).length,
+      evidenceFilesVerified: metadata.evidenceSha256.length, authorityStatus: authority.status, handoverReceipt };
+  } finally { ledger.close(); }
+}
+
 function inferMimeType(filename) {
   const extension = path.extname(filename).toLowerCase();
   return {
@@ -247,7 +335,21 @@ const IMMUTABLE_ISSUE_PACKAGE_TYPES = new Set([
 ]);
 
 const IMMUTABLE_SOURCE_JSON_COLUMNS = new Map([
-  ['sds_sheets', new Set(['data_json', 'snapshot_json'])]
+  ['operational_recovery_cases', new Set(['snapshot_json'])],
+  ['operational_recovery_commands', new Set(['response_json'])],
+  ['work_balance_plans', new Set(['snapshot_json'])],
+  ['work_balance_commands', new Set(['response_json'])],
+  ['client_delivery_offers', new Set(['snapshot_json'])],
+  ['client_delivery_responses', new Set(['snapshot_json'])],
+  ['client_delivery_commands', new Set(['response_json'])],
+  ['sds_sheets', new Set(['data_json', 'snapshot_json'])],
+  ['work_deliveries', new Set(['snapshot_json'])],
+  ['inspection_coverage_decisions', new Set(['snapshot_json'])],
+  ['inspection_coverage_commands', new Set(['response_json'])],
+  ['work_delivery_decisions', new Set(['snapshot_json'])],
+  ['work_delivery_commands', new Set(['response_json'])],
+  ['asset_service_events', new Set(['snapshot_json'])],
+  ['asset_history_commands', new Set(['response_json'])]
 ]);
 
 function rewriteRowReferences(table, row, columns, replacements) {
@@ -258,7 +360,11 @@ function rewriteRowReferences(table, row, columns, replacements) {
   const immutablePayload = table === 'documents' && IMMUTABLE_ISSUE_PACKAGE_TYPES.has(String(rewritten.type || '').toLowerCase());
   if (immutablePayload) return rewritten;
   const immutableColumns = IMMUTABLE_SOURCE_JSON_COLUMNS.get(table) || new Set();
+  const sealedApproval = table === 'approvals' && ['client_delivery_offer', 'work_delivery_decision', 'inspection_coverage_decision', 'work_balance_plan'].includes(row.target_type);
+  const sealedConversation = table === 'audit_events' && ['conversation_source', 'conversation_publication', 'conversation_analysis', 'client_delivery_offer', 'client_delivery_response'].includes(row.entity_type);
   for (const column of columns.filter(name => name.endsWith('_json') && !immutableColumns.has(name))) {
+    // These values are reviewed content, not live storage pointers, even if text equals a filename.
+    if ((sealedApproval && column === 'data_json') || sealedConversation) continue;
     if (typeof rewritten[column] !== 'string' || !rewritten[column].trim()) continue;
     try {
       rewritten[column] = JSON.stringify(replaceRetainedReferences(JSON.parse(rewritten[column]), replacements));
@@ -267,6 +373,19 @@ function rewriteRowReferences(table, row, columns, replacements) {
     }
   }
   return rewritten;
+}
+
+function invalidateWorkerSessionRows(rows, timestamp) {
+  const activeCount = rows.filter(row => !row.revoked_at).length;
+  return {
+    activeCount,
+    rows: rows.map(row => row.revoked_at ? row : ({
+      ...row,
+      revoked_at: timestamp,
+      revocation_reason: 'hosted_environment_migration',
+      updated_at: timestamp
+    }))
+  };
 }
 
 function postgresClientOptions(connectionString) {
@@ -318,6 +437,7 @@ async function insertRows(client, table, columns, rows) {
 }
 
 const MIGRATION_SEED_COLUMNS = {
+  work_context_control: ['id', 'revision'],
   inspection_templates: [
     'id',
     'template_key',
@@ -340,7 +460,7 @@ async function prepareMigrationSeedTable(client, table, sourceIncludesTable) {
   if (!destinationRows.length) return false;
   const expectedRows = table === 'inspection_templates'
     ? builtInInspectionTemplateRows().map(row => Object.fromEntries(columns.map(column => [column, row[column]])))
-    : [];
+    : table === 'work_context_control' ? [{ id: 'current', revision: 0 }] : [];
   const canonical = destinationRows.length === expectedRows.length
     && tableDigest(table, columns, destinationRows) === tableDigest(table, columns, expectedRows);
   if (!canonical) throw new Error(`Hosted migration target is not empty: ${table}`);
@@ -473,8 +593,14 @@ async function migrateEvidence(verification, documents, storage, storedObjects =
   return { replacements, stored: storedObjects, files };
 }
 
-function createHostedEvidenceStorageFromEnvironment() {
-  return createEvidenceStorage({
+function assertHostedCompanyStorage(companyId, storage) {
+  if (companyId && storage && !String(storage.prefix || '').startsWith(`companies/${companyId}/`)) {
+    throw Object.assign(new Error('Hosted migration storage must use the source company object prefix.'), { code: 'company_storage_scope_mismatch' });
+  }
+}
+
+function createHostedEvidenceStorageFromEnvironment(companyId) {
+  const storage = createEvidenceStorage({
     mode: 's3',
     s3: {
       endpoint: process.env.CONTRACTOR_AI_S3_ENDPOINT,
@@ -482,15 +608,29 @@ function createHostedEvidenceStorageFromEnvironment() {
       region: process.env.CONTRACTOR_AI_S3_REGION || 'eu-central-1',
       accessKeyId: process.env.CONTRACTOR_AI_S3_ACCESS_KEY_ID,
       secretAccessKey: process.env.CONTRACTOR_AI_S3_SECRET_ACCESS_KEY,
-      prefix: process.env.CONTRACTOR_AI_S3_PREFIX || 'contractor-ai/evidence',
+      prefix: process.env.CONTRACTOR_AI_S3_PREFIX || `companies/${companyId}/evidence`,
       timeoutMs: process.env.CONTRACTOR_AI_STORAGE_TIMEOUT_MS
     }
   });
+  assertHostedCompanyStorage(companyId, storage);
+  return storage;
 }
 
-async function migrateLocalBackupToHosted({ backupDir, databaseUrl, storage = null, actor = 'local_to_hosted_migration', signingKey, allowLegacyUnsigned = false }) {
+async function migrateLocalBackupToHosted({ backupDir, databaseUrl, companyId, storage = null, actor = 'local_to_hosted_migration', signingKey, allowLegacyUnsigned = false, handover = null }) {
   if (!databaseUrl) throw new Error('A hosted PostgreSQL database URL is required.');
   const verification = verifyBackupDirectory(backupDir, { signingKey, allowLegacyUnsigned });
+  const requiredCompanyId = normalizeCompanyId(companyId);
+  if (requiredCompanyId && verification.company?.id !== requiredCompanyId) {
+    throw Object.assign(new Error('The source backup is not bound to the configured hosted company. Upgrade and verify it locally before migration.'), { code: 'company_runtime_mismatch' });
+  }
+  assertHostedCompanyStorage(requiredCompanyId || verification.company?.id, storage);
+  const scopeCheck = new DatabaseSync(verification.ledgerFile, { readOnly: true });
+  let targetAuthority = null;
+  try {
+    if (handover) targetAuthority = validatePreparedPackage({ sourceDb: scopeCheck, permit: handover.permit, key: handover.key,
+      company: verification.company, manifestSha256: verification.manifestHash });
+    else if (readAuthority(scopeCheck)) throw Object.assign(new Error('A governed company snapshot requires its targeted handover permit.'), { code: 'authority_permit_required' });
+  } finally { scopeCheck.close(); }
   const initializer = new ContractorOperatingLedger({ databaseUrl });
   const destinationMigrations = initializer.migrationStatus();
   initializer.close();
@@ -499,6 +639,7 @@ async function migrateLocalBackupToHosted({ backupDir, databaseUrl, storage = nu
   const client = new Client(postgresClientOptions(databaseUrl));
   const uploadedObjects = [];
   let committed = false;
+  let commitAttempted = false;
   try {
     const sourceAuditIntegrity = verifySourceAuditChain(source);
     const tables = orderedSourceTables(source, sourceTableNames(source));
@@ -507,7 +648,10 @@ async function migrateLocalBackupToHosted({ backupDir, databaseUrl, storage = nu
       table,
       source.prepare(`SELECT * FROM ${quotedIdentifier(table)}`).all()
     ]));
+    if (targetAuthority) sourceRowsByTable.set('company_authority', []);
     const invalidatedOperatorSessions = sourceRowsByTable.get(OPERATOR_SESSION_TABLE)?.length || 0;
+    const invalidatedIdentitySessions = sourceRowsByTable.get('identity_runtime_sessions')?.length || 0;
+    if (sourceRowsByTable.has('identity_runtime_sessions')) sourceRowsByTable.set('identity_runtime_sessions', []);
     if (sourceRowsByTable.has(OPERATOR_SESSION_TABLE)) {
       sourceRowsByTable.set(OPERATOR_SESSION_TABLE, []);
     }
@@ -520,6 +664,15 @@ async function migrateLocalBackupToHosted({ backupDir, databaseUrl, storage = nu
       sourceRowsByTable.set(API_RATE_LIMIT_TABLE, []);
     }
     const accessDeactivationTime = new Date().toISOString();
+    const workerSessions = sourceRowsByTable.get('work_board_sessions') || [];
+    const workerSessionInvalidation = invalidateWorkerSessionRows(workerSessions, accessDeactivationTime);
+    const invalidatedWorkerSessions = workerSessionInvalidation.activeCount;
+    if (sourceRowsByTable.has('work_board_sessions')) {
+      sourceRowsByTable.set('work_board_sessions', workerSessionInvalidation.rows);
+    }
+    if (sourceRowsByTable.has('work_board_accounts')) {
+      sourceRowsByTable.set('work_board_accounts', sourceRowsByTable.get('work_board_accounts').map(row => ({ ...row, status: 'suspended' })));
+    }
     const deactivatedManagedOperators = (sourceRowsByTable.get(MANAGED_OPERATOR_TABLE) || [])
       .filter(row => row.status === 'active').length;
     if (sourceRowsByTable.has(MANAGED_OPERATOR_TABLE)) {
@@ -571,7 +724,7 @@ async function migrateLocalBackupToHosted({ backupDir, databaseUrl, storage = nu
       if (destinationRows.length !== rows.length || sourceDigest !== destinationDigest) {
         throw new Error(`Hosted verification failed for ledger table: ${table}`);
       }
-      tableResults.push({ table, rows: rows.length, sha256: sourceDigest });
+      tableResults.push({ table, columns, rows: rows.length, sha256: sourceDigest });
     }
 
     const rebuiltAuditChain = await rebuildHostedAuditChain(client);
@@ -583,7 +736,10 @@ async function migrateLocalBackupToHosted({ backupDir, databaseUrl, storage = nu
       databaseSha256: databaseDigest,
       sourceRows: tableResults.reduce((total, result) => total + result.rows, 0),
       tables: tableResults.length,
+      tableDigests: tableResults,
       invalidatedOperatorSessions,
+      invalidatedIdentitySessions,
+      invalidatedWorkerSessions,
       deactivatedManagedOperators,
       clearedAuthenticationRateLimits,
       clearedApiRateLimits,
@@ -594,7 +750,7 @@ async function migrateLocalBackupToHosted({ backupDir, databaseUrl, storage = nu
       },
       rebuiltAuditChain,
       evidenceFiles: evidence.files.length,
-      evidenceSha256: evidence.files.map(file => ({ source: file.source, bytes: file.bytes, sha256: file.sha256 }))
+      evidenceSha256: evidence.files.map(file => ({ source: file.source, storageRef: file.storageRef, bytes: file.bytes, sha256: file.sha256 }))
     };
     await appendHostedAuditEvent(client, {
       id: receiptId,
@@ -608,10 +764,18 @@ async function migrateLocalBackupToHosted({ backupDir, databaseUrl, storage = nu
       metadataJson: JSON.stringify(receiptMetadata),
       createdAt: new Date().toISOString()
     });
+    if (targetAuthority) {
+      const record = authorityRecord(targetAuthority);
+      await insertRows(client, 'company_authority', Object.keys(record), [record]);
+      const previous = (await client.query('SELECT * FROM company_authority_history ORDER BY sequence DESC LIMIT 1')).rows[0];
+      const event = authorityHistoryRecord(record, previous);
+      await insertRows(client, 'company_authority_history', Object.keys(event), [event]);
+    }
+    commitAttempted = true;
     await client.query('COMMIT');
     committed = true;
 
-    const validationLedger = new ContractorOperatingLedger({ databaseUrl });
+    const validationLedger = new ContractorOperatingLedger({ databaseUrl, authorityMaintenance: Boolean(targetAuthority) });
     try {
       const diagnostics = validationLedger.diagnose();
       if (!diagnostics.valid) {
@@ -627,7 +791,7 @@ async function migrateLocalBackupToHosted({ backupDir, databaseUrl, storage = nu
       const receipt = validationLedger.listAudit({ entityType: 'operational_migration', limit: 100 })
         .find(event => event.id === receiptId);
       if (!receipt) throw new Error('Hosted migration receipt was not retained.');
-      return {
+      const result = {
         success: true,
         backupId: verification.manifest.backupId,
         manifestSha256: verification.manifestHash,
@@ -635,6 +799,8 @@ async function migrateLocalBackupToHosted({ backupDir, databaseUrl, storage = nu
         tables: tableResults,
         sourceRows: receiptMetadata.sourceRows,
         invalidatedOperatorSessions,
+        invalidatedIdentitySessions,
+        invalidatedWorkerSessions,
         deactivatedManagedOperators,
         clearedAuthenticationRateLimits,
         clearedApiRateLimits,
@@ -645,11 +811,16 @@ async function migrateLocalBackupToHosted({ backupDir, databaseUrl, storage = nu
         migrationVersion: destinationMigrations.currentVersion,
         diagnostics: { valid: diagnostics.valid, issueCount: diagnostics.issueCount }
       };
+      if (targetAuthority) {
+        result.authorityStatus = 'staged';
+        result.handoverReceipt = retainTargetVerification(validationLedger.db, { key: handover.key, result });
+      }
+      return result;
     } finally {
       validationLedger.close();
     }
   } catch (error) {
-    if (!committed) {
+    if (!committed && !commitAttempted) {
       await client.query('ROLLBACK').catch(() => {});
       if (storage) {
         const cleanupFailures = [];
@@ -662,6 +833,10 @@ async function migrateLocalBackupToHosted({ backupDir, databaseUrl, storage = nu
         }
         if (cleanupFailures.length) error.cleanupFailures = cleanupFailures.length;
       }
+    }
+    if (!committed && commitAttempted) {
+      error.code = 'migration_commit_unknown';
+      error.message = 'Migration commit acknowledgement was lost. Keep the database and uploaded evidence; inspect the retained migration receipt and authority before retrying.';
     }
     throw error;
   } finally {
@@ -677,8 +852,10 @@ async function runCli() {
   if (!/^[A-Za-z0-9._-]+$/.test(backupId) || backupId === '.' || backupId === '..') {
     throw new Error('Set --backup-id to a valid verified local backup id.');
   }
-  if (argumentsMap.confirm !== `MIGRATE_${backupId}`) {
-    throw new Error(`Set --confirm MIGRATE_${backupId} to migrate this verified backup into an empty hosted target.`);
+  const verifyExisting = argumentsMap['verify-existing'] === true;
+  const expectedConfirmation = `${verifyExisting ? 'VERIFY_MIGRATION' : 'MIGRATE'}_${backupId}`;
+  if (argumentsMap.confirm !== expectedConfirmation) {
+    throw new Error(`Set --confirm ${expectedConfirmation} to ${verifyExisting ? 'reconcile the retained staged target without rerunning the migration' : 'migrate this verified backup into an empty hosted target'}.`);
   }
   const databaseUrl = String(argumentsMap['database-url'] || process.env.CONTRACTOR_AI_DATABASE_URL || '').trim();
   if (!databaseUrl) throw new Error('Set CONTRACTOR_AI_DATABASE_URL to the empty hosted PostgreSQL migration target.');
@@ -686,16 +863,32 @@ async function runCli() {
   if (connection.sslMode !== 'verify-full') {
     throw new Error('Hosted migration requires PostgreSQL certificate and hostname verification with sslmode=verify-full.');
   }
-  const storage = createHostedEvidenceStorageFromEnvironment();
+  const companyId = normalizeCompanyId(process.env.CONTRACTOR_AI_COMPANY_ID);
+  if (!companyId) throw new Error('Set CONTRACTOR_AI_COMPANY_ID to the retained source company id before hosted migration.');
+  if (!argumentsMap['permit-file'] || !argumentsMap['receipt-output']) throw new Error('Hosted transfer requires --permit-file and --receipt-output. Follow docs/COMPANY_HANDOVER.md; a copied backup alone cannot authorize activation.');
+  const handover = { permit: readDocument(argumentsMap['permit-file']), key: readPrivateKeyFile(process.env.CONTRACTOR_AI_AUTHORITY_KEY_FILE) };
+  const storage = createHostedEvidenceStorageFromEnvironment(companyId);
+  if (argumentsMap['verify-existing'] === true) {
+    const result = await verifyCommittedHostedMigration({ backupDir: path.join(dataDir, 'backups', backupId), databaseUrl,
+      companyId, storage, signingKey: argumentsMap['signing-key'], handover });
+    const receiptFile = privateOutput(argumentsMap['receipt-output'], result.handoverReceipt);
+    const { handoverReceipt: _handoverReceipt, ...summary } = result;
+    process.stdout.write(`${JSON.stringify({ ...summary, receiptFile, activationRequired: true })}\n`);
+    return;
+  }
   const result = await migrateLocalBackupToHosted({
     backupDir: path.join(dataDir, 'backups', backupId),
     databaseUrl,
+    companyId,
     storage,
     actor: 'hosted_migration_cli',
     signingKey: argumentsMap['signing-key'],
-    allowLegacyUnsigned: argumentsMap['allow-legacy-unsigned'] === true
+    allowLegacyUnsigned: argumentsMap['allow-legacy-unsigned'] === true,
+    handover
   });
-  process.stdout.write(`${JSON.stringify(result)}\n`);
+  const receiptFile = privateOutput(argumentsMap['receipt-output'], result.handoverReceipt);
+  const { handoverReceipt: _handoverReceipt, ...summary } = result;
+  process.stdout.write(`${JSON.stringify({ ...summary, receiptFile, activationRequired: true })}\n`);
 }
 
 if (require.main === module) {
@@ -707,8 +900,10 @@ if (require.main === module) {
 
 module.exports = {
   migrateLocalBackupToHosted,
+  verifyCommittedHostedMigration,
   orderedSelfReferentialRows,
   orderedSourceTables,
+  invalidateWorkerSessionRows,
   rewriteRowReferences,
   tableDigest,
   verifyBackupDirectory

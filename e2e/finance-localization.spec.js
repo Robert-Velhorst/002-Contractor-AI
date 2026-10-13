@@ -1,7 +1,7 @@
 const { test, expect } = require('@playwright/test');
 const { expectNoAxeViolations } = require('./accessibility-helpers');
 
-test('job costing and cost-to-complete stay bilingual without rewriting retained evidence', async ({ page, request }) => {
+test('job costing and cost-to-complete stay bilingual without rewriting retained evidence', async ({ page, request }, testInfo) => {
   const marker = Date.now();
   const title = `Retained finance evidence ${marker}`;
   const budgetDescription = `Retained English cost baseline ${marker}`;
@@ -65,6 +65,10 @@ test('job costing and cost-to-complete stay bilingual without rewriting retained
 
   const consoleErrors = [];
   const pageErrors = [];
+  const financeAssets = [];
+  page.on('request', request => {
+    if (/\/assets\/FinanceWorkspace-[^/]+\.js$/.test(new URL(request.url()).pathname)) financeAssets.push(request.url());
+  });
   page.on('console', message => {
     if (message.type() === 'error') consoleErrors.push(message.text());
   });
@@ -75,12 +79,14 @@ test('job costing and cost-to-complete stay bilingual without rewriting retained
   await page.waitForLoadState('networkidle');
   expect(pageErrors).toEqual([]);
   expect(consoleErrors).toEqual([]);
+  expect(financeAssets).toHaveLength(0);
   await page.locator('header').getByLabel(/^(Language|Taal)$/, { exact: true }).selectOption('en-GB');
   await page.locator('header').getByLabel('Language', { exact: true }).selectOption('nl-NL');
   await page.getByRole('button', { name: 'Financien', exact: true }).click();
 
   const finance = page.getByTestId('finance-workspace');
   await expect(finance.getByRole('heading', { name: 'Financiele gereedheid', exact: true })).toBeVisible();
+  expect(financeAssets).toHaveLength(1);
   let row = finance.locator('.finance-item').filter({ hasText: title });
   await expect(row.locator('.status')).toHaveText('kostenbeoordeling vereist');
   await expect(row).toContainText('Kostenbudget');
@@ -93,7 +99,18 @@ test('job costing and cost-to-complete stay bilingual without rewriting retained
   await expect(row).toContainText('1 urenregel blijft onbeoordeeld');
   await expect(row).toContainText('1 uitgavenregel is opgenomen in EAC');
   await expect(row).toContainText(budgetDescription);
+  const desktopLayout = await row.evaluate(element => {
+    const copy = element.querySelector('.finance-copy').getBoundingClientRect();
+    const actions = element.querySelector('.finance-actions').getBoundingClientRect();
+    return {
+      fullWidth: copy.width >= element.clientWidth * 0.85,
+      actionsBelow: actions.top >= copy.bottom,
+      valuesFit: [...element.querySelectorAll('.finance-values span, .finance-values strong')].every(value => value.scrollWidth <= value.clientWidth + 1)
+    };
+  });
+  expect(desktopLayout).toEqual({ fullWidth: true, actionsBelow: true, valuesFit: true });
   await expectNoAxeViolations(page, 'Dutch job costing and cost-to-complete');
+  await row.screenshot({ path: testInfo.outputPath('finance-detail-desktop.png') });
 
   await page.reload();
   await page.getByRole('button', { name: 'Financien', exact: true }).click();
@@ -118,6 +135,9 @@ test('job costing and cost-to-complete stay bilingual without rewriting retained
   }));
   expect(geometry.pageWidth).toBeLessThanOrEqual(geometry.viewportWidth + 1);
   expect(geometry.scrollWidth).toBeLessThanOrEqual(geometry.clientWidth + 1);
+  expect(await row.locator('.finance-values').evaluate(element => [...element.children].every(value => value.scrollWidth <= value.clientWidth + 1))).toBe(true);
+  expect(await row.locator('.finance-actions').evaluate(element => [...element.children].every(value => value.getBoundingClientRect().height <= 90))).toBe(true);
+  await row.screenshot({ path: testInfo.outputPath('finance-detail-mobile.png') });
 
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.locator('header').getByLabel('Taal', { exact: true }).selectOption('en-GB');

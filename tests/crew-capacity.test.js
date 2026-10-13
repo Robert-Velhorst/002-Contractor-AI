@@ -85,6 +85,68 @@ function scheduledFixture(t, durationHours = 8) {
   return { ledger, job: ledger.getJobDetail(job.id), worker, assignment };
 }
 
+test('capacity profiles validate, retain and integrity-check explicit shift windows', t => {
+  const ledger = createLedger(t);
+  const worker = ledger.upsertWorker({ name: 'Shift-window installer', role: 'Installer', status: 'available' });
+  const dailyHours = { sunday: 0, monday: 8, tuesday: 8, wednesday: 8, thursday: 8, friday: 8, saturday: 0 };
+  const workingWindows = Object.fromEntries(['monday', 'tuesday', 'wednesday', 'thursday', 'friday'].map(day => [day, { start: '08:00', end: '16:00' }]));
+  const retained = ledger.setCrewCapacityProfile(worker.id, {
+    effectiveFrom: WINDOW_START,
+    timezone: 'Europe/Amsterdam',
+    dailyHours,
+    workingWindows
+  });
+  assert.equal(retained.profile.integrityValid, true);
+  assert.equal(retained.profile.hasWorkingTimeWindows, true);
+  assert.deepEqual(retained.profile.workingWindows, workingWindows);
+
+  const replay = ledger.setCrewCapacityProfile(worker.id, { effectiveFrom: WINDOW_START, timezone: 'Europe/Amsterdam', dailyHours });
+  assert.equal(replay.replayed, true);
+  assert.deepEqual(replay.profile.workingWindows, workingWindows);
+  assert.throws(() => ledger.setCrewCapacityProfile(worker.id, {
+    effectiveFrom: WINDOW_START,
+    timezone: 'Europe/Amsterdam',
+    dailyHours,
+    workingWindows: { monday: { start: '08:00', end: '16:00' } }
+  }), error => error.code === 'crew_capacity_working_window_required');
+  assert.throws(() => ledger.setCrewCapacityProfile(worker.id, {
+    effectiveFrom: WINDOW_START,
+    timezone: 'Europe/Amsterdam',
+    dailyHours,
+    workingWindows: Object.fromEntries(['monday', 'tuesday', 'wednesday', 'thursday', 'friday'].map(day => [day, { start: '08:15', end: '16:15' }]))
+  }), error => error.code === 'crew_capacity_working_window_time_invalid');
+
+  ledger.db.prepare('UPDATE crew_capacity_profiles SET data_json = ? WHERE id = ?').run(
+    JSON.stringify({ workingWindows: { monday: { start: '09:00', end: '17:00' } } }),
+    retained.profile.id
+  );
+  assert.equal(ledger.listCrewCapacityProfiles({ workerId: worker.id })[0].integrityValid, false);
+});
+
+test('capacity profile v3 validates multiple ordered non-overlapping work intervals', t => {
+  const ledger = createLedger(t);
+  const worker = ledger.upsertWorker({ name: 'Split-shift installer', role: 'Installer', status: 'available' });
+  const dailyHours = { sunday: 0, monday: 7, tuesday: 0, wednesday: 0, thursday: 0, friday: 0, saturday: 0 };
+  const workingWindows = { monday: [{ start: '08:00', end: '12:00' }, { start: '13:00', end: '16:00' }] };
+  const result = ledger.setCrewCapacityProfile(worker.id, { effectiveFrom: WINDOW_START, timezone: 'Europe/Amsterdam', dailyHours, workingWindows });
+  assert.equal(result.profile.snapshot.format, 'contractor-ai-crew-capacity-profile/v3');
+  assert.equal(result.profile.integrityValid, true);
+  assert.deepEqual(result.profile.workingWindows, workingWindows);
+  assert.equal(ledger.setCrewCapacityProfile(worker.id, { effectiveFrom: WINDOW_START, timezone: 'Europe/Amsterdam', dailyHours }).replayed, true);
+
+  for (const invalid of [
+    [{ start: '08:00', end: '12:00' }, { start: '11:00', end: '16:00' }],
+    [{ start: '13:00', end: '16:00' }, { start: '08:00', end: '12:00' }],
+    [{ start: '08:00', end: '11:00' }, { start: '13:00', end: '16:00' }],
+    Array.from({ length: 5 }, (_, index) => ({ start: `${String(6 + index * 2).padStart(2, '0')}:00`, end: `${String(7 + index * 2).padStart(2, '0')}:00` }))
+  ]) {
+    assert.throws(() => ledger.setCrewCapacityProfile(worker.id, {
+      effectiveFrom: WINDOW_START, timezone: 'Europe/Amsterdam', dailyHours,
+      workingWindows: { monday: invalid }
+    }));
+  }
+});
+
 test('explicit capacity and day allocations produce an approval-backed source-current look-ahead', t => {
   const { ledger, job, worker, assignment } = scheduledFixture(t, 8);
   const profile = ledger.setCrewCapacityProfile(worker.id, weekdayProfile(8), { actor: 'planner' });
@@ -136,7 +198,7 @@ test('explicit capacity and day allocations produce an approval-backed source-cu
   assert.equal(approvedBoard.plans.current, true);
   assert.equal(approvedBoard.safeguards.externalCommitments, 0);
   assert.equal(ledger.diagnose().valid, true, JSON.stringify(ledger.diagnose().issues));
-  assert.equal(ledger.migrationStatus().currentVersion, '072_operator_locale_preferences');
+  assert.equal(ledger.migrationStatus().currentVersion, '097_durable_evidence_storage_reservations');
 });
 
 test('overload, retained absence, stale source, and malformed hours fail closed', t => {

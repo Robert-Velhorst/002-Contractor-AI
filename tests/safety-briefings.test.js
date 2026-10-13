@@ -36,9 +36,10 @@ function fixture(t, suffix = 'governed') {
   return { ledger, job, workers };
 }
 
-function acknowledgement(worker, suffix) {
+function acknowledgement(worker, suffix, briefingContentHash) {
   return {
     entryKey: `safety-acknowledgement-${suffix}`,
+    briefingContentHash,
     workerId: worker.id,
     workerName: worker.name,
     acknowledged: true,
@@ -72,12 +73,13 @@ test('safety briefings retain worker acknowledgements and require approval-backe
   assert.equal(replayedCreation.replayed, true);
   assert.equal(replayedCreation.id, created.id);
 
-  const first = ledger.acknowledgeSafetyMeeting(job.id, created.id, acknowledgement(workers[0], '001'), { actor: 'field_worker' });
+  const contentHash = ledger.getSafetyMeeting(created.id).briefingContentHash;
+  const first = ledger.acknowledgeSafetyMeeting(job.id, created.id, acknowledgement(workers[0], '001', contentHash), { actor: 'field_worker' });
   assert.equal(first.replayed, false);
   assert.equal(first.attendee.status, 'acknowledged');
   assert.equal(first.attendee.integrityValid, true);
   assert.equal(first.meeting.attendanceSummary.outstanding, 1);
-  const replay = ledger.acknowledgeSafetyMeeting(job.id, created.id, acknowledgement(workers[0], '001'), { actor: 'offline_retry' });
+  const replay = ledger.acknowledgeSafetyMeeting(job.id, created.id, acknowledgement(workers[0], '001', contentHash), { actor: 'offline_retry' });
   assert.equal(replay.replayed, true);
   assert.equal(replay.attendee.id, first.attendee.id);
 
@@ -115,6 +117,25 @@ test('safety briefings retain worker acknowledgements and require approval-backe
   assert.equal(ledger.diagnose().valid, true);
 });
 
+test('offline safety briefing acknowledgements conflict when the retained topics change', t => {
+  const { ledger, job, workers } = fixture(t, 'changed-topics');
+  const meeting = ledger.createSafetyMeeting(job.id, {
+    entryKey: 'safety-briefing-changed-topics-001',
+    title: 'Changed site access briefing',
+    scheduledAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+    topics: ['Current access route', 'Pedestrian exclusion']
+  }, { actor: 'office_operator' });
+  const downloadedHash = ledger.getSafetyMeeting(meeting.id).briefingContentHash;
+  ledger.db.prepare('UPDATE safety_meetings SET topics_json = ?, updated_at = ? WHERE id = ?')
+    .run(JSON.stringify(['Current access route', 'Revised lifting zone']), new Date().toISOString(), meeting.id);
+
+  assert.throws(
+    () => ledger.acknowledgeSafetyMeeting(job.id, meeting.id, acknowledgement(workers[0], 'old-topics-001', downloadedHash), { actor: 'field_worker' }),
+    error => error.code === 'safety_briefing_source_changed' && error.statusCode === 409
+  );
+  assert.equal(ledger.getSafetyMeeting(meeting.id).attendanceSummary.acknowledged, 0);
+});
+
 test('safety briefing approval rolls back after retained attendance evidence is changed', t => {
   const { ledger, job, workers } = fixture(t, 'tamper');
   const meeting = ledger.createSafetyMeeting(job.id, {
@@ -124,7 +145,7 @@ test('safety briefing approval rolls back after retained attendance evidence is 
     workerIds: [workers[0].id],
     includeAssignedCrew: false
   });
-  ledger.acknowledgeSafetyMeeting(job.id, meeting.id, acknowledgement(workers[0], 'tamper-001'));
+  ledger.acknowledgeSafetyMeeting(job.id, meeting.id, acknowledgement(workers[0], 'tamper-001', ledger.getSafetyMeeting(meeting.id).briefingContentHash));
   const signoff = ledger.signOffSafetyMeeting(job.id, meeting.id, { evidenceReference: 'briefing-sheet:tamper-001' });
   const attendee = ledger.getSafetyMeeting(meeting.id).attendeeRecords[0];
   ledger.db.prepare('UPDATE safety_meeting_attendees SET attendee_name = ? WHERE id = ?').run('Changed identity', attendee.id);

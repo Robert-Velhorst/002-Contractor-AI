@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
+const { jpegFixture } = require('./image-fixtures');
 
 test('cumulative evidence quota rejects an upload before storage', async t => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'contractor-ai-evidence-quota-'));
@@ -23,6 +24,7 @@ test('cumulative evidence quota rejects an upload before storage', async t => {
     fs.rmSync(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   });
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  const retainedFiles = fs.readdirSync(process.env.UPLOAD_DIR);
 
   const intakeResponse = await fetch(`${baseUrl}/api/ledger/intake`, {
     method: 'POST',
@@ -35,12 +37,11 @@ test('cumulative evidence quota rejects an upload before storage', async t => {
   const form = new FormData();
   form.append('jobId', intake.job.id);
   form.append('evidenceFile', new Blob([
-    Buffer.from([0xff, 0xd8, 0xff, 0xe0]),
-    Buffer.from('quota overflow')
+    jpegFixture('quota overflow')
   ], { type: 'image/jpeg' }), 'quota-proof.jpg');
   const uploadResponse = await fetch(`${baseUrl}/api/ledger/upload`, { method: 'POST', body: form });
   const upload = await uploadResponse.json();
   assert.equal(uploadResponse.status, 507);
   assert.equal(upload.error.code, 'evidence_storage_quota_exceeded');
-  assert.equal(fs.existsSync(process.env.UPLOAD_DIR) ? fs.readdirSync(process.env.UPLOAD_DIR).length : 0, 0);
+  assert.deepEqual(fs.readdirSync(process.env.UPLOAD_DIR), retainedFiles);
 });

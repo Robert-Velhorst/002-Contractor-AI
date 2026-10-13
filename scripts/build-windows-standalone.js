@@ -1,14 +1,85 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
+const { verifyBundleBudget } = require('./verify-bundle-budget');
 
 const root = path.resolve(__dirname, '..');
 const releaseRoot = path.join(root, 'release');
-const target = path.join(releaseRoot, 'ContractorAI-windows-x64');
+const defaultTarget = path.join(releaseRoot, 'ContractorAI-windows-x64');
+const target = resolvePackageTarget();
+
+function resolvePackageTarget(directory = process.env.CONTRACTOR_AI_WINDOWS_PACKAGE_DIR || defaultTarget) {
+  const resolved = path.resolve(root, directory);
+  if (path.dirname(resolved) !== path.resolve(releaseRoot)) {
+    throw new Error('Windows packages must be direct child directories of the workspace release directory.');
+  }
+  for (const candidate of [releaseRoot, resolved]) {
+    if (fs.lstatSync(candidate, { throwIfNoEntry: false })?.isSymbolicLink()) {
+      throw new Error('Refusing to build or verify a Windows package through a symbolic link or junction.');
+    }
+  }
+  return resolved;
+}
 const runtimeFiles = [
+  'image-processor.js',
   'backup-manifest.js',
+  'company-runtime.js',
+  'company-authority.js',
+  'company-handover.js',
+  'backup-evidence.js',
+  'identity-registry.js',
+  'identity-runtime.js',
+  'identity-server.js',
+  'identity-oidc-adapter.js',
+  'identity-recovery.js',
+  'docs/IDENTITY_AND_MEMBERSHIP.md',
+  'docs/IDENTITY_RECOVERY.md',
+  'docs/TOTAL_SOLUTION_DELIVERY.md',
+  'docs/COMPANY_ENVIRONMENTS.md',
+  'docs/COMPANY_HANDOVER.md',
+  'docs/EU_HOSTING.md',
+  'docs/adr/0001-separate-identity-registry.md',
+  'docs/adr/0002-registry-recovery-does-not-restore-access.md',
+  'docs/adr/0003-company-authority-handover.md',
   'bounded-json.js',
   'contractor-framework-catalog.json',
+  'contractor-review.js',
+  'work-context.js',
+  'work-delivery.js',
+  'work-balance.js',
+  'client-date-commitments.js',
+  'operational-recovery.js',
+  'variation-implementation.js',
+  'asset-history.js',
+  'inspection-coverage.js',
+  'client-delivery.js',
+  'client-completion-review.js',
+  'contractual-closeout.js',
+  'conversation-analysis-queue.js',
+  'field-safety-projection.js',
+  'field-task-scope.js',
+  'jha-safety-definition.js',
+  'task-jha-applicability.js',
+  'resource-planner.js',
+  'resource-planner-worker.js',
+  'shared-material-stock.js',
+  'supplier-performance.js',
+  'submittal-attachment-manifest.js',
+  'work-board-company-scope.js',
+  'worker-availability-recurrence.js',
+  'docs/INSTALLED_ASSET_HISTORY.md',
+  'docs/INSPECTION_COVERAGE.md',
+  'docs/CLIENT_DELIVERIES.md',
+  'docs/WORK_BALANCE.md',
+  'docs/SHARED_WORK_MODEL.md',
+  'docs/WORK_DELIVERIES.md',
+  'field-work-pack.js',
+  'client-conversation.js',
+  'conversation-routes.js',
+  'work-board.js',
+  'work-board-routes.js',
+  'conversation-analysis.js',
+  'whatsapp-channel.js',
   'csv-safety.js',
   'evidence-storage.js',
   'framework-catalog.js',
@@ -28,6 +99,10 @@ const runtimeFiles = [
   'scripts/export-hai-feed.js',
   'scripts/migrate-local-backup-to-hosted.js',
   'scripts/restore-local-backup.js',
+  'scripts/node-compatibility.js',
+  'scripts/runtime-healthcheck.js',
+  'scripts/identity-maintenance.js',
+  'scripts/company-handover.js',
   'scripts/start-ngrok.js'
 ];
 
@@ -63,7 +138,16 @@ function isReusableRuntimeLockError(error, platform = process.platform) {
   return platform === 'win32' && ['EBUSY', 'EPERM'].includes(error?.code);
 }
 
+function assertPackageDataAbsent(directory) {
+  if (!fs.existsSync(directory)) return;
+  const retained = fs.readdirSync(directory).filter(name => ['data', 'uploads', 'backups', 'runtime.json', 'server-state.json', 'identity-companies.json'].includes(name.toLowerCase())
+    || name.toLowerCase().startsWith('.env') || /\.(sqlite3?|db)(?:-(?:shm|wal))?$/i.test(name)
+    || /\.authority(?:-key)?\.json(?:\..*\.pending)?$/i.test(name));
+  if (retained.length) throw new Error(`Refusing to rebuild a package containing operator data or private configuration: ${retained.join(', ')}. Preserve it outside the generated release directory first.`);
+}
+
 function prepareTarget(resolvedTarget) {
+  assertPackageDataAbsent(resolvedTarget);
   try {
     fs.rmSync(resolvedTarget, { recursive: true, force: true });
     return false;
@@ -112,26 +196,59 @@ function copyProductionDependencies() {
   return copied;
 }
 
+function removeStagedWebBuild(directory) {
+  const resolved = resolvePackageTarget(directory);
+  if (!path.basename(resolved).startsWith('.contractor-web-build-')) {
+    throw new Error('Refusing to remove an unexpected web build staging directory.');
+  }
+  assertPackageDataAbsent(resolved);
+  fs.rmSync(resolved, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 });
+}
+
+function withStagedWebBuild(build) {
+  resolvePackageTarget(path.join(releaseRoot, '.contractor-web-build-stage'));
+  fs.mkdirSync(releaseRoot, { recursive: true });
+  const stagingDirectory = fs.mkdtempSync(path.join(releaseRoot, '.contractor-web-build-'));
+  try {
+    return build(stagingDirectory);
+  } finally {
+    removeStagedWebBuild(stagingDirectory);
+  }
+}
+
+function withVerifiedWebBuild(distDirectory, install) {
+  const report = verifyBundleBudget({ distDirectory });
+  return install(report);
+}
+
 function buildWindowsStandalone() {
   assertBuildHost();
-  const resolvedTarget = path.resolve(target);
-  if (path.dirname(resolvedTarget) !== path.resolve(releaseRoot)) throw new Error('Refusing to replace an unexpected standalone target directory.');
-  run(process.execPath, [path.join(root, 'node_modules', 'vite', 'bin', 'vite.js'), 'build']);
-  const reusedLockedRuntime = prepareTarget(resolvedTarget);
-  fs.mkdirSync(path.join(target, 'runtime'), { recursive: true });
-  fs.cpSync(path.join(root, 'dist'), path.join(target, 'dist'), { recursive: true });
-  for (const file of runtimeFiles) copyRuntimeFile(file);
-  if (!reusedLockedRuntime) fs.copyFileSync(process.execPath, path.join(target, 'runtime', 'node.exe'));
-  writeLaunchers();
-  const productionDependencyCount = copyProductionDependencies();
-  fs.writeFileSync(path.join(target, 'BUILD.json'), `${JSON.stringify({
-    format: 'contractor-ai-windows-package/v1',
-    architecture: process.arch,
-    node: process.versions.node,
-    version: require(path.join(root, 'package.json')).version,
-    productionDependencyCount,
-    builtAt: new Date().toISOString()
-  }, null, 2)}\n`);
+  const resolvedTarget = resolvePackageTarget(target);
+  assertPackageDataAbsent(resolvedTarget);
+  withStagedWebBuild(stagingDirectory => {
+    const stagedDist = path.join(stagingDirectory, 'dist');
+    run(process.execPath, [path.join(root, 'node_modules', 'vite', 'bin', 'vite.js'), 'build', '--outDir', stagedDist]);
+    withVerifiedWebBuild(stagedDist, bundleBudget => {
+      resolvePackageTarget(resolvedTarget);
+      const reusedLockedRuntime = prepareTarget(resolvedTarget);
+      fs.mkdirSync(path.join(target, 'runtime'), { recursive: true });
+      fs.cpSync(stagedDist, path.join(target, 'dist'), { recursive: true });
+      for (const file of runtimeFiles) copyRuntimeFile(file);
+      if (!reusedLockedRuntime) fs.copyFileSync(process.execPath, path.join(target, 'runtime', 'node.exe'));
+      writeLaunchers();
+      const productionDependencyCount = copyProductionDependencies();
+      fs.writeFileSync(path.join(target, 'BUNDLE_BUDGET.json'), `${JSON.stringify(bundleBudget, null, 2)}\n`);
+      fs.writeFileSync(path.join(target, 'BUILD.json'), `${JSON.stringify({
+        format: 'contractor-ai-windows-package/v1',
+        architecture: process.arch,
+        node: process.versions.node,
+        version: require(path.join(root, 'package.json')).version,
+        productionDependencyCount,
+        bundleBudget: { valid: true, assetCount: bundleBudget.assetCount, measurements: bundleBudget.measurements },
+        builtAt: new Date().toISOString()
+      }, null, 2)}\n`);
+    });
+  });
   process.stdout.write(`${JSON.stringify({ success: true, target })}\n`);
   return target;
 }
@@ -143,4 +260,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { assertBuildHost, buildWindowsStandalone, copyProductionDependencies, isReusableRuntimeLockError, prepareTarget, runtimeFiles };
+module.exports = { assertBuildHost, assertPackageDataAbsent, buildWindowsStandalone, copyProductionDependencies, isReusableRuntimeLockError, prepareTarget, removeStagedWebBuild, resolvePackageTarget, runtimeFiles, withStagedWebBuild, withVerifiedWebBuild };

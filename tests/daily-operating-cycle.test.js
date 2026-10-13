@@ -88,6 +88,8 @@ test('daily start huddle and EOD report retain one replay-safe approval-linked o
   assert.equal(started.cycle.status, 'released');
   assert.equal(started.cycle.huddleIntegrityValid, true);
   assert.equal(started.cycle.crew[0].assignmentId, assignment.id);
+  assert.equal(started.cycle.crew[0].scheduledStart, undefined, 'crew schedule details are not exposed in the shared crew projection');
+  assert.equal(started.cycle.huddleSnapshot.crewSchedule[0].scheduledStart, assignment.scheduledStart);
   assert.equal(started.cycle.planningSource.lookaheadPlan, null);
   assert.equal(started.cycle.safeguards.externalCommitments, 0);
 
@@ -129,7 +131,7 @@ test('daily start huddle and EOD report retain one replay-safe approval-linked o
   assert.equal(approved.approvalStatus, 'approved');
   assert.equal(approved.fieldReportStatus, 'submitted');
   assert.equal(ledger.diagnose().valid, true, JSON.stringify(ledger.diagnose().issues));
-  assert.equal(ledger.migrationStatus().currentVersion, '072_operator_locale_preferences');
+  assert.equal(ledger.migrationStatus().currentVersion, '097_durable_evidence_storage_reservations');
 });
 
 test('daily huddle fails closed on missing assignment and safety concern keeps closure pending', t => {
@@ -181,6 +183,92 @@ test('daily dashboard actions expose structured retained job context for locale-
   assert.equal(endAction.actionKind, 'end_of_day_missing');
   assert.equal(endAction.cycleId, started.cycle.id);
   assert.equal(endAction.cycleStatus, 'released');
+});
+
+test('high-priority missing crew check-in survives a busy low-priority monitor queue', t => {
+  const { ledger, worker, job, assignment } = fixture(t, 'busy-checkin');
+  for (let index = 0; index < 24; index += 1) {
+    ledger.createIntake({ title: `Routine backlog ${index}`, status: 'planned', assignAutomatically: false });
+  }
+  const now = Date.now();
+  ledger.db.prepare("UPDATE jobs SET status = 'scheduled' WHERE id = ?").run(job.id);
+  ledger.db.prepare("UPDATE assignments SET status = 'scheduled', scheduled_start = ?, scheduled_end = ? WHERE id = ?")
+    .run(new Date(now - 45 * 60_000).toISOString(), new Date(now + 6 * 60 * 60_000).toISOString(), assignment.id);
+  ledger.createDailyStartHuddle(job.id, huddlePayload(worker.id, {
+    entryKey: 'busy-checkin-huddle', workDate: new Date().toISOString().slice(0, 10)
+  }), { actor: 'site-lead' });
+
+  const actions = ledger.nextActions();
+  assert.ok(actions.length <= 64);
+  assert.ok(ledger.buildTodayCommandPlan({ limit: 20 }).pagination.matching > 20);
+  const warning = actions.find(action => action.actionKind === 'worker_checkin_missing' && action.assignmentId === assignment.id);
+  assert.ok(warning, 'Routine preparation must not crowd a high-priority check-in review out of the monitor.');
+  assert.equal(warning.severity, 'high');
+  assert.match(warning.message, /no absence is assumed/i);
+  const plan = ledger.buildTodayCommandPlan({ search: worker.name, limit: 100 });
+  assert.ok(plan.actions.some(action => action.data?.actionKind === 'worker_checkin_missing'
+    && action.data.assignmentId === assignment.id));
+});
+
+test('released daily huddles surface overdue missing crew check-ins without asserting absence', t => {
+  const { ledger, worker, job, assignment } = fixture(t, 'missing-checkin');
+  const now = Date.now();
+  const scheduledStart = new Date(now - 45 * 60_000).toISOString();
+  const scheduledEnd = new Date(now + 6 * 60 * 60_000).toISOString();
+  const workDate = new Date().toISOString().slice(0, 10);
+  ledger.db.prepare("UPDATE jobs SET status = 'scheduled' WHERE id = ?").run(job.id);
+  ledger.db.prepare("UPDATE assignments SET status = 'scheduled', scheduled_start = ?, scheduled_end = ? WHERE id = ?")
+    .run(scheduledStart, scheduledEnd, assignment.id);
+  const cycle = ledger.createDailyStartHuddle(job.id, huddlePayload(worker.id, {
+    entryKey: 'daily-huddle-missing-checkin', workDate
+  }), { actor: 'site-lead' }).cycle;
+
+  const action = ledger.nextActions().find(item => item.type === 'review_daily_cycle'
+    && item.actionKind === 'worker_checkin_missing' && item.assignmentId === assignment.id);
+  assert.equal(action.cycleId, cycle.id);
+  assert.equal(action.workerName, worker.name);
+  assert.equal(action.severity, 'high');
+  assert.match(action.message, /no absence is assumed/i);
+  assert.equal(action.sourceHash.length, 64);
+
+  const originalSnapshot = ledger.db.prepare('SELECT huddle_snapshot_json FROM daily_operating_cycles WHERE id = ?').get(cycle.id).huddle_snapshot_json;
+  ledger.db.prepare('UPDATE daily_operating_cycles SET huddle_snapshot_json = ? WHERE id = ?')
+    .run(originalSnapshot.replace('"status":"released"', '"status":"blocked"'), cycle.id);
+  assert.equal(ledger.nextActions().some(item => item.type === 'review_daily_cycle'
+    && item.actionKind === 'worker_checkin_missing' && item.assignmentId === assignment.id), false);
+  ledger.db.prepare('UPDATE daily_operating_cycles SET huddle_snapshot_json = ? WHERE id = ?').run(originalSnapshot, cycle.id);
+
+  const confirmed = ledger.confirmMissingCheckinUnavailability(job.id, assignment.id, action.sourceHash, { actor: 'office_operator:test' });
+  assert.equal(confirmed.period.workerId, worker.id);
+  assert.equal(confirmed.period.periodType, 'unavailable');
+  assert.equal(confirmed.period.startsAt, scheduledStart);
+  assert.equal(confirmed.period.endsAt, scheduledEnd);
+  assert.equal(confirmed.period.data.source, 'office_confirmed_missing_checkin');
+  assert.equal(confirmed.period.data.sourceReferenceHash, action.sourceHash);
+  assert.equal(ledger.nextActions().some(item => item.actionKind === 'worker_checkin_missing' && item.assignmentId === assignment.id), false);
+  const replayed = ledger.confirmMissingCheckinUnavailability(job.id, assignment.id, action.sourceHash, { actor: 'office_operator:test' });
+  assert.equal(replayed.replayed, true);
+  assert.equal(ledger.db.prepare("SELECT COUNT(*) AS count FROM worker_availability_periods WHERE worker_id = ? AND source_fingerprint = ?")
+    .get(worker.id, confirmed.period.sourceFingerprint).count, 1);
+  ledger.db.prepare("UPDATE worker_availability_periods SET status = 'cancelled' WHERE id = ?").run(confirmed.period.id);
+  assert.equal(ledger.nextActions().some(item => item.actionKind === 'worker_checkin_missing' && item.assignmentId === assignment.id), true);
+  const restored = ledger.confirmMissingCheckinUnavailability(job.id, assignment.id, action.sourceHash, { actor: 'office_operator:test' });
+  assert.equal(restored.restored, true);
+  assert.equal(restored.period.status, 'active');
+  assert.throws(() => ledger.confirmMissingCheckinUnavailability(job.id, assignment.id, '0'.repeat(64), { actor: 'office_operator:test' }),
+    { code: 'missing_checkin_source_stale', statusCode: 409 });
+
+  const timestamp = new Date().toISOString();
+  ledger.db.prepare(`
+    INSERT INTO attendance_sessions (
+      id, job_id, assignment_id, worker_id, check_in_at, check_out_at, status,
+      check_in_entry_key, check_in_entry_fingerprint, check_out_entry_key,
+      check_out_entry_fingerprint, data_json, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, NULL, 'checked_in', ?, ?, NULL, NULL, '{}', ?, ?)
+  `).run('attendance-test-checkin', job.id, assignment.id, worker.id, timestamp,
+    'daily-checkin-resolves-alert', 'checkin-test-fingerprint', timestamp, timestamp);
+  assert.equal(ledger.nextActions().some(item => item.type === 'review_daily_cycle'
+    && item.actionKind === 'worker_checkin_missing' && item.assignmentId === assignment.id), false);
 });
 
 test('daily EOD child writes roll back together and diagnostics detect snapshot tampering', t => {

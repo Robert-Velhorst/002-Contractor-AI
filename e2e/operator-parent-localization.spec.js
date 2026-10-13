@@ -24,12 +24,16 @@ test('Today, Jobs, and the job shell round-trip locale without changing retained
   await page.goto('/');
   await page.getByLabel(/^(Language|Taal)$/).selectOption('en-GB');
   await expect(page.getByRole('heading', { level: 1, name: 'Today', exact: true })).toBeVisible();
+  await expect(page.locator('body')).not.toContainText(/~[0-9a-z]+/);
 
   await page.locator('header').getByLabel('Language', { exact: true }).selectOption('nl-NL');
   await expect(page.getByRole('heading', { level: 1, name: 'Vandaag', exact: true })).toBeVisible();
-  await expect(page.getByText('Opdrachten vandaag', { exact: true })).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'Actiewachtrij', exact: true })).toBeVisible();
-  await expect(page.getByText(`${title} heeft een medewerkerstoewijzing nodig.`, { exact: true })).toBeVisible();
+  await expect(page.getByText('Open opdrachten', { exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Dagelijkse werkbank', exact: true })).toBeVisible();
+  const workbench = page.getByTestId('contractor-workbench');
+  await workbench.getByRole('searchbox', { name: 'Werk zoeken' }).fill(title);
+  await workbench.getByRole('button', { name: 'Werk zoeken', exact: true }).click();
+  await expect(workbench.getByText(`${title} heeft een medewerkerstoewijzing nodig.`, { exact: true }).first()).toBeVisible();
   await expect(page.getByText(title, { exact: true }).first()).toBeVisible();
 
   await page.getByRole('button', { name: 'Projecten', exact: true }).click();

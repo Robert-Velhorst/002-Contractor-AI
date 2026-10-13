@@ -76,6 +76,7 @@ test('Last Planner workspace governs make-ready, weekly promises, daily evidence
   })).ok()).toBeTruthy();
 
   await page.goto('/');
+  await page.getByLabel(/^(Language|Taal)$/).selectOption('en-GB');
   await page.getByRole('button', { name: 'Schedule', exact: true }).click();
   let board = page.getByTestId('last-planner-board');
   await expect(board.getByRole('heading', { name: 'Last Planner weekly control' })).toBeVisible();

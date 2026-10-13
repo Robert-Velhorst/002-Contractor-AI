@@ -76,10 +76,17 @@ test('client feedback stays scoped, creates internal recovery, and appears in th
   const portalGeometry = await page.locator('.client-portal-shell').evaluate(element => ({
     pageWidth: document.documentElement.scrollWidth,
     viewportWidth: window.innerWidth,
-    shellWidth: element.scrollWidth
+    shellWidth: element.scrollWidth,
+    overflowingNodes: [...element.querySelectorAll('*')].map(node => {
+      const rect = node.getBoundingClientRect()
+      return { tag: node.tagName, className: typeof node.className === 'string' ? node.className : '',
+        right: Math.round(rect.right), width: Math.round(rect.width), scrollWidth: node.scrollWidth,
+        clientWidth: node.clientWidth }
+    }).filter(node => node.right > window.innerWidth || node.scrollWidth > node.clientWidth + 1)
+      .sort((left, right) => right.right - left.right).slice(0, 12)
   }));
-  expect(portalGeometry.pageWidth).toBeLessThanOrEqual(portalGeometry.viewportWidth);
-  expect(portalGeometry.shellWidth).toBeLessThanOrEqual(portalGeometry.viewportWidth);
+  expect(portalGeometry.pageWidth, JSON.stringify(portalGeometry)).toBeLessThanOrEqual(portalGeometry.viewportWidth);
+  expect(portalGeometry.shellWidth, JSON.stringify(portalGeometry)).toBeLessThanOrEqual(portalGeometry.viewportWidth);
 
   const feedbackDetailResponse = await request.get(`/api/ledger/jobs/${intake.job.id}`);
   expect(feedbackDetailResponse.ok()).toBeTruthy();
@@ -121,6 +128,7 @@ test('client feedback stays scoped, creates internal recovery, and appears in th
 
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.goto('/');
+  await page.getByLabel(/^(Language|Taal)$/).selectOption('en-GB');
   await page.getByRole('button', { name: `Open ${title}` }).first().click();
   const workspace = page.getByTestId('job-workspace');
   const closeout = workspace.getByTestId('closeout-register');
@@ -130,6 +138,7 @@ test('client feedback stays scoped, creates internal recovery, and appears in th
   await expect(closeout.getByText('Recovery in progress')).toBeVisible();
 
   await closeout.getByRole('tab', { name: /Aftercare/ }).click();
-  await expect(closeout.getByText('Review low client feedback and prepare service recovery')).toBeVisible();
+  await expect(closeout.getByTestId(`closeout-${recovered.aftercare[0].id}`)
+    .getByText('Review low client feedback and prepare service recovery')).toBeVisible();
   await expect(consoleErrors).toEqual([]);
 });

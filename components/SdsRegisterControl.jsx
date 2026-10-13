@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { FileDown, FlaskConical, Plus, RefreshCw, ShieldCheck } from 'lucide-react'
 import { createFieldEvidenceDraftId } from '../field-outbox'
+import { companyApiUrl } from '../company-request.mjs'
 import { formatDate, formatStatus, futureDateInput, shortHash } from '../dashboard-format'
 
 const CURRENT_STATUSES = new Set(['current', 'approved', 'accepted', 'active'])
@@ -21,6 +22,7 @@ function emptyDraft() {
     issuedOn: futureDateInput(0),
     expiresAt: futureDateInput(365 * 3),
     documentId: '',
+    linkedMaterialIds: [],
     hazardClasses: '',
     requiredPpe: '',
     firstAidMeasures: '',
@@ -38,6 +40,7 @@ function sheetDraft(sheet) {
   return {
     ...emptyDraft(),
     supersedesSdsId: sheet.id,
+    linkedMaterialIds: sheet.linkedMaterialIds || [],
     material: sheet.material || '',
     manufacturer: sheet.manufacturer || '',
     productCode: sheet.productCode || '',
@@ -60,11 +63,14 @@ export default function SdsRegisterControl({
   jobs,
   fieldScoped,
   canCoordinate,
+  operatorRole,
+  text: translate,
   apiRequest,
   notify,
   refresh,
   onOpenApprovals,
 }) {
+  const t = translate || (value => value)
   const activeJobs = useMemo(
     () => (jobs || []).filter(job => !['archived', 'completed', 'cancelled', 'rejected'].includes(job.status)),
     [jobs],
@@ -74,6 +80,8 @@ export default function SdsRegisterControl({
   const [sheets, setSheets] = useState([])
   const [jobDetail, setJobDetail] = useState(null)
   const [draft, setDraft] = useState(emptyDraft)
+  const [materialPolicyDrafts, setMaterialPolicyDrafts] = useState({})
+  const [savingMaterialId, setSavingMaterialId] = useState('')
   const [loading, setLoading] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
@@ -108,6 +116,11 @@ export default function SdsRegisterControl({
       ])
       const retainedSheets = registerResult.sdsSheets || []
       setJobDetail(detailResult.job || detailResult)
+      const materials = (detailResult.job || detailResult).materials || []
+      setMaterialPolicyDrafts(Object.fromEntries(materials.filter(material => material.status !== 'cancelled').map(material => [
+        material.id,
+        { status: material.sdsRequirementStatus || 'unreviewed', reason: '', entryKey: createFieldEvidenceDraftId() }
+      ])))
       setSheets(retainedSheets)
       setSheetId(current => (
         retainedSheets.some(sheet => sheet.id === preferredSheetId) ? preferredSheetId
@@ -162,6 +175,7 @@ export default function SdsRegisterControl({
         body: JSON.stringify({
           ...draft,
           supersedesSdsId: draft.supersedesSdsId || null,
+          linkedMaterialIds: draft.linkedMaterialIds,
           hazardClasses,
           requiredPpe,
           expiresAt: new Date(`${draft.expiresAt}T23:59:59.999Z`).toISOString(),
@@ -178,6 +192,32 @@ export default function SdsRegisterControl({
       setError(requestError.message)
     } finally {
       setSubmitting(false)
+    }
+  }
+
+  async function saveMaterialSdsRequirement(material) {
+    const policy = materialPolicyDrafts[material.id]
+    if (!policy || policy.reason.trim().length < 10) {
+      setError('Retain at least 10 characters explaining the SDS applicability decision.')
+      return
+    }
+    if (policy.status === 'not_required' && !['owner', 'approver'].includes(operatorRole)) {
+      setError('Only an owner or approver can record that an SDS is not required.')
+      return
+    }
+    setSavingMaterialId(material.id)
+    setError('')
+    try {
+      const result = await apiRequest(`/api/ledger/jobs/${encodeURIComponent(jobId)}/materials/${encodeURIComponent(material.id)}/sds-requirement`, {
+        method: 'PATCH',
+        body: JSON.stringify(policy)
+      })
+      notify(result.replayed ? 'This SDS applicability decision was already retained.' : 'SDS applicability decision retained in the job audit trail.')
+      await Promise.all([loadRegister(jobId, sheetId), refresh()])
+    } catch (requestError) {
+      setError(requestError.message)
+    } finally {
+      setSavingMaterialId('')
     }
   }
 
@@ -217,6 +257,48 @@ export default function SdsRegisterControl({
           </select>
         </label>
       </div>
+      {jobId ? (
+        <section className="sds-material-policy" aria-label={t('Material SDS applicability')}>
+          <div className="sds-material-policy-heading">
+            <div><h3>{t('Material SDS applicability')}</h3><p>{t('Unreviewed materials block the position start release until their SDS status is recorded.')}</p></div>
+          </div>
+          {(jobDetail?.materials || []).filter(material => material.status !== 'cancelled').length ? (
+            (jobDetail?.materials || []).filter(material => material.status !== 'cancelled').map(material => {
+              const policy = materialPolicyDrafts[material.id] || { status: material.sdsRequirementStatus || 'unreviewed', reason: '', entryKey: createFieldEvidenceDraftId() }
+              return <div className="sds-material-policy-row" key={material.id}>
+                <div className="sds-material-policy-context">
+                  <strong>{material.name}</strong>
+                  <small>{material.quantity} {material.unit} · {formatStatus(material.sdsRequirementStatus || 'unreviewed')}</small>
+                  {material.sdsRequirementReason ? <small>{material.sdsRequirementReason}</small> : null}
+                </div>
+                  {canCoordinate ? <div className="sds-material-policy-editor">
+                  <label>
+                    {t('SDS status')}
+                    <select aria-label={`${material.name} SDS status`} value={policy.status} onChange={event => setMaterialPolicyDrafts(current => ({
+                      ...current,
+                      [material.id]: { ...policy, status: event.target.value }
+                    }))}>
+                      <option value="unreviewed">{t('Needs review')}</option>
+                      <option value="required">{t('SDS required')}</option>
+                      <option value="not_required" disabled={!['owner', 'approver'].includes(operatorRole)}>{t('SDS not required (owner/approver)')}</option>
+                    </select>
+                  </label>
+                  <label>
+                    {t('Decision reason')}
+                    <input aria-label={`${material.name} SDS decision reason`} minLength="10" maxLength="500" value={policy.reason} onChange={event => setMaterialPolicyDrafts(current => ({
+                      ...current,
+                      [material.id]: { ...policy, reason: event.target.value }
+                    }))} />
+                  </label>
+                  <button className="secondary-button" type="button" disabled={savingMaterialId === material.id || policy.reason.trim().length < 10} onClick={() => void saveMaterialSdsRequirement(material)}>
+                    <ShieldCheck size={16} />{t(savingMaterialId === material.id ? 'Saving…' : 'Save applicability')}
+                  </button>
+                </div> : <p>{t(material.sdsRequirementStatus === 'required' ? 'A current approved, task-linked SDS is required before release.' : material.sdsRequirementStatus === 'not_required' ? 'An owner or approver recorded that no SDS is required.' : 'SDS applicability has not been reviewed.')}</p>}
+              </div>
+            })
+          ) : <div className="sds-register-empty">{t('No active job material requirements are available to assess.')}</div>}
+        </section>
+      ) : null}
       {selectedSheet ? (
         <div className="sds-register-detail" aria-live="polite">
           <div className="sds-register-context">
@@ -233,6 +315,15 @@ export default function SdsRegisterControl({
             <div><dt>Expires</dt><dd>{formatDate(selectedSheet.expiresAt)}</dd></div>
             <div><dt>Integrity</dt><dd>{selectedSheet.integrityValid ? `Verified ${shortHash(selectedSheet.sourceHash)}` : 'Review required'}</dd></div>
           </dl>
+          <div className="sds-scope-summary">
+            <strong>Linked job materials</strong>
+            {selectedSheet.linkedMaterialIds?.length ? (
+              <ul>{selectedSheet.linkedMaterialIds.map(id => {
+                const material = (jobDetail?.materials || []).find(item => item.id === id)
+                return <li key={id}>{material?.name || 'Material no longer available'}</li>
+              })}</ul>
+            ) : <p>Not linked to a job material; this SDS will not appear in task-scoped field work.</p>}
+          </div>
           <div className="sds-control-grid">
             <div><span>Hazard classes</span><ul>{(selectedSheet.hazardClasses || []).map(item => <li key={item}>{item}</li>)}</ul></div>
             <div><span>Required PPE</span><ul>{(selectedSheet.requiredPpe || []).map(item => <li key={item}>{item}</li>)}</ul></div>
@@ -245,7 +336,7 @@ export default function SdsRegisterControl({
           </div>
           <div className="sds-register-actions">
             {selectedSheet.documentId ? (
-              <a className="secondary-button" href={`/api/ledger/documents/${encodeURIComponent(selectedSheet.documentId)}/content`} target="_blank" rel="noreferrer">
+              <a className="secondary-button" href={companyApiUrl(`/api/ledger/documents/${encodeURIComponent(selectedSheet.documentId)}/content`)} target="_blank" rel="noreferrer">
                 <FileDown size={16} /> Open retained PDF
               </a>
             ) : null}
@@ -311,6 +402,27 @@ export default function SdsRegisterControl({
                 {pdfDocuments.map(document => <option key={document.id} value={document.id}>{document.filename || document.title}</option>)}
               </select>
             </label>
+            <fieldset className="drawing-task-links form-span">
+              <legend>Material requirements for this product</legend>
+              {(jobDetail?.materials || []).filter(material => material.status !== 'cancelled').length ? (
+                (jobDetail?.materials || []).filter(material => material.status !== 'cancelled').map(material => (
+                  <label className="checkbox-label" key={material.id}>
+                    <input
+                      type="checkbox"
+                      checked={draft.linkedMaterialIds.includes(material.id)}
+                      onChange={event => setDraft(current => ({
+                        ...current,
+                        linkedMaterialIds: event.target.checked
+                          ? [...new Set([...current.linkedMaterialIds, material.id])].sort()
+                          : current.linkedMaterialIds.filter(id => id !== material.id)
+                      }))}
+                    />
+                    <span>{material.name} ({material.quantity} {material.unit})</span>
+                  </label>
+                ))
+              ) : <p>No active material requirements are available on this job.</p>}
+              <small>Task-scoped positions see this SDS only when its material requirement is linked to their tasks.</small>
+            </fieldset>
             <label>
               Hazard classes
               <textarea required minLength="2" maxLength="3200" value={draft.hazardClasses} onChange={(event) => setDraft({ ...draft, hazardClasses: event.target.value })} />

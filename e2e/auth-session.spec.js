@@ -1,5 +1,6 @@
 const { test, expect } = require('@playwright/test');
-const { expectNoAxeViolations } = require('./accessibility-helpers');
+const { expectNoAxeViolations, WCAG_TAGS, violationSummary } = require('./accessibility-helpers');
+const AxeBuilder = require('@axe-core/playwright').default;
 
 const OFFICE_ACCESS_KEY = 'browser-office-token-at-least-32-characters';
 const OWNER_ACCESS_KEY = 'browser-owner-token-at-least-32-characters';
@@ -7,7 +8,9 @@ const FIELD_ACCESS_KEY = 'browser-field-token-at-least-32-characters';
 const FIELD_WORKER_ID = 'browser-field-task-worker';
 
 test('operator sign-in meets automated WCAG A and AA rules', async ({ page }) => {
-  await page.goto('/');
+  await page.goto('/work-board.html');
+  await page.getByRole('link', { name: 'Verder als beheerder' }).click();
+  await expect(page).toHaveURL(/\/$/);
   await expect(page.getByRole('heading', { name: 'Operator sign in' })).toBeVisible();
   await expectNoAxeViolations(page, 'operator sign-in');
 });
@@ -25,19 +28,20 @@ test('office operator signs in through an HTTP-only role session and signs out c
 
   await accessKey.fill(OFFICE_ACCESS_KEY);
   await page.getByRole('button', { name: 'Sign in' }).click();
+  await page.getByLabel(/^(Language|Taal)$/).selectOption('en-GB');
 
-  await expect(page.getByRole('heading', { name: 'Today' })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, exact: true, name: 'Today' })).toBeVisible();
   await expect(page.locator('.operator-session')).toContainText('office operator');
   await expect(page.getByRole('button', { name: 'New opportunity' }).first()).toBeVisible();
   await expect(page.getByRole('button', { name: 'Approvals' })).toHaveCount(0);
 
   await page.getByLabel('Language').selectOption('nl-NL');
-  await expect(page.getByRole('heading', { name: 'Vandaag' })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'Vandaag', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Nieuwe kans' }).first()).toBeVisible();
   expect(await page.locator('html').getAttribute('lang')).toBe('nl');
 
   const cookies = await context.cookies();
-  const sessionCookie = cookies.find(cookie => cookie.name === 'contractor_ai_session');
+  const sessionCookie = cookies.find(cookie => /^contractor_ai_session_[a-f0-9]{16}$/.test(cookie.name));
   expect(sessionCookie).toBeTruthy();
   expect(sessionCookie.httpOnly).toBe(true);
   expect(sessionCookie.sameSite).toBe('Strict');
@@ -46,7 +50,7 @@ test('office operator signs in through an HTTP-only role session and signs out c
   expect(await page.evaluate(() => ({ local: localStorage.length, session: sessionStorage.length }))).toEqual({ local: 0, session: 0 });
 
   await page.reload();
-  await expect(page.getByRole('heading', { name: 'Vandaag' })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'Vandaag', exact: true })).toBeVisible();
   await expect(page.locator('.operator-session')).toContainText('office operator');
 
   await page.getByRole('button', { name: 'Prestaties', exact: true }).click();
@@ -62,7 +66,7 @@ test('office operator signs in through an HTTP-only role session and signs out c
 
   await page.getByRole('button', { name: 'Sign out' }).click();
   await expect(page.getByRole('heading', { name: 'Operator sign in' })).toBeVisible();
-  expect((await context.cookies()).some(cookie => cookie.name === 'contractor_ai_session')).toBe(false);
+  expect((await context.cookies()).some(cookie => /^contractor_ai_session_[a-f0-9]{16}$/.test(cookie.name))).toBe(false);
 
   const denied = await page.request.get('/api/ledger/jobs');
   expect(denied.status()).toBe(401);
@@ -103,6 +107,7 @@ test('field worker opens an assigned job and completes only the scoped task', as
   await page.locator('#operator-access-key').fill(FIELD_ACCESS_KEY);
   await page.getByRole('button', { name: 'Sign in' }).click();
   await expect(page.locator('.operator-session')).toContainText('Browser Field Task Worker');
+  await page.getByLabel(/^(Language|Taal)$/).selectOption('en-GB');
   await expect(page.locator('.operator-session')).toHaveAttribute('title', 'field worker');
   await page.getByRole('button', { name: `Open ${intake.job.title}` }).first().click();
 
@@ -146,7 +151,9 @@ test('field worker opens an assigned job and completes only the scoped task', as
   expect(projected.job.punchItems[0].data).toBeUndefined();
 });
 
-test('field worker completes a live LMRA, then records changed-condition stop-work on mobile', async ({ page, request }) => {
+test('field worker completes a live LMRA, then records changed-condition stop-work on mobile', async ({ page, request }, testInfo) => {
+  const pageErrors = [];
+  page.on('pageerror', error => pageErrors.push(error.message));
   const ownerHeaders = { 'X-Contractor-AI-Token': OWNER_ACCESS_KEY };
   const fieldHeaders = { 'X-Contractor-AI-Token': FIELD_ACCESS_KEY };
   const suffix = Date.now();
@@ -224,6 +231,7 @@ test('field worker completes a live LMRA, then records changed-condition stop-wo
   await page.goto('/');
   await page.locator('#operator-access-key').fill(FIELD_ACCESS_KEY);
   await page.getByRole('button', { name: 'Sign in' }).click();
+  await page.getByLabel(/^(Language|Taal)$/).selectOption('en-GB');
   await page.getByRole('button', { name: 'Field updates', exact: true }).click();
   const panel = page.getByTestId('lmra-control');
   await expect(panel.getByRole('heading', { name: 'Last-minute risk assessment' })).toBeVisible();
@@ -269,4 +277,27 @@ test('field worker completes a live LMRA, then records changed-condition stop-wo
   await panel.getByRole('button', { name: 'Retain stop-work LMRA' }).click();
   await expect(page.getByText('Stop-work LMRA retained. Resolve the condition and complete a linked reassessment.')).toBeVisible();
   await expect(panel.locator('.lmra-row').first()).toContainText('stop work');
+  const latest = panel.locator('.lmra-row').first();
+  await expect(latest).toContainText('Reassessment required');
+  await expect(panel.locator('.lmra-row').nth(1)).toContainText('Superseded assessment');
+  await expect(latest.getByText('expired', { exact: true })).toHaveCount(0);
+  await latest.screenshot({ path: testInfo.outputPath('lmra-stop-mobile-en.png') });
+  await page.getByRole('combobox', { name: 'Language' }).selectOption('nl-NL');
+  await expect(latest).toContainText('Herbeoordeling vereist');
+  await expect(latest.locator('.status')).toHaveText('werkstop');
+  await expect(panel.locator('.lmra-row').nth(1)).toContainText('Vervangen beoordeling');
+  await expect(latest.getByText('verlopen', { exact: true })).toHaveCount(0);
+  const captionGeometry = await latest.evaluate(element => ({
+    scrollWidth: element.scrollWidth, clientWidth: element.clientWidth,
+    pageWidth: document.documentElement.scrollWidth, viewportWidth: document.documentElement.clientWidth
+  }));
+  expect(captionGeometry.scrollWidth).toBeLessThanOrEqual(captionGeometry.clientWidth + 1);
+  expect(captionGeometry.pageWidth).toBeLessThanOrEqual(captionGeometry.viewportWidth);
+  await latest.screenshot({ path: testInfo.outputPath('lmra-stop-mobile-nl.png') });
+  const safetyAccessibility = await new AxeBuilder({ page }).withTags(WCAG_TAGS)
+    .include('[data-testid="lmra-control"] .lmra-row').analyze();
+  expect(violationSummary(safetyAccessibility.violations)).toEqual([]);
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await latest.screenshot({ path: testInfo.outputPath('lmra-stop-desktop-nl.png') });
+  expect(pageErrors).toEqual([]);
 });

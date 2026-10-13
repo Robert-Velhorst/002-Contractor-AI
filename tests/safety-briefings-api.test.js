@@ -85,9 +85,11 @@ test('safety briefing API scopes field identity, supports offline replay, and ke
   assert.equal(fieldList.body.safetyMeetings[0].attendeeRecords[0].workerId, tokens.field.workerId);
   assert.equal(fieldList.body.safetyMeetings[0].sourceHash, undefined);
   assert.equal(fieldList.body.safetyMeetings[0].snapshotHash, undefined);
+  assert.match(fieldList.body.safetyMeetings[0].briefingContentHash, /^[a-f0-9]{64}$/);
 
   const acknowledgementPayload = {
     entryKey: `safety-acknowledgement-api-${suffix}`,
+    briefingContentHash: fieldList.body.safetyMeetings[0].briefingContentHash,
     workerId: 'spoofed-worker',
     workerName: 'Spoofed worker',
     attendeeName: 'Spoofed attendee',
@@ -95,6 +97,15 @@ test('safety briefing API scopes field identity, supports offline replay, and ke
     acknowledged: true,
     evidenceReference: `field-device-attestation:${suffix}`
   };
+  const missingRevision = { ...acknowledgementPayload };
+  delete missingRevision.briefingContentHash;
+  const missingRevisionResponse = await request(baseUrl, `/api/ledger/jobs/${encodeURIComponent(jobId)}/safety-meetings/${encodeURIComponent(meetingId)}/acknowledgments`, {
+    token: tokens.field.token,
+    method: 'POST',
+    body: JSON.stringify(missingRevision)
+  });
+  assert.equal(missingRevisionResponse.response.status, 400);
+  assert.equal(missingRevisionResponse.body.error.code, 'safety_briefing_content_hash_required');
   const acknowledged = await request(baseUrl, `/api/ledger/jobs/${encodeURIComponent(jobId)}/safety-meetings/${encodeURIComponent(meetingId)}/acknowledgments`, {
     token: tokens.field.token,
     method: 'POST',
@@ -171,7 +182,7 @@ test('safety briefing API scopes field identity, supports offline replay, and ke
   const diagnostics = await request(baseUrl, '/api/ledger/debug', { token: tokens.owner });
   assert.equal(diagnostics.response.status, 200);
   assert.equal(diagnostics.body.diagnostics.valid, true, JSON.stringify(diagnostics.body.diagnostics.issues));
-  assert.equal(diagnostics.body.diagnostics.migrations.currentVersion, '072_operator_locale_preferences');
+  assert.equal(diagnostics.body.diagnostics.migrations.currentVersion, '097_durable_evidence_storage_reservations');
   assert.equal(diagnostics.body.diagnostics.counts.safetyMeetingAttendees, 1);
 
   const capabilities = await request(baseUrl, '/api/operations/capabilities', { token: tokens.owner });

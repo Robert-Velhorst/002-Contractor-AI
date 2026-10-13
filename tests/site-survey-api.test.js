@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
+const { jpegFixture } = require('./image-fixtures');
 const { SITE_SURVEY_TEMPLATE } = require('../operating-ledger');
 
 const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'contractor-ai-site-survey-api-'));
@@ -98,7 +99,7 @@ test('site-survey API enforces roles, private evidence, approval, export, and ca
 
   const deniedUploadForm = new FormData();
   deniedUploadForm.append('evidenceFile', new Blob([
-    Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from('private opportunity field proof')
+    jpegFixture('private opportunity field proof')
   ], { type: 'image/jpeg' }), 'field-private-photo.jpg');
   deniedUploadForm.append('opportunityId', opportunityId);
   const deniedUpload = await request(baseUrl, '/api/ledger/upload', tokens.field_worker, {
@@ -107,7 +108,7 @@ test('site-survey API enforces roles, private evidence, approval, export, and ca
   assert.equal(deniedUpload.response.status, 403);
 
   const uploadForm = new FormData();
-  const evidenceBytes = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from('private site-survey proof')]);
+  const evidenceBytes = jpegFixture('private site-survey proof');
   uploadForm.append('evidenceFile', new Blob([evidenceBytes], { type: 'image/jpeg' }), 'site-survey-photo.jpg');
   uploadForm.append('opportunityId', opportunityId);
   uploadForm.append('title', 'Kitchen dimensions and existing conditions');
@@ -200,5 +201,5 @@ test('site-survey API enforces roles, private evidence, approval, export, and ca
   const diagnostics = await request(baseUrl, '/api/ledger/debug', tokens.owner);
   assert.equal(diagnostics.response.status, 200, JSON.stringify(diagnostics.body));
   assert.equal(diagnostics.body.diagnostics.valid, true);
-  assert.equal(diagnostics.body.diagnostics.migrations.currentVersion, '072_operator_locale_preferences');
+  assert.equal(diagnostics.body.diagnostics.migrations.currentVersion, '097_durable_evidence_storage_reservations');
 });

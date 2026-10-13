@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { FileDown, FileStack, Plus, RefreshCw, ShieldCheck } from 'lucide-react'
 import { createFieldEvidenceDraftId } from '../field-outbox'
+import { companyApiUrl } from '../company-request.mjs'
 import { formatDate, formatStatus, futureDateInput, shortHash } from '../dashboard-format'
+import { useSessionDraftRecovery } from '../draft-recovery'
 
 const CLOSED_DOCUMENT_STATUSES = new Set(['cancelled', 'rejected', 'superseded', 'void'])
 
@@ -18,6 +20,7 @@ function emptyDraft() {
     scale: '',
     zone: '',
     sourceDocumentId: '',
+    linkedTaskIds: [],
     revisionReason: '',
     reviewNotes: '',
   }
@@ -33,6 +36,7 @@ function revisionDraft(drawing) {
     purpose: drawing.purpose || 'for_construction',
     scale: drawing.scale || '',
     zone: drawing.zone || '',
+    linkedTaskIds: drawing.linkedTaskIds || drawing.data?.linkedTaskIds || [],
   }
 }
 
@@ -44,6 +48,7 @@ export default function DrawingRegisterControl({
   notify,
   refresh,
   onOpenApprovals,
+  draftScope = '',
 }) {
   const activeJobs = useMemo(
     () => (jobs || []).filter(job => !['archived', 'completed', 'cancelled', 'rejected'].includes(job.status)),
@@ -54,6 +59,7 @@ export default function DrawingRegisterControl({
   const [drawings, setDrawings] = useState([])
   const [jobDetail, setJobDetail] = useState(null)
   const [draft, setDraft] = useState(emptyDraft)
+  const [draftRestored, setDraftRestored] = useState(false)
   const [loading, setLoading] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
@@ -68,7 +74,17 @@ export default function DrawingRegisterControl({
     && !CLOSED_DOCUMENT_STATUSES.has(document.status)
     && document.data?.analysis?.upload?.sha256
   ))
+  const jobTasks = jobDetail?.tasks || []
   const revisionSource = currentDrawings.find(drawing => drawing.id === draft.supersedesDrawingId) || null
+  const hasDraftContent = Boolean(draft.supersedesDrawingId || draft.sheetNumber || draft.revision || draft.title
+    || draft.sourceDocumentId || draft.revisionReason || draft.reviewNotes || draft.linkedTaskIds.length)
+  const restoreDraft = useCallback(value => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return
+    setDraft({ ...emptyDraft(), ...value, sourceDocumentId: '', linkedTaskIds: Array.isArray(value.linkedTaskIds) ? value.linkedTaskIds : [] })
+    setDraftRestored(true)
+  }, [])
+  useSessionDraftRecovery({ enabled: Boolean(draftScope && jobId && canCoordinate), scope: draftScope,
+    name: `drawing-revision:${jobId}`, value: hasDraftContent ? draft : null, setValue: restoreDraft })
 
   const loadRegister = useCallback(async (nextJobId, preferredDrawingId = '') => {
     if (!nextJobId) {
@@ -113,11 +129,13 @@ export default function DrawingRegisterControl({
     setJobId(nextJobId)
     setDrawingId('')
     setDraft(emptyDraft())
+    setDraftRestored(false)
   }
 
   function selectRevisionSource(nextDrawingId) {
     const source = currentDrawings.find(drawing => drawing.id === nextDrawingId)
     setDraft(source ? revisionDraft(source) : emptyDraft())
+    setDraftRestored(false)
   }
 
   async function createRevision(event) {
@@ -146,6 +164,7 @@ export default function DrawingRegisterControl({
           ? 'The replacement drawing was frozen for approval. The prior revision remains current until approval.'
           : 'The drawing was frozen for approval. It is not field-current until an approver verifies the retained source.')
       setDraft(emptyDraft())
+      setDraftRestored(false)
       await Promise.all([loadRegister(jobId, result.drawing.id), refresh()])
     } catch (requestError) {
       setError(requestError.message)
@@ -211,9 +230,10 @@ export default function DrawingRegisterControl({
             <div><span>Revision reason</span><p>{selectedDrawing.revisionReason || 'Not retained'}</p></div>
             <div><span>Review notes</span><p>{selectedDrawing.reviewNotes || 'No internal notes'}</p></div>
             <div><span>Publication</span><p>{selectedDrawing.current ? 'Approved for current internal field use' : 'Not current for field use'}</p></div>
+            <div><span>Linked tasks</span><p>{(selectedDrawing.linkedTaskIds || selectedDrawing.data?.linkedTaskIds || []).map(taskId => jobTasks.find(task => task.id === taskId)?.title || taskId).join(', ') || 'No task links; scoped positions will not receive this drawing'}</p></div>
           </div>
           <div className="sds-register-actions">
-            <a className="secondary-button" href={`/api/ledger/documents/${encodeURIComponent(selectedDrawing.id)}/content`} target="_blank" rel="noreferrer">
+            <a className="secondary-button" href={companyApiUrl(`/api/ledger/documents/${encodeURIComponent(selectedDrawing.id)}/content`)} target="_blank" rel="noreferrer">
               <FileDown size={16} /> Open retained PDF
             </a>
             {canCoordinate && selectedDrawing.current ? (
@@ -237,6 +257,7 @@ export default function DrawingRegisterControl({
             <strong>{revisionSource ? `Replace ${revisionSource.sheetNumber} ${revisionSource.revision}` : 'Retain drawing revision'}</strong>
             {revisionSource ? <span>The prior revision remains current until this approval resolves.</span> : null}
           </div>
+          {draftRestored ? <p role="status">Unsent drawing revision details were restored for this job and operator session. The retained PDF is not saved in the browser and must still be selected and verified.</p> : null}
           <div className="form-grid">
             <label className="form-span">
               Revision source
@@ -281,6 +302,25 @@ export default function DrawingRegisterControl({
               Zone or area
               <input maxLength="120" value={draft.zone} onChange={(event) => setDraft({ ...draft, zone: event.target.value })} placeholder="Ground floor, block A" />
             </label>
+            <fieldset className="form-span drawing-task-links">
+              <legend>Tasks covered by this drawing</legend>
+              {jobTasks.length ? jobTasks.map(task => (
+                <label className="checkbox-label" key={task.id}>
+                  <input
+                    type="checkbox"
+                    checked={draft.linkedTaskIds.includes(task.id)}
+                    disabled={submitting}
+                    onChange={(event) => setDraft({
+                      ...draft,
+                      linkedTaskIds: event.target.checked
+                        ? [...new Set([...draft.linkedTaskIds, task.id])].sort()
+                        : draft.linkedTaskIds.filter(taskId => taskId !== task.id),
+                    })}
+                  />
+                  {task.title}
+                </label>
+              )) : <p>No tasks are registered for this job. Add tasks before linking this drawing to a scoped position.</p>}
+            </fieldset>
             <label className="form-span">
               Retained drawing PDF
               <select required aria-label="Retained drawing PDF" value={draft.sourceDocumentId} onChange={(event) => setDraft({ ...draft, sourceDocumentId: event.target.value })}>

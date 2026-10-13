@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   ArrowLeft,
   ArrowRight,
@@ -15,9 +15,11 @@ import {
 import Empty from './EmptyState'
 import { formatDate, formatStatus, formatWeekday } from '../dashboard-format'
 import { operatorText } from '../operator-locale'
+import { useSessionDraftRecovery } from '../draft-recovery'
 
 const EMPTY_LIST = Object.freeze([])
 const DAY_KEYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday']
+const DAY_LABELS = { sunday: 'Sunday', monday: 'Monday', tuesday: 'Tuesday', wednesday: 'Wednesday', thursday: 'Thursday', friday: 'Friday', saturday: 'Saturday' }
 const DEFAULT_DAILY_HOURS = {
   sunday: 0,
   monday: 8,
@@ -82,6 +84,7 @@ function blockerMessage(blocker, t) {
 export default function CrewCapacityBoard({
   locale = 'en-GB',
   board,
+  draftScope = '',
   canApprove,
   submitting,
   onLoadWindow,
@@ -103,6 +106,19 @@ export default function CrewCapacityBoard({
   const [profileDraft, setProfileDraft] = useState(null)
   const [allocationDraft, setAllocationDraft] = useState({ assignmentId: '', taskId: '', workDate: '', plannedHours: 8, notes: '' })
   const [cancelDraft, setCancelDraft] = useState(null)
+
+  const restoreProfileDraft = useCallback((value) => {
+    setProfileWorkerId(value?.workerId || '')
+    setProfileDraft(value?.draft || null)
+  }, [])
+
+  useSessionDraftRecovery({
+    enabled: Boolean(draftScope),
+    scope: draftScope,
+    name: 'crew-capacity-profile',
+    value: profileDraft ? { workerId: profileWorkerId, draft: profileDraft } : null,
+    setValue: restoreProfileDraft,
+  })
 
   useEffect(() => {
     if (board?.window?.windowStart) setWindowStart(board.window.windowStart)
@@ -127,6 +143,14 @@ export default function CrewCapacityBoard({
       effectiveFrom: worker.profile?.effectiveFrom || board?.window?.windowStart || new Date().toISOString().slice(0, 10),
       timezone: worker.profile?.timezone || 'Europe/Amsterdam',
       dailyHours: { ...DEFAULT_DAILY_HOURS, ...(worker.profile?.dailyHours || {}) },
+      workingWindows: Object.fromEntries(DAY_KEYS.map((day) => {
+        const value = worker.profile?.workingWindows?.[day]
+        const intervals = Array.isArray(value) ? value : value ? [value] : []
+        const editableIntervals = intervals.length
+          ? intervals
+          : Number(worker.profile?.dailyHours?.[day] ?? DEFAULT_DAILY_HOURS[day]) > 0 ? [{ start: '', end: '' }] : []
+        return [day, editableIntervals.map((interval) => ({ start: interval.start || '', end: interval.end || '' }))]
+      })),
     })
   }
 
@@ -317,20 +341,28 @@ export default function CrewCapacityBoard({
             <label><span>{t('Effective from')}</span><input required type="date" value={profileDraft.effectiveFrom} onChange={(event) => setProfileDraft((current) => ({ ...current, effectiveFrom: event.target.value }))} /></label>
             <label><span>{t('Timezone')}</span><input required value={profileDraft.timezone} onChange={(event) => setProfileDraft((current) => ({ ...current, timezone: event.target.value }))} /></label>
           </div>
-          <div className="crew-weekday-grid">
+          <div className="crew-working-week" aria-label={t('Weekly working hours')}>
+            <div className="crew-working-week-header"><span>{t('Day')}</span><span>{t('Hours')}</span><span>{t('Work intervals')}</span></div>
             {DAY_KEYS.map((day) => (
-              <label key={day}>
-                <span>{t(day.slice(0, 3))}</span>
-                <input
-                  required
-                  type="number"
-                  min="0"
-                  max="24"
-                  step="0.25"
-                  value={profileDraft.dailyHours[day]}
-                  onChange={(event) => setProfileDraft((current) => ({ ...current, dailyHours: { ...current.dailyHours, [day]: event.target.value } }))}
-                />
-              </label>
+              <div className="crew-working-week-row" key={day}>
+                <strong>{t(DAY_LABELS[day])}</strong>
+                <label><span className="visually-hidden">{t('{day} hours', { day: t(DAY_LABELS[day]) })}</span><input required aria-label={t('{day} hours', { day: t(DAY_LABELS[day]) })} type="number" min="0" max="24" step="0.25" value={profileDraft.dailyHours[day]} onChange={(event) => setProfileDraft((current) => {
+                  const value = event.target.value
+                  const workingWindows = Number(value) > 0 ? current.workingWindows : { ...current.workingWindows, [day]: [] }
+                  return { ...current, dailyHours: { ...current.dailyHours, [day]: value }, workingWindows }
+                })} /></label>
+                <div className="crew-working-intervals">
+                  {profileDraft.workingWindows[day].map((interval, index) => (
+                    <div className="crew-working-interval" key={`${day}-${index}`}>
+                      <label><span className="visually-hidden">{t('{day} interval {index} start time', { day: t(DAY_LABELS[day]), index: index + 1 })}</span><input required={Number(profileDraft.dailyHours[day]) > 0} disabled={Number(profileDraft.dailyHours[day]) <= 0} aria-label={t('{day} interval {index} start time', { day: t(DAY_LABELS[day]), index: index + 1 })} type="time" step="1800" value={interval.start} onChange={(event) => setProfileDraft((current) => ({ ...current, workingWindows: { ...current.workingWindows, [day]: current.workingWindows[day].map((item, itemIndex) => itemIndex === index ? { ...item, start: event.target.value } : item) } }))} /></label>
+                      <span aria-hidden="true">-</span>
+                      <label><span className="visually-hidden">{t('{day} interval {index} end time', { day: t(DAY_LABELS[day]), index: index + 1 })}</span><input required={Number(profileDraft.dailyHours[day]) > 0} disabled={Number(profileDraft.dailyHours[day]) <= 0} aria-label={t('{day} interval {index} end time', { day: t(DAY_LABELS[day]), index: index + 1 })} type="time" step="1800" value={interval.end} onChange={(event) => setProfileDraft((current) => ({ ...current, workingWindows: { ...current.workingWindows, [day]: current.workingWindows[day].map((item, itemIndex) => itemIndex === index ? { ...item, end: event.target.value } : item) } }))} /></label>
+                      <button type="button" className="icon-button" aria-label={t('Remove interval {index} for {day}', { index: index + 1, day: t(DAY_LABELS[day]) })} title={t('Remove interval {index} for {day}', { index: index + 1, day: t(DAY_LABELS[day]) })} disabled={profileDraft.workingWindows[day].length <= 1} onClick={() => setProfileDraft((current) => ({ ...current, workingWindows: { ...current.workingWindows, [day]: current.workingWindows[day].filter((_, itemIndex) => itemIndex !== index) } }))}><Trash2 size={15} /></button>
+                    </div>
+                  ))}
+                  <button type="button" className="crew-add-interval" disabled={Number(profileDraft.dailyHours[day]) <= 0 || profileDraft.workingWindows[day].length >= 4} aria-label={t('Add interval for {day}', { day: t(DAY_LABELS[day]) })} onClick={() => setProfileDraft((current) => ({ ...current, workingWindows: { ...current.workingWindows, [day]: [...current.workingWindows[day], { start: '', end: '' }] } }))}><Plus size={14} />{t('Add interval')}</button>
+                </div>
+              </div>
             ))}
           </div>
           <button type="submit" className="primary-button" disabled={submitting}>
@@ -359,7 +391,7 @@ export default function CrewCapacityBoard({
                   aria-label={t('{worker}, {date}: {available} available, {planned} planned', { worker: worker.name, date: formatDate(day.date), available: hours(day.availableHours), planned: hours(day.plannedHours) })}
                 >
                   <strong>{hours(day.plannedHours)}<small> / {hours(day.availableHours)}h</small></strong>
-                  <span>{day.absences.length ? t(formatStatus(day.absences[0].periodType)) : t('{hours}h free', { hours: hours(day.remainingHours) })}</span>
+                  <span>{day.absences.length ? t(formatStatus(day.absences[0].periodType)) : day.standbyWindows?.length ? t('On-call') : t('{hours}h free', { hours: hours(day.remainingHours) })}</span>
                   {day.allocations.slice(0, 2).map((allocation) => (
                     <small className="crew-day-allocation" key={allocation.id} title={allocation.jobTitle || allocation.taskTitle || ''}>{allocation.jobTitle || allocation.taskTitle || t('Planned work')}</small>
                   ))}

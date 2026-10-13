@@ -82,7 +82,7 @@ test('operator retains source-bound fixed-price and T&M decisions with governed 
   await expect(page.getByRole('heading', { name: /^(Today|Vandaag)$/ })).toBeVisible();
   await expect(page.getByRole('button', { name: `Open ${title}` }).first()).toBeEnabled();
   await page.getByLabel(/^(Language|Taal)$/).selectOption('en-GB');
-  await expect(page.getByRole('heading', { name: 'Today' })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, exact: true, name: 'Today' })).toBeVisible();
   await page.getByRole('button', { name: `Open ${title}` }).first().click();
   const workspace = page.getByTestId('job-workspace');
   const commercial = workspace.getByTestId('commercial-control');
@@ -153,7 +153,7 @@ test('operator retains source-bound fixed-price and T&M decisions with governed 
   });
   expect(takeoffResponse.ok()).toBeTruthy();
   await page.goto('/');
-  await expect(page.getByRole('heading', { name: 'Today' })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, exact: true, name: 'Today' })).toBeVisible();
   await page.getByRole('button', { name: `Open ${title}` }).first().click();
   await expect(workspace.getByRole('heading', { name: title })).toBeVisible();
   await expect(scopeControl).toContainText('Commercial scope requires revision');
@@ -165,7 +165,7 @@ test('operator retains source-bound fixed-price and T&M decisions with governed 
 
   await approveCommercialScope(request, intake.job.id, `browser-pricing-scope-${key}-02`);
   await page.goto('/');
-  await expect(page.getByRole('heading', { name: 'Today' })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, exact: true, name: 'Today' })).toBeVisible();
   await page.getByRole('button', { name: `Open ${title}` }).first().click();
   await expect(workspace.getByRole('heading', { name: title })).toBeVisible();
   await expect(scopeControl).toContainText('Approved + current');

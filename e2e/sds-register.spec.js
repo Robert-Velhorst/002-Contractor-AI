@@ -15,6 +15,12 @@ test('office operator retains and approves a governed SDS revision in the field 
   expect(intakeResponse.ok()).toBeTruthy();
   const intake = await intakeResponse.json();
 
+  const materialResponse = await request.post(`/api/ledger/jobs/${intake.job.id}/materials`, {
+    data: { name: `Browser epoxy coating ${marker}`, quantity: 6, unit: 'kg' }
+  });
+  expect(materialResponse.ok()).toBeTruthy();
+  const material = (await materialResponse.json()).materialRequirement;
+
   const uploadResponse = await request.post('/api/ledger/upload', {
     headers: { 'Idempotency-Key': `browser-sds-upload-${marker}` },
     multipart: {
@@ -47,6 +53,12 @@ test('office operator retains and approves a governed SDS revision in the field 
   await field('Job').selectOption(intake.job.id);
   await expect(register.getByText('No SDS revision is retained for this job.')).toBeVisible();
   await expect(register.getByText('0 current')).toBeVisible();
+  await field(`Browser epoxy coating ${marker} SDS status`).selectOption('required');
+  await field(`Browser epoxy coating ${marker} SDS decision reason`).fill('Manufacturer guidance requires this safety data sheet before use.');
+  const policySaved = page.waitForResponse(response => response.url().includes('/sds-requirement') && response.request().method() === 'PATCH');
+  await register.getByRole('button', { name: 'Save applicability' }).click();
+  expect((await (await policySaved).json()).materialRequirement.sdsRequirementStatus).toBe('required');
+  await register.getByRole('checkbox', { name: new RegExp(`Browser epoxy coating ${marker}`) }).check();
 
   await field('Product name').fill('Browser two-component epoxy');
   await field('Manufacturer').fill('Browser Coatings Europe BV');
@@ -73,6 +85,8 @@ test('office operator retains and approves a governed SDS revision in the field 
   const detail = await detailResponse.json();
   const pending = detail.job.sdsSheets.find(sheet => sheet.status === 'pending_approval');
   expect(pending).toBeTruthy();
+  expect(pending.linkedMaterialIds).toEqual([material.id]);
+  expect(detail.job.materials.find(row => row.id === material.id).sdsRequirementStatus).toBe('required');
   const approvalResponse = await request.post(`/api/ledger/approvals/${pending.approvalId}/resolve`, {
     data: {
       status: 'approved',
@@ -86,10 +100,12 @@ test('office operator retains and approves a governed SDS revision in the field 
   await expect(register.getByText('1 current')).toBeVisible();
   await expect(register.getByText('Current', { exact: true })).toBeVisible();
   await expect(register.getByText('Verified')).toBeVisible();
-  await expect(register.getByRole('link', { name: 'Open retained PDF' })).toHaveAttribute(
-    'href',
-    `/api/ledger/documents/${upload.ledgerDocument.id}/content`
-  );
+  const retainedUrl = new URL(await register.getByRole('link', { name: 'Open retained PDF' }).getAttribute('href'), page.url());
+  const session = await (await request.get('/api/session')).json();
+  expect(retainedUrl.pathname).toBe(`/api/ledger/documents/${upload.ledgerDocument.id}/content`);
+  expect(retainedUrl.searchParams.get('__company')).toBe(session.company.id);
+  expect(retainedUrl.searchParams.get('__ledger')).toBe(session.company.ledgerId);
+  expect((await request.get(retainedUrl.toString())).ok()).toBeTruthy();
   await expect(register.getByRole('button', { name: 'New revision' })).toBeVisible();
 
   await page.setViewportSize({ width: 390, height: 844 });

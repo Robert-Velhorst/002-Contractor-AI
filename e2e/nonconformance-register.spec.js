@@ -8,6 +8,7 @@ async function postJson(request, route, data) {
 
 async function openJob(page, title) {
   await page.goto('/');
+  await page.getByLabel(/^(Language|Taal)$/).selectOption('en-GB');
   await page.getByRole('button', { name: `Open ${title}` }).first().click();
   const workspace = page.getByTestId('job-workspace');
   await expect(workspace).toBeVisible();

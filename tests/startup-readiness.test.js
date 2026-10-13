@@ -6,6 +6,8 @@ const http = require('node:http');
 const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
+const { postgresTestDatabaseUrl } = require('./postgres-test-database');
+const postgresTestUrl = postgresTestDatabaseUrl();
 
 function spawnServer(environment, timeoutMs = 10_000) {
   return new Promise((resolve, reject) => {
@@ -39,6 +41,8 @@ function hostedEnvironment(directory, overrides = {}) {
   return {
     NODE_ENV: 'production',
     CONTRACTOR_AI_RUNTIME_MODE: 'hosted',
+    CONTRACTOR_AI_COMPANY_ID: 'contractor-startup-test',
+    CONTRACTOR_AI_S3_PREFIX: 'companies/contractor-startup-test/evidence',
     CONTRACTOR_AI_STORAGE_MODE: 'local',
     CONTRACTOR_AI_EVIDENCE_STORAGE_MAX_BYTES: '1073741824',
     CONTRACTOR_AI_AUTH_TOKEN: 'hosted-static-boundary-owner-token',
@@ -106,6 +110,30 @@ test('credential-free local startup refuses a non-loopback listener', async t =>
 
   assert.equal(result.status, 1, result.stderr);
   assert.match(result.stderr, /credential_free_loopback_required/);
+});
+
+test('hosted startup rejects missing company and unscoped object paths before network access', async t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'contractor-ai-startup-company-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  let connections = 0;
+  const probe = net.createServer(socket => { connections += 1; socket.destroy(); });
+  await new Promise(resolve => probe.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => probe.close(resolve)));
+  const environment = hostedEnvironment(directory, {
+    CONTRACTOR_AI_DATABASE_URL: `postgresql://contractor:test-secret@127.0.0.1:${probe.address().port}/contractor?sslmode=verify-full`,
+    CONTRACTOR_AI_STORAGE_MODE: 's3',
+    CONTRACTOR_AI_S3_ENDPOINT: 'https://s3.eu-central-1.example.test',
+    CONTRACTOR_AI_S3_BUCKET: 'contractor-private',
+    CONTRACTOR_AI_S3_ACCESS_KEY_ID: 'test-access',
+    CONTRACTOR_AI_S3_SECRET_ACCESS_KEY: 'test-secret'
+  });
+  const missing = await spawnServer({ ...environment, CONTRACTOR_AI_COMPANY_ID: '' });
+  assert.equal(missing.status, 1, missing.stderr);
+  assert.match(missing.stderr, /hosted_company_id_required/);
+  const wrongPrefix = await spawnServer({ ...environment, CONTRACTOR_AI_S3_PREFIX: 'companies/another-company/evidence' });
+  assert.equal(wrongPrefix.status, 1, wrongPrefix.stderr);
+  assert.match(wrongPrefix.stderr, /hosted_company_storage_scope_required/);
+  assert.equal(connections, 0, 'company scope must be checked before database initialization');
 });
 
 test('hosted startup rejects non-verifying PostgreSQL before opening a connection', async t => {
@@ -360,7 +388,7 @@ test('direct hosted startup refuses missing HTTPS, EU, DPA, and recovery declara
   assert.match(result.stderr, /hosted_trusted_proxy_required/);
 });
 
-test('direct hosted startup refuses insecure object storage before opening external adapters', { skip: !process.env.CONTRACTOR_AI_POSTGRES_TEST_URL }, t => {
+test('direct hosted startup refuses insecure object storage before opening external adapters', { skip: !postgresTestUrl }, t => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'contractor-ai-startup-storage-'));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const result = childProcess.spawnSync(process.execPath, ['server.js'], {
@@ -376,7 +404,7 @@ test('direct hosted startup refuses insecure object storage before opening exter
       CONTRACTOR_AI_AUTH_TOKEN: 'hosted-startup-test-owner-token-at-least-32',
       CONTRACTOR_AI_ROLE_TOKENS: '',
       CONTRACTOR_AI_BACKUP_SIGNING_KEY: 'hosted-startup-test-backup-signing-key-2026',
-      CONTRACTOR_AI_DATABASE_URL: process.env.CONTRACTOR_AI_POSTGRES_TEST_URL,
+      CONTRACTOR_AI_DATABASE_URL: postgresTestUrl,
       CONTRACTOR_AI_PUBLIC_URL: 'https://contractor-ai.test',
       CONTRACTOR_AI_HOSTING_PROVIDER: 'EU Test Provider',
       CONTRACTOR_AI_HOSTING_REGION: 'eu-central-1',

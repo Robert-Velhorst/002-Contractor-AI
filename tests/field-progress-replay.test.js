@@ -15,6 +15,7 @@ function fixture(t) {
     client: { name: 'Field Progress Client' },
     description: 'Verify exact offline retries and transactional rollback.'
   }, { actor: 'field_progress_test' });
+  ledger.addTask(job.id, { title: 'Scoped field task' });
   t.after(() => {
     ledger.close();
     fs.rmSync(directory, { recursive: true, force: true });
@@ -25,7 +26,7 @@ function fixture(t) {
 test('operating ledger rejects unknown persistence options instead of falling back to live data', () => {
   assert.throws(
     () => new ContractorOperatingLedger({ filename: 'wrong-option.sqlite' }),
-    /Unsupported operating-ledger option\(s\): filename\. Supported options are dbFile, databaseUrl, stateProvider, logger, and clock\./
+    /Unsupported operating-ledger option\(s\): filename\. Supported options are dbFile, databaseUrl, stateProvider, logger, clock, companyId, expectedCompany, authorityKey, and authorityMaintenance\./
   );
 });
 
@@ -80,4 +81,19 @@ test('progress update rolls back the record and job mutation when audit retentio
   assert.equal(after.progressPercent, before.progressPercent);
   assert.equal(after.progress.some(update => update.data?.entryKey === 'progress-rollback-0001'), false);
   assert.equal(after.audit.some(event => event.action === 'record_progress' && event.metadata?.entryKey === 'progress-rollback-0001'), false);
+});
+
+test('task-scoped progress retries bind the task and do not change job-level completion', t => {
+  const { ledger, job } = fixture(t);
+  const task = ledger.getJobDetail(job.id).tasks[0];
+  const before = ledger.getJobDetail(job.id);
+  const payload = { entryKey: 'progress-task-scope-0001', taskId: task.id, status: 'blocked', progressPercent: 40, note: 'Waiting for the correct window delivery.' };
+  const first = ledger.addProgressUpdate(job.id, payload, { actor: 'field_worker' });
+  assert.equal(first.data.taskId, task.id);
+  assert.equal(ledger.addProgressUpdate(job.id, payload, { actor: 'field_worker' }).replayed, true);
+  const after = ledger.getJobDetail(job.id);
+  assert.equal(after.status, before.status);
+  assert.equal(after.progressPercent, before.progressPercent);
+  assert.throws(() => ledger.addProgressUpdate(job.id, { ...payload, taskId: `${task.id}-other` }, { actor: 'field_worker' }), error => error.code === 'progress_task_invalid');
+  assert.throws(() => ledger.addProgressUpdate(job.id, { ...payload, note: 'A different blocker for the same key.' }, { actor: 'field_worker' }), error => error.code === 'progress_entry_key_reused');
 });

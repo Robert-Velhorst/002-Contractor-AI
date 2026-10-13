@@ -136,7 +136,7 @@ test('LMRA readiness is worker-scoped, source-current, time-bounded, and exact-r
   )
   const diagnostics = ledger.diagnose()
   assert.equal(diagnostics.valid, true, JSON.stringify(diagnostics.issues))
-  assert.equal(diagnostics.migrations.currentVersion, '072_operator_locale_preferences')
+  assert.equal(diagnostics.migrations.currentVersion, '097_durable_evidence_storage_reservations')
   assert.equal(diagnostics.counts.lmraAssessments, 1)
 })
 
@@ -177,7 +177,10 @@ test('failed and changed-condition checks retain stop-work and require linked re
   assert.equal(cleared.assessment.reassessmentOfId, stop.assessment.id)
   assert.equal(ledger.getLmraAssessment(stop.assessment.id).readyForHazardousWork, false)
   const clearedFieldAssurance = ledger.listFieldAssurance({ mode: 'safety' })
-  assert.equal(clearedFieldAssurance.jobs.some(item => item.jobId === job.id), false)
+  const remainingSafetyReview = clearedFieldAssurance.jobs.find(item => item.jobId === job.id)
+  assert.ok(remainingSafetyReview, 'the independent task safety-pack gap remains after LMRA reassessment')
+  assert.equal(remainingSafetyReview.counts.openLmraAssessments, 0)
+  assert.equal(remainingSafetyReview.flags.safetyGap, true)
   const safetyCapability = ledger.ledgerCapabilityCoverage({
     jobDetail: ledger.getJobDetail(job.id, { includeAudit: false }),
   }).capabilities.find(item => item.key === 'safety-quality')

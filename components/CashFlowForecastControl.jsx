@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowDownRight,
   ArrowUpRight,
@@ -95,11 +95,18 @@ export default function CashFlowForecastControl({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+  const editedFilters = useRef({ asOfDate: false, openingBalance: false })
+  const forecastRead = useRef(0), mounted = useRef(true)
+
+  useEffect(() => {
+    mounted.current = true
+    return () => { mounted.current = false; forecastRead.current += 1 }
+  }, [])
 
   useEffect(() => {
     if (!cashFlow) return
-    setAsOfDate(cashFlow.asOfDate)
-    setOpeningBalance(String(cashFlow.openingBalance ?? 0))
+    if (!editedFilters.current.asOfDate) setAsOfDate(cashFlow.asOfDate)
+    if (!editedFilters.current.openingBalance) setOpeningBalance(String(cashFlow.openingBalance ?? 0))
     setSelectedWeek((current) => Math.min(Math.max(current, 1), cashFlow.weeks?.length || 13))
   }, [cashFlow])
 
@@ -107,15 +114,26 @@ export default function CashFlowForecastControl({
   const weeks = cashFlow?.weeks || EMPTY_LIST
   const summary = cashFlow?.summary || {}
   const selected = weeks.find((week) => week.index === selectedWeek) || weeks[0] || null
+  const validFilters = Boolean(asOfDate) && openingBalance.trim() !== '' && Number.isFinite(Number(openingBalance))
+  const displayedInputsMatch = Boolean(cashFlow) && cashFlow.asOfDate === asOfDate
+    && Number(cashFlow.openingBalance ?? 0) === Number(openingBalance)
   const sortedJobs = useMemo(
     () => [...jobs].sort((left, right) => String(left.title || '').localeCompare(String(right.title || ''))),
     [jobs],
   )
 
   async function loadForecast(nextAsOf = asOfDate, nextOpening = openingBalance) {
+    const sequence = ++forecastRead.current
     const result = await request(queryPath(nextAsOf, nextOpening))
-    onChange(result.cashFlow)
+    if (mounted.current && sequence === forecastRead.current) onChange(result.cashFlow)
     return result.cashFlow
+  }
+
+  function changeFilter(name, value) {
+    editedFilters.current[name] = true
+    forecastRead.current += 1
+    if (name === 'asOfDate') setAsOfDate(value)
+    else setOpeningBalance(value)
   }
 
   async function perform(action) {
@@ -178,6 +196,7 @@ export default function CashFlowForecastControl({
   }
 
   function requestSnapshot() {
+    if (!validFilters || !displayedInputsMatch) return
     perform(async () => {
       const result = await request('/api/ledger/cash-flow/snapshots', {
         method: 'POST',
@@ -192,6 +211,11 @@ export default function CashFlowForecastControl({
 
   const currentSnapshot = cashFlow?.activeSnapshot
   const pendingSnapshot = cashFlow?.pendingSnapshot
+
+  if (!cashFlow) return <section className="cash-flow-control" data-testid="cash-flow-control" aria-busy="true">
+    <h3>{t('13-week cash-flow forecast')}</h3>
+    <p role="status">{t('Loading the operating ledger')}</p>
+  </section>
 
   return (
     <section className="cash-flow-control" data-testid="cash-flow-control" aria-busy={busy || undefined}>
@@ -214,7 +238,7 @@ export default function CashFlowForecastControl({
       <div className="cash-flow-toolbar">
         <label>
           {t('As of')}
-          <input type="date" value={asOfDate} onChange={(event) => setAsOfDate(event.target.value)} />
+          <input type="date" value={asOfDate} onChange={(event) => changeFilter('asOfDate', event.target.value)} />
         </label>
         <label>
           {t('Opening cash')}
@@ -222,10 +246,10 @@ export default function CashFlowForecastControl({
             type="number"
             step="0.01"
             value={openingBalance}
-            onChange={(event) => setOpeningBalance(event.target.value)}
+            onChange={(event) => changeFilter('openingBalance', event.target.value)}
           />
         </label>
-        <button className="secondary-button" disabled={busy || !asOfDate} onClick={() => perform(() => loadForecast())}>
+        <button className="secondary-button" disabled={busy || !validFilters} onClick={() => perform(() => loadForecast())}>
           <RefreshCw size={15} className={busy ? 'spin' : ''} />
           {t('Recalculate')}
         </button>
@@ -236,7 +260,7 @@ export default function CashFlowForecastControl({
           </button>
         ) : null}
         {canCoordinate && !pendingSnapshot ? (
-          <button className="primary-button" disabled={busy || cashFlow?.ready === false} onClick={requestSnapshot}>
+          <button className="primary-button" disabled={busy || !validFilters || !displayedInputsMatch || cashFlow?.ready === false} onClick={requestSnapshot}>
             <ShieldCheck size={15} />
             {currentSnapshot ? t('Freeze revision') : t('Request approval')}
           </button>
@@ -253,6 +277,7 @@ export default function CashFlowForecastControl({
         ) : null}
       </div>
 
+      {cashFlow && !displayedInputsMatch && <p role="status">{t('Displayed forecast uses different date or opening-cash inputs.')}</p>}
       {error ? <div className="cash-flow-message cash-flow-error" role="alert"><TriangleAlert size={16} />{error}</div> : null}
       {notice ? <div className="cash-flow-message cash-flow-notice" role="status"><Check size={16} />{notice}</div> : null}
       {(cashFlow?.blockers || EMPTY_LIST).map((blocker) => (
