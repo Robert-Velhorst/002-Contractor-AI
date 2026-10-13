@@ -5,6 +5,8 @@ const os = require('node:os');
 const path = require('node:path');
 const { riskRegisterPayload } = require('../tests/risk-register-fixture');
 
+test.use({ timezoneId: 'Europe/Amsterdam' });
+
 test('office links a disruption to recovery and the worker resumes from an encrypted offline instruction', async ({ page, browser }, testInfo) => {
   test.setTimeout(150000);
   const base = `http://127.0.0.1:${process.env.CONTRACTOR_AI_BROWSER_AUTH_PORT}`;
@@ -295,7 +297,7 @@ test('office records a supplier response without sending a message or changing t
   const workPlan = page.getByTestId('job-task-control');
   const taskRow = page.getByTestId(`job-task-${task.id}`);
   const expectedTaskWindow = await page.evaluate(() => new Intl.DateTimeFormat('nl-NL', {
-    day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit'
+    day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Amsterdam'
   }).format(new Date('2030-01-12T09:30:00.000Z')));
   await expect(taskRow.locator('.work-plan-window')).toContainText(expectedTaskWindow);
   const baselineResponse = page.waitForResponse(response => response.request().method() === 'POST'

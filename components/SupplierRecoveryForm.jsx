@@ -1,6 +1,7 @@
 import { useCallback, useState } from 'react'
 import { useSessionDraftRecovery } from '../draft-recovery'
 import { useRecoveryCommand } from '../recovery-command'
+import { toIsoDateTimeInTimeZone } from '../dashboard-format'
 
 const STATUS = {
   contact_recorded: 'Contactmoment vastgelegd',
@@ -37,7 +38,8 @@ export default function SupplierRecoveryForm({ api, canEdit, source, recoveryCas
     const command = retry || form.pending || { action: 'supplier_follow_up', entryKey: crypto.randomUUID(), caseId: recoveryCase.id,
       caseHash: recoveryCase.caseHash, sourceHash, sourceId: source.id, followUpStatus: form.followUpStatus,
       summary: form.summary.trim(), evidenceReference: form.evidenceReference.trim(),
-      expectedAt: form.expectedAt || null, nextFollowUpAt: form.nextFollowUpAt || null,
+      expectedAt: form.expectedAt ? toIsoDateTimeInTimeZone(form.expectedAt, 'Europe/Amsterdam') : null,
+      nextFollowUpAt: form.nextFollowUpAt ? toIsoDateTimeInTimeZone(form.nextFollowUpAt, 'Europe/Amsterdam') : null,
       applyExpectedAvailability: form.applyExpectedAvailability === true,
       materialRequirementId: form.applyExpectedAvailability ? availabilityTarget?.materialRequirementId || null : null }
     await execute(command, result => { setForm(EMPTY_FORM); onSubmitted?.(result) })
