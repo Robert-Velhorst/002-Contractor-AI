@@ -1,5 +1,25 @@
 # Security and Privacy
 
+## Report a Vulnerability
+
+Use GitHub's **Report a vulnerability** action on this repository's Security tab
+to send a private vulnerability report. Do not open a public issue or pull
+request for an unpatched security problem. If private reporting is unavailable,
+contact the repository owner privately through a channel listed on the GitHub
+profile; do not include credentials or personal/customer information in a public
+message.
+
+Include the affected revision or release, a concise impact statement, and a
+minimal reproducible example using synthetic data. Avoid accessing, changing, or
+exporting another person's data; do not test against live infrastructure or
+third-party providers without explicit authorization. The maintainer will assess
+reports and coordinate a fix and disclosure where appropriate. This project does
+not currently promise a response-time SLA or a supported-version window.
+
+The policy covers this repository's application code, deployment templates,
+documentation, and GitHub automation. It does not establish authority to test
+GitHub, Vercel, Meta/WhatsApp, Hetzner, or any other separately operated service.
+
 ## Trust boundaries
 
 Contractor.AI treats browser input, uploaded files, portal tokens, proxy headers,

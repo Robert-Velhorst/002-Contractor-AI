@@ -670,6 +670,9 @@ function normalizeDayworkLines(value) {
 }
 
 function takeoffNumber(value, label, options = {}) {
+  if (typeof value !== 'number' && typeof value !== 'string') {
+    throw ledgerInputError('takeoff_measurement_invalid', `${label} must be a number.`);
+  }
   const number = Number(value);
   const minimum = options.minimum ?? 0;
   const maximum = options.maximum ?? 1_000_000;
