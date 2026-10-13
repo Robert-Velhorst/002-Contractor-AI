@@ -1,6 +1,26 @@
 # Final Verification Report
 
-## Published PR Verification and Follow-Up - 2026-10-13
+## Current Published PR Checkpoint - 2026-10-13
+
+Open draft PR [#97](https://github.com/Robert-Velhorst/002-Contractor-AI/pull/97)
+is currently at `c03c801d4616f93aca0be7eecf2c703c5799ada9`. This follow-up adds
+durable evidence quota reservations, real SQLite process-race and PostgreSQL
+multi-instance reservation coverage, corrects the Windows standalone migration
+expectation, and updates current migration-head assertions and hosted schema
+documentation to migration `097_durable_evidence_storage_reservations`.
+
+Focused local verification passed 16 tests across audit history, migration 096
+reapplication, local-to-hosted migration, and evidence storage reservations;
+37 PostgreSQL/provider-dependent tests were skipped because local services are
+not configured. Full ESLint and `git diff --check` passed. GitHub run
+[38358057851](https://github.com/Robert-Velhorst/002-Contractor-AI/actions/runs/38358057851)
+is the exact-head full gate and was still running at this checkpoint. The prior
+head's Windows standalone packaging/smoke test passed, but that result does not
+substitute for the new head's CI. No live Hetzner/EU deployment, provider
+residency/DPA, production recovery point, restore exercise, or independent
+operator acceptance is claimed.
+
+## Historical Published PR Verification - 2026-10-13
 
 Commit `a7a8e081c0f81acaa3fd95958ba6c6986caa0143` is the head of open draft PR
 [#97](https://github.com/Robert-Velhorst/002-Contractor-AI/pull/97). Exact-head
