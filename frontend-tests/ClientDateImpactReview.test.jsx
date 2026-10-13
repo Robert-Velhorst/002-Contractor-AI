@@ -28,7 +28,7 @@ it('records an evidence-bound contract date risk and retries the identical comma
   expect(writes).toHaveLength(2)
   expect(writes[0][1].body).toBe(writes[1][1].body)
   expect(JSON.parse(writes[0][1].body)).toMatchObject({ action: 'client_date_impact_review', caseId: 'case-1', commitmentEntryKey: 'completion',
-    commitmentHash: commitment.commitmentHash, reviewStatus: 'at_risk', nextFollowUpAt: '2030-04-20T09:00' })
+    commitmentHash: commitment.commitmentHash, reviewStatus: 'at_risk', nextFollowUpAt: new Date('2030-04-20T09:00').toISOString() })
 })
 
 it('keeps the review read-only for non-office roles', () => {
