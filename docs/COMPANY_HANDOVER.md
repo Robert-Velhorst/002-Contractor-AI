@@ -151,10 +151,38 @@ not establish encryption at rest or proper host permissions.
 | Missing verified receipt output | On the target use `export-receipt` with the same common arguments and a new `--output`. It requires the matching key and an already retained verified receipt. |
 | Missing release output | Repeat `retire` with the exact same verified receipt and a new output filename. The retained release is returned without another transition. |
 | Failure definitely before the import commit attempt | The importer rolls back data and attempts cleanup of only its newly uploaded objects. Inspect any reported cleanup failures before retrying. |
-| `migration_commit_unknown` or any uncertain commit outcome | Keep the target database, all uploaded objects and source frozen. Do not blindly retry, erase the target or remove evidence. Inspect retained authority/history and the migration receipt. A committed but not verified target stays blocked; there is no automatic resume-verification command yet. |
+| `migration_commit_unknown` or any uncertain commit outcome | Keep the target database, all uploaded objects and source frozen. Do not rerun the import. For migrations whose audit record contains per-table hashes, use the confirmed `--verify-existing` procedure below to compare the exact signed package, staged authority, retained tables, audit chain and object bytes, then recover the target receipt. Older migration records without per-table hashes fail closed and require a reviewed provider recovery procedure. |
 | Source remains frozen and no release has been issued | Use `abort` with the common arguments and `--confirm ABORT_UNRELEASED_HANDOVER`. The source advances generation and becomes active again with its source key. Quarantine the old target; a later attempt requires a fresh transfer and empty target. |
 | Marker advanced but the source DB transaction did not complete | Startup and further maintenance transitions fail closed. Preserve the DB, marker, pending files, keys and receipts for reviewed repair; there is no automatic marker rollback or repair command. |
 | Target fails after source retirement | Recover the target under its existing authority with a reviewed provider procedure. Never reopen an old source copy. Authority-aware disaster restoration still needs implementation and provider rehearsal. |
+
+### Reconcile an Uncertain Hosted Commit
+
+Use this only after `migration_commit_unknown`, with the source still frozen and
+the exact signed backup and permit used by that attempt. Do not point it at a
+different database or package. On the hosted maintenance environment, make the
+backup available at `<CONTRACTOR_AI_DATA_DIR>/backups/<backup-id>` and load the
+same company ID, verified-TLS database URL, target authority key, backup signing
+key, and private company-scoped object-store configuration used for the attempt.
+Then run:
+
+```powershell
+npm run migrate:hosted -- --verify-existing --backup-id <backup-id> --permit-file <permit.json> --receipt-output <verified.json> --confirm VERIFY_MIGRATION_<backup-id>
+```
+
+This mode does not import tables or activate authority. It verifies the signed
+package and permit against the exact staged target, compares retained per-table
+hashes, checks the PostgreSQL audit chain and diagnostics, reads every migrated
+evidence object back and checks its byte count and SHA-256, then retains or
+re-exports the same idempotent target verification receipt. Only after this
+command succeeds may the stopped local source `retire` that exact receipt and
+the hosted target `activate` the matching release. If verification fails, keep
+both environments fenced and preserve all database and object-store evidence.
+
+Migration audit records created before per-table digests were retained cannot
+be reconciled by this command; do not infer their integrity from row counts or
+the presence of a migration audit event. Use a reviewed provider recovery
+procedure instead.
 
 `restore:local` deliberately refuses authority-bound backups or targets and any
 target retaining an authority marker, even if its current database is corrupt.

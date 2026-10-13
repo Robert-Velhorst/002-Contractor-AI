@@ -13,10 +13,10 @@ const {
   builtInInspectionTemplateRows
 } = require('../operating-ledger');
 const { createEvidenceStorage } = require('../evidence-storage');
-const { resolvePostgresConnectionOptions } = require('../postgres-sync-database');
+const { PostgresSyncDatabase, resolvePostgresConnectionOptions } = require('../postgres-sync-database');
 const { BACKUP_MANIFEST_V3, verifyBackupManifestAuthenticity } = require('../backup-manifest');
 const { assertSameCompany, normalizeCompanyId, readCompanyRuntime } = require('../company-runtime');
-const { readAuthority, validatePreparedPackage, authorityRecord, authorityHistoryRecord, retainTargetVerification, readPrivateKeyFile } = require('../company-authority');
+const { readAuthority, validatePreparedPackage, authorityRecord, authorityHistoryRecord, retainTargetVerification, readPrivateKeyFile, verifyAuthorityHistory } = require('../company-authority');
 const { readDocument, privateOutput } = require('../company-handover');
 
 const projectRoot = path.resolve(__dirname, '..');
@@ -214,6 +214,86 @@ function canonicalValue(value, columnKey = '') {
 function tableDigest(table, columns, rows) {
   const encodedRows = rows.map(row => JSON.stringify(columns.map(column => canonicalValue(row[column], `${table}.${column}`)))).sort();
   return sha256Buffer(Buffer.from(encodedRows.join('\n'), 'utf8'));
+}
+
+const RECONCILIATION_EXCLUDED_TABLES = new Set(['audit_events', 'audit_chain_state', 'company_authority', 'company_authority_history']);
+
+function migrationReceiptId(backupId, manifestHash) {
+  return `migration_${sha256Buffer(Buffer.from(`${backupId}\0${manifestHash}`)).slice(0, 24)}`;
+}
+
+async function verifyCommittedHostedMigration({ backupDir, databaseUrl, companyId, storage = null, signingKey, handover }) {
+  if (!databaseUrl) throw new Error('A hosted PostgreSQL database URL is required.');
+  const connection = resolvePostgresConnectionOptions(databaseUrl);
+  if (connection.sslMode !== 'verify-full') throw new Error('Hosted migration verification requires PostgreSQL certificate and hostname verification with sslmode=verify-full.');
+  const verification = verifyBackupDirectory(backupDir, { signingKey });
+  const scopeCheck = new DatabaseSync(verification.ledgerFile, { readOnly: true });
+  let targetAuthority;
+  try {
+    targetAuthority = validatePreparedPackage({ sourceDb: scopeCheck, permit: handover?.permit, key: handover?.key,
+      company: verification.company, manifestSha256: verification.manifestHash });
+  } finally { scopeCheck.close(); }
+  assertSameCompany({ id: companyId || verification.company?.id, ledgerId: verification.company?.ledgerId }, verification.company);
+  assertHostedCompanyStorage(companyId || verification.company?.id, storage);
+
+  const ledger = new ContractorOperatingLedger({ databaseUrl, authorityMaintenance: true });
+  try {
+    const company = readCompanyRuntime(ledger.db);
+    assertSameCompany(verification.company, company);
+    const authority = readAuthority(ledger.db);
+    if (!authority || authority.status !== 'staged' || authority.environmentId !== targetAuthority.environmentId
+      || authority.publicKey !== targetAuthority.publicKey || authority.transferId !== targetAuthority.transferId
+      || authority.generation !== targetAuthority.generation || authority.details.permit?.body?.manifestSha256 !== verification.manifestHash) {
+      throw Object.assign(new Error('The hosted database is not the exact staged target for this signed backup and permit.'), { code: 'hosted_target_mismatch' });
+    }
+    if (!verifyAuthorityHistory(ledger.db).valid) throw Object.assign(new Error('Hosted authority history failed verification.'), { code: 'authority_history_invalid' });
+
+    const receiptId = migrationReceiptId(verification.manifest.backupId, verification.manifestHash);
+    const migrationEvent = ledger.db.prepare("SELECT * FROM audit_events WHERE id = ? AND entity_type = 'operational_migration' AND action = 'migrate_local_backup_to_hosted'").get(receiptId);
+    if (!migrationEvent) throw Object.assign(new Error('The committed migration audit receipt was not found.'), { code: 'migration_receipt_missing' });
+    const metadata = JSON.parse(migrationEvent.metadata_json || '{}');
+    if (metadata.sourceBackupId !== verification.manifest.backupId || metadata.manifestSha256 !== verification.manifestHash
+      || metadata.tables !== metadata.tableDigests?.length || !Array.isArray(metadata.evidenceSha256)) {
+      throw Object.assign(new Error('The retained migration audit receipt does not bind complete reconciliation evidence.'), { code: 'migration_receipt_incomplete' });
+    }
+    const digestMaterial = metadata.tableDigests.map(item => `${item.table}:${item.rows}:${item.sha256}`).join('\n');
+    if (sha256Buffer(Buffer.from(digestMaterial)) !== metadata.databaseSha256) throw Object.assign(new Error('The retained migration table-digest summary is invalid.'), { code: 'migration_receipt_invalid' });
+
+    for (const item of metadata.tableDigests) {
+      if (RECONCILIATION_EXCLUDED_TABLES.has(item.table)) continue;
+      if (!/^[a-z][a-z0-9_]*$/.test(item.table) || !Array.isArray(item.columns) || !item.columns.length
+        || item.columns.some(column => !/^[a-z][a-z0-9_]*$/.test(column)) || !Number.isSafeInteger(item.rows) || item.rows < 0
+        || !/^[a-f0-9]{64}$/.test(item.sha256)) throw Object.assign(new Error('The retained per-table migration evidence is invalid.'), { code: 'migration_receipt_invalid' });
+      const rows = ledger.db.prepare(`SELECT ${item.columns.map(quotedIdentifier).join(', ')} FROM ${quotedIdentifier(item.table)}`).all();
+      if (rows.length !== item.rows || tableDigest(item.table, item.columns, rows) !== item.sha256) {
+        throw Object.assign(new Error(`Hosted table reconciliation failed: ${item.table}.`), { code: 'migration_table_mismatch' });
+      }
+    }
+
+    if (metadata.evidenceSha256.length && (!storage || typeof storage.read !== 'function')) {
+      throw Object.assign(new Error('Hosted evidence verification requires the configured object-storage reader.'), { code: 'migration_evidence_verifier_required' });
+    }
+    for (const item of metadata.evidenceSha256) {
+      if (typeof item.storageRef !== 'string' || !Number.isSafeInteger(item.bytes) || !/^[a-f0-9]{64}$/.test(item.sha256)) {
+        throw Object.assign(new Error('The retained evidence migration record is invalid.'), { code: 'migration_receipt_invalid' });
+      }
+      const bytes = Buffer.from(await storage.read(item.storageRef));
+      if (bytes.length !== item.bytes || sha256Buffer(bytes) !== item.sha256) {
+        throw Object.assign(new Error(`Hosted evidence reconciliation failed: ${item.source || 'unknown source'}.`), { code: 'migration_evidence_mismatch' });
+      }
+    }
+
+    const diagnostics = ledger.diagnose();
+    if (!diagnostics.valid) throw Object.assign(new Error('Hosted ledger diagnostics failed during migration reconciliation.'), { code: 'migration_diagnostics_failed' });
+    const auditIntegrity = ledger.verifyAuditIntegrity();
+    if (!auditIntegrity.valid) throw Object.assign(new Error('Hosted audit-chain verification failed during migration reconciliation.'), { code: 'migration_audit_invalid' });
+    const result = { manifestSha256: verification.manifestHash, databaseSha256: metadata.databaseSha256,
+      receiptId, evidenceFiles: metadata.evidenceSha256.length, diagnostics: { valid: true }, auditIntegrity };
+    const handoverReceipt = retainTargetVerification(ledger.db, { key: handover.key, result });
+    return { success: true, reconciled: true, backupId: verification.manifest.backupId, receiptId,
+      tablesVerified: metadata.tableDigests.length - metadata.tableDigests.filter(item => RECONCILIATION_EXCLUDED_TABLES.has(item.table)).length,
+      evidenceFilesVerified: metadata.evidenceSha256.length, authorityStatus: authority.status, handoverReceipt };
+  } finally { ledger.close(); }
 }
 
 function inferMimeType(filename) {
@@ -644,7 +724,7 @@ async function migrateLocalBackupToHosted({ backupDir, databaseUrl, companyId, s
       if (destinationRows.length !== rows.length || sourceDigest !== destinationDigest) {
         throw new Error(`Hosted verification failed for ledger table: ${table}`);
       }
-      tableResults.push({ table, rows: rows.length, sha256: sourceDigest });
+      tableResults.push({ table, columns, rows: rows.length, sha256: sourceDigest });
     }
 
     const rebuiltAuditChain = await rebuildHostedAuditChain(client);
@@ -656,6 +736,7 @@ async function migrateLocalBackupToHosted({ backupDir, databaseUrl, companyId, s
       databaseSha256: databaseDigest,
       sourceRows: tableResults.reduce((total, result) => total + result.rows, 0),
       tables: tableResults.length,
+      tableDigests: tableResults,
       invalidatedOperatorSessions,
       invalidatedIdentitySessions,
       invalidatedWorkerSessions,
@@ -669,7 +750,7 @@ async function migrateLocalBackupToHosted({ backupDir, databaseUrl, companyId, s
       },
       rebuiltAuditChain,
       evidenceFiles: evidence.files.length,
-      evidenceSha256: evidence.files.map(file => ({ source: file.source, bytes: file.bytes, sha256: file.sha256 }))
+      evidenceSha256: evidence.files.map(file => ({ source: file.source, storageRef: file.storageRef, bytes: file.bytes, sha256: file.sha256 }))
     };
     await appendHostedAuditEvent(client, {
       id: receiptId,
@@ -771,8 +852,10 @@ async function runCli() {
   if (!/^[A-Za-z0-9._-]+$/.test(backupId) || backupId === '.' || backupId === '..') {
     throw new Error('Set --backup-id to a valid verified local backup id.');
   }
-  if (argumentsMap.confirm !== `MIGRATE_${backupId}`) {
-    throw new Error(`Set --confirm MIGRATE_${backupId} to migrate this verified backup into an empty hosted target.`);
+  const verifyExisting = argumentsMap['verify-existing'] === true;
+  const expectedConfirmation = `${verifyExisting ? 'VERIFY_MIGRATION' : 'MIGRATE'}_${backupId}`;
+  if (argumentsMap.confirm !== expectedConfirmation) {
+    throw new Error(`Set --confirm ${expectedConfirmation} to ${verifyExisting ? 'reconcile the retained staged target without rerunning the migration' : 'migrate this verified backup into an empty hosted target'}.`);
   }
   const databaseUrl = String(argumentsMap['database-url'] || process.env.CONTRACTOR_AI_DATABASE_URL || '').trim();
   if (!databaseUrl) throw new Error('Set CONTRACTOR_AI_DATABASE_URL to the empty hosted PostgreSQL migration target.');
@@ -785,6 +868,14 @@ async function runCli() {
   if (!argumentsMap['permit-file'] || !argumentsMap['receipt-output']) throw new Error('Hosted transfer requires --permit-file and --receipt-output. Follow docs/COMPANY_HANDOVER.md; a copied backup alone cannot authorize activation.');
   const handover = { permit: readDocument(argumentsMap['permit-file']), key: readPrivateKeyFile(process.env.CONTRACTOR_AI_AUTHORITY_KEY_FILE) };
   const storage = createHostedEvidenceStorageFromEnvironment(companyId);
+  if (argumentsMap['verify-existing'] === true) {
+    const result = await verifyCommittedHostedMigration({ backupDir: path.join(dataDir, 'backups', backupId), databaseUrl,
+      companyId, storage, signingKey: argumentsMap['signing-key'], handover });
+    const receiptFile = privateOutput(argumentsMap['receipt-output'], result.handoverReceipt);
+    const { handoverReceipt: _handoverReceipt, ...summary } = result;
+    process.stdout.write(`${JSON.stringify({ ...summary, receiptFile, activationRequired: true })}\n`);
+    return;
+  }
   const result = await migrateLocalBackupToHosted({
     backupDir: path.join(dataDir, 'backups', backupId),
     databaseUrl,
@@ -809,6 +900,7 @@ if (require.main === module) {
 
 module.exports = {
   migrateLocalBackupToHosted,
+  verifyCommittedHostedMigration,
   orderedSelfReferentialRows,
   orderedSourceTables,
   invalidateWorkerSessionRows,

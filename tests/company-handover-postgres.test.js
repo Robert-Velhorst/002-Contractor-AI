@@ -6,9 +6,9 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { Client } = require('pg');
 const { ContractorOperatingLedger } = require('../operating-ledger');
-const { generateAuthorityKey, targetDescription, prepareSource, readAuthority, retireSource, activateTarget, abortSource, verifyAuthorityHistory } = require('../company-authority');
+const { generateAuthorityKey, targetDescription, prepareSource, readAuthority, retireSource, activateTarget, verifyAuthorityHistory } = require('../company-authority');
 const { createHandoverPackage, privateOutput } = require('../company-handover');
-const { migrateLocalBackupToHosted } = require('../scripts/migrate-local-backup-to-hosted');
+const { migrateLocalBackupToHosted, verifyCommittedHostedMigration } = require('../scripts/migrate-local-backup-to-hosted');
 const { main } = require('../scripts/company-handover');
 
 const { postgresTestDatabaseUrl, connectVerifiedPostgresClient } = require('./postgres-test-database');
@@ -141,8 +141,23 @@ test('real PostgreSQL transfer retains evidence and company records, blocks stag
     assert.equal(readAuthority(uncertainTarget.db).status, 'staged');
     assert.equal(uncertainTarget.getJobRow(nextJob.id).title, 'Uncertain transfer');
     assert.throws(() => activateTarget(uncertainTarget.db, { key: destinationKey, release: {}, actor: 'fixture', reason: 'Forbidden unverified activation' }), { code: 'authority_target_unverified' });
-    assert.equal(abortSource(nextSource.db, { key: sourceKey, actor: 'fixture', reason: 'Unreleased source remains authoritative' }).status, 'active');
-    assert.throws(() => retireSource(nextSource.db, { key: sourceKey, receipt: {}, actor: 'fixture', reason: 'Old transfer cannot be released' }), { code: 'authority_source_not_frozen' });
+    const migratedRef = [...objects.keys()].at(-1), migratedBytes = Buffer.from(objects.get(migratedRef));
+    objects.set(migratedRef, Buffer.from('changed evidence bytes'));
+    await assert.rejects(verifyCommittedHostedMigration({ backupDir: prepared.directory, databaseUrl: nextUrl.toString(), companyId: nextSource.company.id,
+      storage, signingKey, handover: { permit: prepared.permit, key: destinationKey } }), { code: 'migration_evidence_mismatch' });
+    assert.equal(readAuthority(uncertainTarget.db).details.receipt, undefined, 'Failed reconciliation must not issue a target receipt.');
+    objects.set(migratedRef, migratedBytes);
+    const reconciled = await verifyCommittedHostedMigration({ backupDir: prepared.directory, databaseUrl: nextUrl.toString(),
+      companyId: nextSource.company.id, storage, signingKey, handover: { permit: prepared.permit, key: destinationKey } });
+    assert.equal(reconciled.success, true);
+    assert.equal(reconciled.tablesVerified > 0, true);
+    assert.equal(reconciled.evidenceFilesVerified, 1);
+    const repeated = await verifyCommittedHostedMigration({ backupDir: prepared.directory, databaseUrl: nextUrl.toString(), companyId: nextSource.company.id,
+      storage, signingKey, handover: { permit: prepared.permit, key: destinationKey } });
+    assert.deepEqual(repeated.handoverReceipt, reconciled.handoverReceipt);
+    const release = retireSource(nextSource.db, { key: sourceKey, receipt: reconciled.handoverReceipt, actor: 'fixture', reason: 'Reconciled target proof' });
+    assert.equal(readAuthority(nextSource.db).status, 'retired');
+    assert.equal(activateTarget(uncertainTarget.db, { key: destinationKey, release, actor: 'fixture', reason: 'Source retired after reconciliation' }).status, 'active');
   });
   t.diagnostic(`TLS ${admin.connection.stream.getProtocol()}, certificate authorized; object storage is a local test double.`);
 });
