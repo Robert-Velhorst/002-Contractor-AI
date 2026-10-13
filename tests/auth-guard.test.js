@@ -745,6 +745,7 @@ test('role tokens limit operator mutations to their authorized ledger workflow',
     const ownerSupport = await request(baseUrl, '/api/operations/support-bundle', { headers: ownerHeaders });
     assert.equal(ownerSupport.response.status, 200);
     assert.equal(ownerSupport.body.format, 'contractor-ai-support-bundle/v1');
+    assert.equal(ownerSupport.body.application.runtimeMode, 'local');
     const deniedOfficeSupport = await request(baseUrl, '/api/operations/support-bundle', { headers: officeHeaders });
     assert.equal(deniedOfficeSupport.response.status, 403);
     assert.equal(deniedOfficeSupport.body.error.code, 'insufficient_role');

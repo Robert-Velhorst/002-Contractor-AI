@@ -1158,7 +1158,7 @@ cutover. Registry origin rebinding and offline reassociation are not automatic.
 | `npm run test:performance` | Run the smoke ledger benchmark |
 | `npm run benchmark:ledger` | Run the production-scale benchmark |
 | `npm run verify:bundle` | Enforce frontend bundle budgets |
-| `npm run doctor -- --url ... --token ...` | Query minimized readiness/support state |
+| `npm run doctor -- --url ... --token ...` | Query minimized readiness/support state; reports local service readiness separately from hosted-runtime readiness (hosted mode, PostgreSQL and S3 required; provider residency and DPA still need operator verification) |
 | `npm run package:windows` | Build the portable Windows distribution |
 | `npm run start:standalone` | Start through the standalone launcher |
 | `npm run start:tunnel` | Start the verified authenticated ngrok lifecycle |

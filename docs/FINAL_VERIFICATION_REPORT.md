@@ -1,27 +1,27 @@
 # Final Verification Report
 
-## CI Baseline and Follow-Up Validation - 2026-10-13
+## Published PR Verification and Follow-Up - 2026-10-13
 
-Commit `03ecc782b958c5801c440b7a00b0acdc763dd0d6` was the PR head before the
-mobile work-plan correction described below. It is part of open draft PR
-[#97](https://github.com/Robert-Velhorst/002-Contractor-AI/pull/97).
-Exact-head GitHub run [38342101583](https://github.com/Robert-Velhorst/002-Contractor-AI/actions/runs/38342101583)
-completed at 2026-10-13 04:01 UTC with one browser-test failure. Release-contract
-verification, HAI contract verification, lint, build, bundle budget, frontend
-tests, Node tests, ledger performance, container tests and Windows standalone
-packaging passed. The `operator calculates, approves, and revises a critical-
-path work plan` test found a form input extending beyond the mobile viewport;
-the other three tests in that browser batch passed.
+Commit `a7a8e081c0f81acaa3fd95958ba6c6986caa0143` is the head of open draft PR
+[#97](https://github.com/Robert-Velhorst/002-Contractor-AI/pull/97). Exact-head
+GitHub run [38345180211](https://github.com/Robert-Velhorst/002-Contractor-AI/actions/runs/38345180211)
+completed successfully at 2026-10-13 04:43 UTC. Release and HAI contracts, lint,
+production build, bundle budgets, frontend and Node tests, production-scale
+ledger performance, container runtime, all 46 browser batches, and Windows
+standalone packaging passed. The Vercel deployment and preview-comment checks
+also passed. This verifies the PR candidate, not a live Hetzner/EU deployment,
+provider residency, DPA, production recovery point, or restore exercise. The
+current Vercel preview was not independently tested for anonymous access; a
+direct request to an earlier PR preview redirected to Vercel SSO.
 
-The follow-up sets explicit width bounds on work-plan form controls. On Windows,
-the full `e2e/work-plan.spec.js` file passed (11 tests), as did `npm run lint`
-and `npm run verify:release`. This is focused local validation, not Linux CI or
-a full browser-suite pass; the corrected PR head requires a new CI run.
-
-The associated Vercel deployment check reports `pass`, but an unauthenticated
-GET to its PR preview returned HTTP 302 to Vercel SSO. The preview is therefore
-not independently accessible for public browser acceptance; deployment status
-alone does not establish that the product is publicly reachable.
+The mobile work-plan correction constrains form controls to their grid width.
+Its full browser spec passed locally on Windows (11 tests). A subsequent local
+readiness enhancement now distinguishes service readiness from hosted-runtime
+readiness and reports missing hosted mode, PostgreSQL, or S3 configuration. The
+follow-up passed five doctor tests, the owner-only support-bundle integration
+test, lint, release-contract verification, and the complete Node 22.23.3 suite
+(1,128 passed, 71 skipped, zero failed). These follow-up readiness changes are
+not included in commit `a7a8e081`; they require their own exact-head CI run.
 
 The measurements below belong to prior commit
 `6fb463a30861f978d0f6ed1115dc264a850eb8d8`; they are historical and must not be

@@ -10626,6 +10626,7 @@ app.get('/api/operations/support-bundle', asyncHandler(async (req, res) => {
       name: packageMetadata.name,
       version: packageMetadata.version,
       releaseSha: releaseSha || null,
+      runtimeMode,
       node: process.version,
       platform: process.platform,
       uptimeSeconds: Math.round(process.uptime())

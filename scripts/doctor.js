@@ -44,11 +44,24 @@ async function runDoctor(options = parseArguments()) {
     readJson(options.baseUrl, '/api/operations/support-bundle', options)
   ]);
   const node = assessNodeCompatibility(support.payload?.application?.node);
+  const runtimeReady = readiness.ok && support.ok
+    && support.payload?.readiness?.runtimeReady === true && node.supported;
+  const runtimeMode = support.payload?.application?.runtimeMode || 'unknown';
+  const databaseMode = support.payload?.database?.mode || 'unknown';
+  const storageMode = support.payload?.readiness?.storage?.mode || 'unknown';
+  const hostedRuntimeIssues = [];
+  if (!runtimeReady) hostedRuntimeIssues.push('runtime_not_ready');
+  if (runtimeMode !== 'hosted') hostedRuntimeIssues.push('hosted_runtime_required');
+  if (databaseMode !== 'postgres') hostedRuntimeIssues.push('postgresql_required');
+  if (storageMode !== 's3') hostedRuntimeIssues.push('s3_object_storage_required');
   const report = {
     checkedAt: new Date().toISOString(),
     target: options.baseUrl,
-    ready: readiness.ok && support.ok && support.payload?.readiness?.runtimeReady === true && node.supported,
+    ready: runtimeReady,
+    hostedRuntimeReady: hostedRuntimeIssues.length === 0,
+    hostedRuntimeIssues,
     runtimeCompatibility: { node },
+    deployment: { mode: runtimeMode, databaseMode, storageMode },
     readiness: {
       httpStatus: readiness.status,
       status: readiness.payload?.status || readiness.payload?.error?.code || 'unavailable',
@@ -60,10 +73,11 @@ async function runDoctor(options = parseArguments()) {
       format: support.payload.format,
       application: support.payload.application,
       database: {
-        mode: support.payload.database?.mode,
+        mode: databaseMode,
         currentMigration: support.payload.database?.migrations?.currentVersion,
         pendingMigrations: support.payload.database?.migrations?.pending?.length || 0
       },
+      storageMode,
       integrity: support.payload.integrity,
       automation: support.payload.control?.automation
     } : {

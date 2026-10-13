@@ -32,7 +32,8 @@ test('does not report readiness when the application runs on an unsupported Node
       status: 200,
       json: async () => ({
         format: 'contractor-ai-support-bundle/v1',
-        application: { node: 'v25.2.1' },
+        application: { node: 'v25.2.1', runtimeMode: 'hosted' },
+        database: { mode: 'postgres' },
         readiness: { runtimeReady: true }
       })
     };
@@ -41,6 +42,57 @@ test('does not report readiness when the application runs on an unsupported Node
     const report = await runDoctor({ baseUrl: 'http://127.0.0.1:3000', token: '', timeoutMs: 1_000 });
     assert.equal(report.ready, false);
     assert.equal(report.runtimeCompatibility.node.status, 'unsupported');
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('distinguishes a healthy local runtime from hosted runtime readiness', async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async url => url.endsWith('/api/health/ready')
+    ? { ok: true, status: 200, json: async () => ({ status: 'ready' }) }
+    : {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        format: 'contractor-ai-support-bundle/v1',
+        application: { node: 'v22.18.0', runtimeMode: 'local' },
+        database: { mode: 'sqlite' },
+        readiness: { runtimeReady: true, storage: { mode: 'local' } }
+      })
+    };
+  try {
+    const report = await runDoctor({ baseUrl: 'http://127.0.0.1:3000', token: '', timeoutMs: 1_000 });
+    assert.equal(report.ready, true);
+    assert.equal(report.hostedRuntimeReady, false);
+    assert.deepEqual(report.hostedRuntimeIssues, [
+      'hosted_runtime_required', 'postgresql_required', 's3_object_storage_required'
+    ]);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('reports hosted runtime readiness only with supported Node and durable provider modes', async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async url => url.endsWith('/api/health/ready')
+    ? { ok: true, status: 200, json: async () => ({ status: 'ready' }) }
+    : {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        format: 'contractor-ai-support-bundle/v1',
+        application: { node: 'v22.18.0', runtimeMode: 'hosted' },
+        database: { mode: 'postgres' },
+        readiness: { runtimeReady: true, storage: { mode: 's3' } }
+      })
+    };
+  try {
+    const report = await runDoctor({ baseUrl: 'https://contractor.example.eu', token: 'owner', timeoutMs: 1_000 });
+    assert.equal(report.ready, true);
+    assert.equal(report.hostedRuntimeReady, true);
+    assert.deepEqual(report.hostedRuntimeIssues, []);
+    assert.deepEqual(report.deployment, { mode: 'hosted', databaseMode: 'postgres', storageMode: 's3' });
   } finally {
     global.fetch = originalFetch;
   }
