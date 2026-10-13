@@ -553,7 +553,7 @@ test('bid/no-bid policy and pursuit decisions are replay-safe, approval-gated, s
   assert.equal(ledger.getOpportunity(opportunity.id).stage, 'new');
   assert.equal(register.summary.noBid, 1);
   assert.equal(ledger.diagnose().valid, true);
-  assert.equal(ledger.migrationStatus().currentVersion, '096_loading_read_indexes');
+  assert.equal(ledger.migrationStatus().currentVersion, '097_durable_evidence_storage_reservations');
 });
 
 test('recommendation overrides require rationale and approval rejects stale pursuit evidence atomically', t => {

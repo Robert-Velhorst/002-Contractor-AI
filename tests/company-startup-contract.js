@@ -72,7 +72,7 @@ function registerCompanyStartupContract(test, { prefix, createDatabase, skip = f
       assert.ok(ledger.company.id.startsWith('company_'));
       assert.deepEqual(readCompanyRuntime(fixture.db), ledger.company);
       assert.equal(ledger.db.prepare('SELECT note FROM startup_retained_records').get().note, 'Do not modify on rejected startup');
-      assert.equal(ledger.migrationStatus().currentVersion, '096_loading_read_indexes');
+      assert.equal(ledger.migrationStatus().currentVersion, '097_durable_evidence_storage_reservations');
     } finally { ledger.close(); }
   });
 
@@ -88,7 +88,7 @@ function registerCompanyStartupContract(test, { prefix, createDatabase, skip = f
     try {
       assert.equal(imported, true);
       assert.deepEqual(ledger.company, company);
-      assert.equal(ledger.migrationStatus().currentVersion, '096_loading_read_indexes');
+      assert.equal(ledger.migrationStatus().currentVersion, '097_durable_evidence_storage_reservations');
       assert.equal(ledger.db.prepare('SELECT id FROM startup_retained_records').all().length, 1);
     } finally { ledger.close(); }
     const restarted = new ContractorOperatingLedger(options);

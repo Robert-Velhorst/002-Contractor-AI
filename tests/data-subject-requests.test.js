@@ -40,7 +40,7 @@ function approve(ledger, approvalId, actor = 'privacy_approver') {
 
 test('access requests require verified identity, source-current approval, and a human-reviewed export', t => {
   const ledger = makeLedger(t);
-  assert.equal(ledger.migrationStatus().currentVersion, '096_loading_read_indexes');
+  assert.equal(ledger.migrationStatus().currentVersion, '097_durable_evidence_storage_reservations');
   const client = ledger.createClient({
     name: 'Access Request Client',
     email: 'privacy-access@example.test',

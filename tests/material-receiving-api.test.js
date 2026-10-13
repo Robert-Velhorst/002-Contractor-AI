@@ -153,5 +153,5 @@ test('material receiving API retains exact field evidence and approval-backed re
   const diagnostics = await request(baseUrl, '/api/ledger/debug', { token: tokens.owner });
   assert.equal(diagnostics.response.status, 200);
   assert.equal(diagnostics.body.diagnostics.valid, true);
-  assert.equal(diagnostics.body.diagnostics.migrations.currentVersion, '096_loading_read_indexes');
+  assert.equal(diagnostics.body.diagnostics.migrations.currentVersion, '097_durable_evidence_storage_reservations');
 });

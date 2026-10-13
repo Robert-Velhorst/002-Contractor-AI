@@ -318,7 +318,7 @@ test('migration 053 preserves legacy converted takeoff hashes and upgrades edita
   legacyDatabase.close();
 
   ledger = new ContractorOperatingLedger({ dbFile });
-  assert.equal(ledger.migrationStatus().currentVersion, '096_loading_read_indexes');
+  assert.equal(ledger.migrationStatus().currentVersion, '097_durable_evidence_storage_reservations');
   const retainedConverted = ledger.getTakeoff(convertedJob.id, legacyTakeoff.id);
   assert.equal(retainedConverted.integrityValid, true);
   assert.equal(retainedConverted.data.workBreakdownFormat, undefined);

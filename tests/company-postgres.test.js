@@ -58,6 +58,6 @@ test('PostgreSQL preserves company-bound SQLite migration and keeps a second com
     assert.equal(other.getJobRow(job.id), undefined);
     assert.notEqual(other.company.ledgerId, hosted.company.ledgerId);
     assert.throws(() => new ContractorOperatingLedger({ databaseUrl, companyId: 'company-other' }), { code: 'company_runtime_mismatch' });
-    assert.equal(hosted.migrationStatus().currentVersion, '096_loading_read_indexes');
+    assert.equal(hosted.migrationStatus().currentVersion, '097_durable_evidence_storage_reservations');
   } finally { hosted.close(); other.close(); }
 });

@@ -303,7 +303,7 @@ test('operational export and backup are local, auditable maintenance controls', 
   assert.equal(readiness.body.status, 'ready');
   assert.equal(readiness.body.runtime.evidenceStorage.status, 'verified');
   assert.equal(readiness.body.runtime.evidenceStorage.verified, true);
-  assert.equal(readiness.body.ledger.migrations.currentVersion, '096_loading_read_indexes');
+  assert.equal(readiness.body.ledger.migrations.currentVersion, '097_durable_evidence_storage_reservations');
   assert.equal(readiness.body.ledger.auditIntegrity.valid, true);
   assert.deepEqual(readiness.body.ledger.migrations.pending, []);
 
@@ -550,7 +550,7 @@ test('owner safety stop blocks autonomous drafting and support bundle excludes o
   assert.equal(support.body.application.releaseSha, '0123456789abcdef');
   assert.equal(support.body.privacy.customerRecordsIncluded, false);
   assert.equal(support.body.privacy.credentialsIncluded, false);
-  assert.equal(support.body.database.migrations.currentVersion, '096_loading_read_indexes');
+  assert.equal(support.body.database.migrations.currentVersion, '097_durable_evidence_storage_reservations');
   assert.equal(support.body.control.automation.suspended, true);
   assert.match(support.response.headers.get('content-disposition') || '', /contractor-ai-support-/);
   const serializedSupport = JSON.stringify(support.body);

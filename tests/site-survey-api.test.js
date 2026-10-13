@@ -201,5 +201,5 @@ test('site-survey API enforces roles, private evidence, approval, export, and ca
   const diagnostics = await request(baseUrl, '/api/ledger/debug', tokens.owner);
   assert.equal(diagnostics.response.status, 200, JSON.stringify(diagnostics.body));
   assert.equal(diagnostics.body.diagnostics.valid, true);
-  assert.equal(diagnostics.body.diagnostics.migrations.currentVersion, '096_loading_read_indexes');
+  assert.equal(diagnostics.body.diagnostics.migrations.currentVersion, '097_durable_evidence_storage_reservations');
 });

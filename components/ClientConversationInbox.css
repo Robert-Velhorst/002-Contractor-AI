@@ -1,9 +1,0 @@
-.client-inbox-panel { overflow: hidden; }
-.client-inbox-row { display: flex; width: 100%; min-width: 0; align-items: center; justify-content: space-between; gap: 12px; padding: 13px 18px; color: inherit; text-align: left; background: #fff; border: 0; border-bottom: 1px solid #edf1ef; cursor: pointer; }
-.client-inbox-row:hover { background: #f4f8f6; }
-.client-inbox-row > span { display: grid; min-width: 0; gap: 3px; }
-.client-inbox-row strong, .client-inbox-row small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.client-inbox-row small, .client-inbox-row time { color: #687873; font-size: 12px; }
-.client-inbox-row time { flex: 0 0 auto; }
-.client-inbox-row:focus-visible { outline: 3px solid #00745e; outline-offset: -3px; }
-@media (max-width: 600px) { .client-inbox-row { padding: 12px 14px; } }

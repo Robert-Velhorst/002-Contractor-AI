@@ -1101,7 +1101,7 @@ test('worker portal sessions survive ledger restarts and remain hash-only and re
   assert.ok(sessionRecord.token_hash);
   assert.equal(sessionRecord.token_hash.includes(session.token), false);
   assert.equal(sessionRecord.account_id, account.id);
-  assert.equal(firstLedger.migrationStatus().currentVersion, '096_loading_read_indexes');
+  assert.equal(firstLedger.migrationStatus().currentVersion, '097_durable_evidence_storage_reservations');
   firstLedger.close();
 
   const restartedLedger = new ContractorOperatingLedger({ dbFile });
@@ -1144,7 +1144,7 @@ test('field-reply notification migration preserves existing inbox records', t =>
   assert.equal(board.workerNotificationsForWorker(worker.id).notifications[0].id, 'legacy-notice');
   board.notifyWorker({ workerId: worker.id, jobId: job.id, type: 'field_reply', sourceId: 'migration-rfi', sourceVersion: 'approved-answer', title: 'Antwoord op je werkvraag', body: 'Gebruik revisie B.', href: '/work-board.html#applications' });
   assert.equal(board.workerNotificationsForWorker(worker.id).notifications.length, 2);
-  assert.equal(upgraded.migrationStatus().currentVersion, '096_loading_read_indexes');
+  assert.equal(upgraded.migrationStatus().currentVersion, '097_durable_evidence_storage_reservations');
 });
 
 test('workers can withdraw open interest but cannot silently cancel an existing placement', async t => {
@@ -1284,7 +1284,7 @@ test('backup verification checks the new schema and persisted accounts survive a
   const account = await board.register(profile());
   const replacement = new WorkBoard(ledger);
   assert.equal((await replacement.login(profile())).account.id, account.id);
-  assert.equal(ledger.migrationStatus().currentVersion, '096_loading_read_indexes');
+  assert.equal(ledger.migrationStatus().currentVersion, '097_durable_evidence_storage_reservations');
   const { verifySqliteBackupDatabase } = require('../scripts/restore-local-backup');
   assert.equal(verifySqliteBackupDatabase(ledger.dbFile).valid, true);
 });

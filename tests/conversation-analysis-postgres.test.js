@@ -19,7 +19,7 @@ test('PostgreSQL durable conversation-analysis queue preserves idempotent leases
   t.after(async () => { ledger?.close(); try { await admin.query(`DROP DATABASE "${name}" WITH (FORCE)`); } finally { await admin.end(); } });
 
   ledger = new ContractorOperatingLedger({ databaseUrl: url.toString() });
-  assert.equal(ledger.migrationStatus().currentVersion, '096_loading_read_indexes');
+  assert.equal(ledger.migrationStatus().currentVersion, '097_durable_evidence_storage_reservations');
   const job = ledger.createIntake({ title: 'Queue Postgres contract', client: { name: 'Queue client' }, assignAutomatically: false });
   const access = ledger.createClientPortalAccess(job.id);
   ledger.resolveApproval(access.approval.id, { status: 'approved' });

@@ -1,8 +1,0 @@
-.asset-identity { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
-.job-workspace-body:has(.asset-history) { scroll-padding-block-start: 64px; }
-.asset-identity dt { font-size: 12px; color: #535b62; }
-.asset-identity dd { margin: 5px 0; font-weight: 600; overflow-wrap: anywhere; }
-.asset-history button { max-width: 100%; white-space: normal; padding-block: 8px; }
-.asset-history button svg { flex-shrink: 0; }
-@media (max-width: 600px) { .asset-identity { grid-template-columns: minmax(0, 1fr); } }
-@media (max-width: 450px) { .asset-history .context-actions > .secondary-button, .asset-history .context-actions > .primary-button { width: 100%; min-height: 44px; } }

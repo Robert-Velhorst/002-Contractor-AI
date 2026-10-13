@@ -225,7 +225,7 @@ test('governed SDS revisions retain exact evidence, supersede atomically, and ne
   assert.equal(reviewTask.data.currentStatusInferred, false);
   assert.equal(ledger.runAutonomousCycle({ actionTypes: ['review_sds_revision'], jobIds: [job.id] }).applied.length, 0);
   assert.equal(ledger.diagnose().valid, true, JSON.stringify(ledger.diagnose().issues));
-  assert.equal(ledger.migrationStatus().currentVersion, '096_loading_read_indexes');
+  assert.equal(ledger.migrationStatus().currentVersion, '097_durable_evidence_storage_reservations');
 
   ledger.close();
   const restarted = new ContractorOperatingLedger({ dbFile });

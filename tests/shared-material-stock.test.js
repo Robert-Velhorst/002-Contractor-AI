@@ -29,7 +29,7 @@ test('site receipt inspection reviews upgrade a 090 database through the ledger 
   legacy.close();
   const upgraded = new ContractorOperatingLedger({ dbFile });
   t.after(() => { upgraded.close(); fs.rmSync(directory, { recursive: true, force: true }); });
-  assert.equal(upgraded.migrationStatus().currentVersion, '096_loading_read_indexes');
+  assert.equal(upgraded.migrationStatus().currentVersion, '097_durable_evidence_storage_reservations');
   assert.ok(upgraded.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='shared_material_site_issue_receipt_reviews'").get());
   const indexes = upgraded.db.prepare('PRAGMA index_list(shared_material_site_issue_receipt_reviews)').all();
   assert.ok(indexes.some(index => index.unique && upgraded.db.prepare(`PRAGMA index_info("${index.name.replace(/"/g, '""')}")`).all()
@@ -61,7 +61,7 @@ test('shared material stock prevents cross-job over-allocation and retains relea
   assert.equal(stock.list().materials[0].availableQuantity, 2);
   assert.equal(stock.transition(second.allocation.id, 'consume', { quantity: 3, evidenceReference: 'PICK-TICKET-33', note: 'Three boxes issued to the site.', entryKey: 'consume-three-boxes' }).replayed, true);
   assert.throws(() => stock.transition(second.allocation.id, 'consume', { quantity: 3, note: 'Missing evidence', entryKey: 'consume-without-evidence' }), error => error.code === 'material_stock_input_invalid');
-  assert.equal(ledger.migrationStatus().currentVersion, '096_loading_read_indexes');
+  assert.equal(ledger.migrationStatus().currentVersion, '097_durable_evidence_storage_reservations');
 });
 
 test('warehouse issue and field arrival evidence move stock into job-site availability without double counting', t => {

@@ -126,7 +126,7 @@ test('governed client feedback is replay-safe, measurable, and creates internal-
     notes: 'The internal recovery review was completed without an external commitment.'
   }, { actor: 'office' });
   assert.equal(ledger.dashboardSummary().metrics.clientFeedbackRecoveryRequired, 0);
-  assert.equal(ledger.migrationStatus().currentVersion, '096_loading_read_indexes');
+  assert.equal(ledger.migrationStatus().currentVersion, '097_durable_evidence_storage_reservations');
   assert.equal(ledger.diagnose().valid, true, JSON.stringify(ledger.diagnose().issues));
 });
 
