@@ -4,6 +4,7 @@ const path = require('node:path');
 const express = require('express');
 const { IdentityRegistry, VERSION, fail, equal, hash, registryOptions } = require('./identity-registry');
 const { registryAdapter } = require('./identity-oidc-adapter');
+const { authorizationPayload } = require('./authorization-header');
 
 function cookie(req, name) {
   const entries = String(req.headers.cookie || '').split(';').map(item => item.trim()).filter(item => item.startsWith(`${name}=`));
@@ -158,8 +159,8 @@ async function createIdentityApp({ registry, distDir = path.join(__dirname, 'dis
   service.use((req, _res, next) => {
     // Server-to-server only. Browsers cannot send company secrets or request a CORS exception.
     if (req.headers.origin || req.headers['sec-fetch-site']) fail('identity_service_browser_forbidden', 'Company service requests cannot originate in a browser.', 403);
-    const basic = String(req.get('authorization') || '').match(/^Basic ([A-Za-z0-9+/=]+)$/);
-    const decoded = basic && Buffer.from(basic[1], 'base64').toString('utf8');
+    const basic = authorizationPayload(req.get('authorization') || '', 'Basic');
+    const decoded = basic && /^[A-Za-z0-9+/=]+$/.test(basic) ? Buffer.from(basic, 'base64').toString('utf8') : '';
     const separator = decoded ? decoded.indexOf(':') : -1;
     req.company = registry.authenticateCompany(separator < 0 ? '' : decoded.slice(0, separator), separator < 0 ? '' : decoded.slice(separator + 1));
     req.actor = String(req.get('x-contractor-actor') || '');

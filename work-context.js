@@ -1,5 +1,6 @@
 const { createHash, randomUUID } = require('node:crypto');
 const { stableJson } = require('./backup-manifest');
+const { isValidEmailAddress } = require('./email-validation');
 
 const TABLES = ['work_context_control', 'work_places', 'job_places', 'job_parties', 'work_packages', 'work_package_tasks', 'work_package_quantities', 'work_context_commands'];
 const PLACE_TYPES = ['site', 'building', 'floor', 'space', 'zone', 'asset'];
@@ -227,7 +228,7 @@ class WorkContext {
     if (input.shareWithField !== true && input.shareWithField !== false) fail('Geef expliciet aan of het locatiecontact gedeeld mag worden.');
     if (input.shareWithField && !roles.includes('site_contact')) fail('Alleen een locatiecontact kan met uitvoerenden worden gedeeld.');
     const email = text(input.email, 'E-mail', 254, true);
-    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) fail('Vul een geldig e-mailadres in.');
+    if (email && !isValidEmailAddress(email)) fail('Vul een geldig e-mailadres in.');
     const data = { name: text(input.name, 'Naam'), organization: text(input.organization, 'Organisatie', 200, true), roles,
       phone: text(input.phone, 'Telefoon', 50, true), email, shareWithField: input.shareWithField,
       reference: text(input.reference, 'Bron of afstemming', 1000) };

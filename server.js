@@ -55,6 +55,7 @@ const {
 } = require('./hai-connector');
 const { parseMultipartFormData } = require('./multipart-parser');
 const packageMetadata = require('./package.json');
+const { authorizationPayload } = require('./authorization-header');
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -286,10 +287,7 @@ function configureHttpServer(server) {
 }
 
 function createRequestId() {
-  if (typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID();
-  }
-  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  return crypto.randomUUID();
 }
 
 function isTemplatePlaceholder(value) {
@@ -1042,8 +1040,7 @@ function extractClientPortalToken(req) {
   const explicitHeader = req.headers['x-client-portal-token'];
   if (Array.isArray(explicitHeader)) return String(explicitHeader[0] || '').trim();
   if (explicitHeader) return String(explicitHeader).trim();
-  const bearer = String(req.headers.authorization || '').match(/^Bearer\s+(.+)$/i);
-  return bearer ? bearer[1].trim() : '';
+  return authorizationPayload(req.headers.authorization || '', 'Bearer');
 }
 
 function requireClientPortalToken(req, res, next) {
@@ -1366,13 +1363,13 @@ function extractAuthToken(req) {
   if (headerToken) return String(headerToken);
 
   const authorization = req.headers.authorization || '';
-  const bearer = authorization.match(/^Bearer\s+(.+)$/i);
-  if (bearer) return bearer[1].trim();
+  const bearer = authorizationPayload(authorization, 'Bearer');
+  if (bearer) return bearer;
 
-  const basic = authorization.match(/^Basic\s+(.+)$/i);
+  const basic = authorizationPayload(authorization, 'Basic');
   if (basic) {
     try {
-      const decoded = Buffer.from(basic[1], 'base64').toString('utf8');
+      const decoded = Buffer.from(basic, 'base64').toString('utf8');
       const separator = decoded.indexOf(':');
       return separator >= 0 ? decoded.slice(separator + 1) : decoded;
     } catch {

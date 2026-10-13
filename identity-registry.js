@@ -5,6 +5,7 @@ const { promisify } = require('node:util');
 const { DatabaseSync } = require('node:sqlite');
 const { PostgresSyncDatabase, resolvePostgresConnectionOptions } = require('./postgres-sync-database');
 const { normalizeCompanyId } = require('./company-runtime');
+const { isValidEmailAddress } = require('./email-validation');
 
 const derive = promisify(crypto.scrypt);
 const ROLES = new Set(['owner', 'approver', 'office_operator', 'field_worker']);
@@ -249,7 +250,7 @@ class IdentityRegistry {
     const login = loginName(input.loginName);
     const name = required(input.name, 'Name', 150);
     const email = input.email ? required(input.email, 'Contact email', 254) : null;
-    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) fail('identity_email_invalid', 'Contact email is invalid.');
+    if (email && !isValidEmailAddress(email)) fail('identity_email_invalid', 'Contact email is invalid.');
     if (input.privacyAccepted !== true) fail('identity_privacy_required', 'Confirm processing of your account details.');
     const salt = crypto.randomBytes(24).toString('hex');
     const digest = await this.derivePassword(password(input.password), salt);

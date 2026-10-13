@@ -142,6 +142,20 @@ test('draft takeoff measurements can be corrected and removed while invalid form
   assert.equal(ledger.diagnose().valid, true);
 });
 
+test('takeoff measurements reject array and object values instead of coercing them', t => {
+  const ledger = temporaryLedger(t);
+  const job = createJob(ledger);
+  for (const value of [[], [2], {}, { valueOf: () => 2 }]) {
+    assert.throws(
+      () => ledger.createTakeoff(job.id, {
+        title: 'Untrusted measurement',
+        items: [{ description: 'Door count', measurementType: 'count', count: value, unitPrice: 10 }]
+      }, { actor: 'takeoff-test' }),
+      { code: 'takeoff_measurement_invalid', statusCode: 400 }
+    );
+  }
+});
+
 test('inactive jobs expose retained takeoffs as read-only history', t => {
   const ledger = temporaryLedger(t);
   const job = createJob(ledger);

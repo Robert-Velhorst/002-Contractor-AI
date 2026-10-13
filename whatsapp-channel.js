@@ -176,7 +176,7 @@ function registerWhatsAppWebhook(app, { ledger, rawParser, sendError, authentica
       const config = channel.config();
       if (!authenticationRequired || !config.enabled || !isReady()) fail('WhatsApp webhook is unavailable.', 503);
       if (req.query['hub.mode'] !== 'subscribe' || req.query['hub.verify_token'] !== config.verifyToken || typeof req.query['hub.challenge'] !== 'string' || req.query['hub.challenge'].length > 1000) fail('Webhook verification failed.', 403);
-      res.type('text/plain').send(req.query['hub.challenge']);
+      res.type('text/plain').set('X-Content-Type-Options', 'nosniff').set('Cache-Control', 'no-store').send(req.query['hub.challenge']);
     } catch (error) { sendError(req, res, error.statusCode || 503, 'whatsapp_webhook_unavailable', error.message); }
   });
   app.post(route, rawParser, async (req, res) => {

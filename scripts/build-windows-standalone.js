@@ -86,6 +86,8 @@ const runtimeFiles = [
   'hai-connector.js',
   'multipart-parser.js',
   'operating-ledger.js',
+  'authorization-header.js',
+  'email-validation.js',
   'package.json',
   'package-lock.json',
   'postgres-sync-database.js',

@@ -13,6 +13,7 @@ const { taskJhaApplicability, taskJhaDefinitionHash } = require('./task-jha-appl
 const { normalizeSubmittalAttachmentManifest, submittalAttachmentManifest } = require('./submittal-attachment-manifest');
 const { assignmentTradePartnerRequirement, workerMatchesAssignmentTradePartner } = require('./work-board-company-scope');
 const { expandRecurrence, validateRecurrence } = require('./worker-availability-recurrence');
+const { isValidEmailAddress } = require('./email-validation');
 
 const DASHBOARD_SUMMARY_CACHE_TTL_MS = 2_000;
 const MAX_WORKER_AVAILABILITY_RECURRENCE_DAYS = 366;
@@ -1797,10 +1798,7 @@ function appendAuditEventToDatabase(db, event = {}, options = {}) {
 }
 
 function makeId(prefix) {
-  const random = typeof crypto.randomUUID === 'function'
-    ? crypto.randomUUID()
-    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-  return `${prefix}_${random.replace(/-/g, '').slice(0, 24)}`;
+  return `${prefix}_${crypto.randomUUID().replace(/-/g, '').slice(0, 24)}`;
 }
 
 function toJson(value, fallback = {}) {
@@ -7617,7 +7615,7 @@ class ContractorOperatingLedger {
         return value;
       };
       const email = textField('email', 'Email', 254).toLowerCase();
-      if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      if (email && !isValidEmailAddress(email)) {
         throw ledgerInputError('organization_profile_invalid', 'Email must be a valid address.');
       }
       const website = textField('website', 'Website', 300);
@@ -8684,7 +8682,7 @@ class ContractorOperatingLedger {
     if (Object.hasOwn(corrections, 'role')) normalized.role = normalizeText(corrections.role, '').slice(0, 160) || null;
     if (Object.hasOwn(corrections, 'email')) {
       normalized.email = normalizeText(corrections.email, '').toLowerCase();
-      if (normalized.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized.email)) throw ledgerInputError('worker_email_invalid', 'Worker email address is invalid.');
+      if (normalized.email && !isValidEmailAddress(normalized.email)) throw ledgerInputError('worker_email_invalid', 'Worker email address is invalid.');
       if (!normalized.email && subject.source === 'work_board_applicant') throw ledgerInputError('data_subject_correction_email_required', 'A registered work-board account must retain a usable sign-in email address.');
       if (normalized.email && subject.source === 'worker' && this.dataSubjectWorkBoardAccounts(subject.id).some(account => account.auth_source === 'identity')) {
         throw ledgerInputError('data_subject_identity_registry_correction_required', 'Correct this email through the linked identity account; the work-board privacy flow cannot change identity-provider records.');
@@ -9962,14 +9960,14 @@ class ContractorOperatingLedger {
       throw ledgerInputError('client_company_invalid', 'Client legal or company name cannot exceed 200 characters.');
     }
     const email = normalizeText(payload.email ?? payload.client_email ?? current.email, '').toLowerCase();
-    if (email.length > 254 || (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))) {
+    if (email.length > 254 || (email && !isValidEmailAddress(email))) {
       throw ledgerInputError('client_email_invalid', 'Client email address is invalid.');
     }
     const billingEmail = normalizeText(
       payload.billingEmail ?? payload.billing_email ?? payload.data?.billingEmail ?? currentData.billingEmail,
       ''
     ).toLowerCase();
-    if (billingEmail.length > 254 || (billingEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(billingEmail))) {
+    if (billingEmail.length > 254 || (billingEmail && !isValidEmailAddress(billingEmail))) {
       throw ledgerInputError('client_billing_email_invalid', 'Client billing email address is invalid.');
     }
     const phone = normalizeText(payload.phone ?? payload.client_phone ?? current.phone, '');
@@ -14021,7 +14019,7 @@ class ContractorOperatingLedger {
       throw error;
     }
     const email = normalizeText(payload.email ?? existing?.email, '');
-    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    if (email && !isValidEmailAddress(email)) {
       const error = new Error('Trade partner email address is invalid');
       error.statusCode = 400;
       error.code = 'trade_partner_email_invalid';
@@ -14280,7 +14278,7 @@ class ContractorOperatingLedger {
       throw error;
     }
     const email = normalizeText(payload.email ?? existing?.email, '');
-    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    if (email && !isValidEmailAddress(email)) {
       const error = new Error('Worker email address is invalid');
       error.statusCode = 400;
       error.code = 'worker_email_invalid';
@@ -20036,7 +20034,7 @@ class ContractorOperatingLedger {
         if (!clientRow) throw ledgerInputError('change_order_client_missing', 'The job client could not be loaded for issue.', null, 409);
         const client = this.mapClient(clientRow);
         const recipient = normalizeText(payload.recipient || client.data?.billingEmail || client.email, '').toLowerCase();
-        if (!recipient || recipient.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(recipient)) {
+        if (!recipient || !isValidEmailAddress(recipient)) {
           throw ledgerInputError(
             'change_order_recipient_required',
             'Retain a valid client or billing email before preparing the change-order delivery.',
@@ -21168,7 +21166,7 @@ class ContractorOperatingLedger {
         throw error;
       }
       const recipient = normalizeText(payload.recipient || payload.email || partner.email, '');
-      if (!recipient || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(recipient)) {
+      if (!recipient || !isValidEmailAddress(recipient)) {
         throw ledgerInputError(
           'purchase_order_recipient_required',
           'Retain a valid supplier email or provide a verified order recipient before preparing the delivery draft.',
@@ -31415,7 +31413,7 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       if (name.length < 2 || name.length > 120) {
         throw ledgerInputError('transmittal_recipient_invalid', `Recipient ${index + 1} name must contain 2 to 120 characters.`);
       }
-      if (email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      if (!isValidEmailAddress(email)) {
         throw ledgerInputError('transmittal_recipient_invalid', `Recipient ${index + 1} requires a valid email address.`);
       }
       if (seen.has(email)) {
@@ -31860,7 +31858,7 @@ ${documentReference}  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:I
       if (name.length < 2 || name.length > 120) {
         throw ledgerInputError('project_meeting_attendee_invalid', `Attendee ${index + 1} name must contain 2 to 120 characters.`);
       }
-      if (email && (email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))) {
+      if (email && !isValidEmailAddress(email)) {
         throw ledgerInputError('project_meeting_attendee_invalid', `Attendee ${index + 1} email address is invalid.`);
       }
       if (company.length > 120) {
