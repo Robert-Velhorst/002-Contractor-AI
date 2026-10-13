@@ -1,4 +1,15 @@
 const DEFAULT_TIMEOUT_MS = 8_000;
+const SUPPORTED_NODE_RANGE = require('../package.json').engines.node;
+
+function assessNodeCompatibility(actualVersion, supportedRange = SUPPORTED_NODE_RANGE) {
+  const actualMajor = /^v?(\d+)\./.exec(String(actualVersion || ''))?.[1];
+  const requiredMajor = /^(\d+)\.x$/.exec(String(supportedRange || '').trim())?.[1];
+  if (!actualMajor || !requiredMajor) {
+    return { status: 'unknown', supported: false, actual: actualVersion || null, required: supportedRange };
+  }
+  const supported = actualMajor === requiredMajor;
+  return { status: supported ? 'supported' : 'unsupported', supported, actual: actualVersion, required: supportedRange };
+}
 
 function parseArguments(args = process.argv.slice(2)) {
   const options = {
@@ -42,10 +53,12 @@ async function runDoctor(options = parseArguments()) {
     readJson(options.baseUrl, '/api/health/ready', options),
     readJson(options.baseUrl, '/api/operations/support-bundle', options)
   ]);
+  const node = assessNodeCompatibility(support.payload?.application?.node);
   const report = {
     checkedAt: new Date().toISOString(),
     target: options.baseUrl,
-    ready: readiness.ok && support.ok && support.payload?.readiness?.runtimeReady === true,
+    ready: readiness.ok && support.ok && support.payload?.readiness?.runtimeReady === true && node.supported,
+    runtimeCompatibility: { node },
     readiness: {
       httpStatus: readiness.status,
       status: readiness.payload?.status || readiness.payload?.error?.code || 'unavailable',
@@ -84,4 +97,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { parseArguments, readJson, runDoctor };
+module.exports = { assessNodeCompatibility, parseArguments, readJson, runDoctor };
