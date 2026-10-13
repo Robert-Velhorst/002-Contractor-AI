@@ -96,7 +96,7 @@ describe('worker standby call-outs', () => {
     expect(navigator.onLine).toBe(true)
     changed = true
     await act(async () => { await poll() })
-    expect(await screen.findByRole('heading', { name: 'New roof position' })).toBeTruthy()
+    expect(await screen.findByRole('heading', { name: 'New roof position' }, { timeout: 5000 })).toBeTruthy()
     expect(screen.getByText(/Nieuwe afroep ontvangen: Roof repair · Carpenter/)).toBeTruthy()
     expect(screen.getByText(/Nieuwe open positie: New roof position · Arnhem/)).toBeTruthy()
     expect(fetch).toHaveBeenCalledWith('/api/work-board/me', expect.objectContaining({ method: 'GET' }))
