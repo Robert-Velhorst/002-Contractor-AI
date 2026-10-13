@@ -1,4 +1,5 @@
 .client-portal-shell { min-height: 100vh; color: #17231f; background: #f4f7f5; }
+.client-portal-shell *, .client-portal-shell *::before, .client-portal-shell *::after { box-sizing: border-box; }
 .client-portal-header { display: flex; min-height: 68px; align-items: center; justify-content: space-between; gap: 20px; padding: 0 max(18px, calc((100% - 1040px) / 2)); color: #fff; background: #173f38; }
 .client-portal-header > div, .client-portal-header p { display: flex; align-items: center; gap: 9px; }
 .client-portal-header strong { font-size: 15px; }
