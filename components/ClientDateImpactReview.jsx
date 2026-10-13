@@ -1,5 +1,6 @@
 import { useCallback, useState } from 'react'
 import { useSessionDraftRecovery } from '../draft-recovery'
+import { toIsoDateTime } from '../dashboard-format'
 import { useRecoveryCommand } from '../recovery-command'
 
 const STATUS = {
@@ -38,7 +39,7 @@ export default function ClientDateImpactReview({ api, canEdit, recoveryCase, sou
       || (reviewStatus !== 'not_impacted' && !nextFollowUpAt)) return
     const command = pending || { action: 'client_date_impact_review', entryKey: crypto.randomUUID(), caseId: recoveryCase.id,
       caseHash: recoveryCase.caseHash, sourceHash, commitmentEntryKey: commitment.entryKey, commitmentHash: commitment.commitmentHash,
-      reviewStatus, summary: summary.trim(), nextFollowUpAt: nextFollowUpAt || null }
+      reviewStatus, summary: summary.trim(), nextFollowUpAt: nextFollowUpAt ? toIsoDateTime(nextFollowUpAt) : null }
     setError('')
     await execute(command, result => { setSummary(''); setNextFollowUpAt(''); onSubmitted?.(result) })
   }

@@ -1,5 +1,6 @@
 import { useCallback, useState } from 'react'
 import { useSessionDraftRecovery } from '../draft-recovery'
+import { toIsoDateTime } from '../dashboard-format'
 import { formatDate } from '../format-date.mjs'
 import { useRecoveryCommand } from '../recovery-command'
 
@@ -37,7 +38,7 @@ export default function ClientAppointmentReview({ api, canEdit, source, recovery
     const command = pending || { action: 'client_impact_review', entryKey: crypto.randomUUID(), caseId: recoveryCase.id,
       caseHash: recoveryCase.caseHash, sourceHash, sourceId: source.id, appointmentId: appointment.id, reviewStatus,
       summary: summary.trim(), accessId: selectedMessage.accessId, messageId: selectedMessage.id, messageHash: selectedMessage.sourceHash,
-      nextFollowUpAt: nextFollowUpAt || null }
+      nextFollowUpAt: nextFollowUpAt ? toIsoDateTime(nextFollowUpAt) : null }
     await execute(command, result => {
       setReviewStatus('customer_follow_up_required'); setSummary(''); setMessageId(''); setNextFollowUpAt(''); onSubmitted?.(result)
     })

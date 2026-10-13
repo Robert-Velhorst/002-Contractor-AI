@@ -2,6 +2,7 @@ import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { expect, it, vi } from 'vitest'
 import OperationalRecoveryControl from '../components/OperationalRecoveryControl'
+import ClientDateImpactReview from '../components/ClientDateImpactReview'
 import { removeSessionDraft } from '../draft-recovery'
 
 const payload = { sourceHash: 'a'.repeat(64), sources: [
@@ -312,6 +313,23 @@ it('submits every affected job as one approval-gated replacement plan', async ()
   ])
 })
 
+it('serializes a contract-impact follow-up in the operator local time zone', async () => {
+  const commitment = { entryKey: 'commitment-1', commitmentHash: 'c'.repeat(64), status: 'active', sourceCurrent: true,
+    label: 'Oplevering', date: '2030-03-31', revision: 1, source: { title: 'Contractdatum' },
+    contractWording: 'Oplevering uiterlijk 31 maart.', evidenceReference: 'contract:page-3' }
+  const item = { id: 'case-date-impact', jobId: 'job-1', caseHash: 'd'.repeat(64), sourceCurrent: true, status: 'open',
+    sources: [{ impact: { clientDateCommitments: [commitment] } }], clientDateImpactReviews: [] }
+  const api = vi.fn().mockResolvedValue({ reviewId: 'review-1' })
+  render(<ClientDateImpactReview api={api} canEdit recoveryCase={item} sourceHash={'e'.repeat(64)} />)
+  await userEvent.click(screen.getByText('Contractimpact beoordelen'))
+  await userEvent.type(screen.getByLabelText('Waarom is deze mijlpaal wel of niet geraakt?'), 'Klantreactie afwachten voor de datumbeoordeling.')
+  await userEvent.type(screen.getByLabelText('Opnieuw beoordelen op'), '2030-01-15T09:00')
+  await userEvent.click(screen.getByRole('button', { name: 'Contractimpact vastleggen' }))
+  await waitFor(() => expect(api).toHaveBeenCalledTimes(1))
+  expect(JSON.parse(api.mock.calls[0][1].body)).toMatchObject({ action: 'client_date_impact_review',
+    nextFollowUpAt: new Date('2030-01-15T09:00').toISOString() })
+})
+
 it('records a supplier-confirmed date against a registered material-requirement shortfall', async () => {
   const source = { type: 'material_requirement_shortfall', id: 'material-supplier', title: 'Materiaalbehoefte: Dakrollen', status: 'shortfall',
     sourceFingerprint: 'source-fingerprint', impact: { purchaseOrder: { id: 'po-55', supplier: 'Dakmaterialen BV', status: 'ordered', orderIssued: true, externalCommitments: 1, requiredBy: '2030-01-08T09:00:00.000Z' },
@@ -361,7 +379,7 @@ it('records a customer-impact review linked to a retained incoming client messag
   const submission = api.mock.calls.find(([, options]) => options?.method === 'POST')
   expect(JSON.parse(submission[1].body)).toMatchObject({ action: 'client_impact_review', caseId: item.id, caseHash: item.caseHash,
     sourceHash: payload.sourceHash, sourceId: source.id, appointmentId: appointment.id, reviewStatus: 'awaiting_customer',
-    nextFollowUpAt: '2030-01-13T09:00', accessId: 'access-client-55', messageId: 'message-client-55', messageHash: 'd'.repeat(64) })
+    nextFollowUpAt: new Date('2030-01-13T09:00').toISOString(), accessId: 'access-client-55', messageId: 'message-client-55', messageHash: 'd'.repeat(64) })
 })
 
 it('requires same-worker task resumption evidence and explicit reassessment after the source changes', async () => {

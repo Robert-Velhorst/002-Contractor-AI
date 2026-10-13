@@ -240,7 +240,8 @@ it('lets office assign a current client contradiction for source-linked internal
   expect(await screen.findByText(/is aan de interne opvolging toegevoegd/)).toBeTruthy()
   const post = fetchMock.mock.calls.find(([url, options]) => options?.method === 'POST' && String(url).includes('/analysis/findings/'))
   expect(post[0]).toContain(`/analysis/findings/${source.id}/rfi`)
-  expect(JSON.parse(post[1].body)).toMatchObject({ analysisIdentity: analysis.identity, sourceId: source.id, quote: finding.quote, category: 'contradiction', responsible: 'Werkvoorbereider', shareWithField: true, fieldTaskIds: ['task-frame'] })
+  expect(JSON.parse(post[1].body)).toMatchObject({ analysisIdentity: analysis.identity, sourceId: source.id, quote: finding.quote, category: 'contradiction', responsible: 'Werkvoorbereider',
+    dueAt: new Date('2026-09-25T10:00').toISOString(), shareWithField: true, fieldTaskIds: ['task-frame'] })
 });
 
 it('prepares a source-linked customer draft from an approved internal RFI without publishing it', async () => {

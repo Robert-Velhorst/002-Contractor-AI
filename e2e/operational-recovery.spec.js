@@ -395,6 +395,7 @@ test('office reviews an approved client appointment linked to an absent worker',
   const retained = await get(route);
   expect(retained.cases[0].clientImpactReviews).toHaveLength(1);
   expect(retained.cases[0].clientImpactReviews[0]).toMatchObject({ status: 'awaiting_customer', messageEvidence: { excerpt: 'Dinsdag past voor mij; laat weten wie langskomt.' },
+    nextFollowUpAt: await page.evaluate(() => new Date('2030-01-15T09:00').toISOString()),
     appointment: { id: visit.id, approvalId: visit.approvalId, scheduledAt } });
   expect(retained.externalCommitments).toBe(0);
   await page.setViewportSize({ width: 390, height: 844 });

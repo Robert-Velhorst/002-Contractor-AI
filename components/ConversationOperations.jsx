@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { BrainCircuit, Link2, Send } from 'lucide-react'
 import { companyFetch } from '../company-request.mjs'
+import { toIsoDateTime } from '../dashboard-format'
 
 export default function ConversationOperations({ base, isOwner, fieldTasks = [], onDraft, onApprovals, onRevealSource, onMessagesChanged, messages, locale = 'nl-NL' }) {
   const nl = locale.startsWith('nl')
@@ -111,7 +112,7 @@ export default function ConversationOperations({ base, isOwner, fieldTasks = [],
     if (!rfiDraft || busy) return
     const signature = JSON.stringify(rfiDraft)
     if (rfiCommand.current?.signature !== signature) rfiCommand.current = { signature, entryKey: crypto.randomUUID() }
-    const command = { ...rfiDraft, entryKey: rfiCommand.current.entryKey }
+    const command = { ...rfiDraft, dueAt: toIsoDateTime(rfiDraft.dueAt), entryKey: rfiCommand.current.entryKey }
     await action(async () => {
       const route = command.evidenceKind === 'photo_observation' ? 'observations' : 'findings'
       const result = await api(`/analysis/${route}/${encodeURIComponent(command.sourceId)}/rfi`, command)
