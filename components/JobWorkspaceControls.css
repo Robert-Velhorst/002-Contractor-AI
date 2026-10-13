@@ -598,6 +598,7 @@
 .task-supervision-settings { display: grid; grid-template-columns: minmax(0, .55fr) minmax(0, 1fr); gap: 10px; min-width: 0; }
 .task-supervision-settings > label { min-width: 0; }
 .task-supervision-settings > small { grid-column: 1 / -1; color: #65766f; }
+.work-plan-task-form input, .work-plan-task-form select { width: 100%; min-width: 0; max-width: 100%; }
 .work-plan-material-constraints { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
 .work-plan-material-constraints > span { display: grid; gap: 3px; min-width: 0; }
 .work-plan-material-stock-position { color: #586b64; font-size: 10px; overflow-wrap: anywhere; }

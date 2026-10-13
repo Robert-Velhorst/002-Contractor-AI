@@ -1,11 +1,31 @@
 # Final Verification Report
 
-## Latest Published-Branch Verification - 2026-10-13
+## CI Baseline and Follow-Up Validation - 2026-10-13
 
-Commit `6fb463a30861f978d0f6ed1115dc264a850eb8d8` is published on the open
-draft PR [#97](https://github.com/Robert-Velhorst/002-Contractor-AI/pull/97).
-The following checks were run against that source before this documentation
-refresh:
+Commit `03ecc782b958c5801c440b7a00b0acdc763dd0d6` was the PR head before the
+mobile work-plan correction described below. It is part of open draft PR
+[#97](https://github.com/Robert-Velhorst/002-Contractor-AI/pull/97).
+Exact-head GitHub run [38342101583](https://github.com/Robert-Velhorst/002-Contractor-AI/actions/runs/38342101583)
+completed at 2026-10-13 04:01 UTC with one browser-test failure. Release-contract
+verification, HAI contract verification, lint, build, bundle budget, frontend
+tests, Node tests, ledger performance, container tests and Windows standalone
+packaging passed. The `operator calculates, approves, and revises a critical-
+path work plan` test found a form input extending beyond the mobile viewport;
+the other three tests in that browser batch passed.
+
+The follow-up sets explicit width bounds on work-plan form controls. On Windows,
+the full `e2e/work-plan.spec.js` file passed (11 tests), as did `npm run lint`
+and `npm run verify:release`. This is focused local validation, not Linux CI or
+a full browser-suite pass; the corrected PR head requires a new CI run.
+
+The associated Vercel deployment check reports `pass`, but an unauthenticated
+GET to its PR preview returned HTTP 302 to Vercel SSO. The preview is therefore
+not independently accessible for public browser acceptance; deployment status
+alone does not establish that the product is publicly reachable.
+
+The measurements below belong to prior commit
+`6fb463a30861f978d0f6ed1115dc264a850eb8d8`; they are historical and must not be
+used as exact-head measurements for `03ecc782b958c5801c440b7a00b0acdc763dd0d6`:
 
 | Gate | Result |
 | --- | --- |

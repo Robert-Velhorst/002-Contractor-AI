@@ -82,7 +82,18 @@ test('operator calculates, approves, and revises a critical-path work plan', asy
         return style.display !== 'none' && style.visibility !== 'hidden' && bounds.width > 0
           && bounds.right > window.innerWidth + 1;
       })
-      .map(child => ({ tag: child.tagName, className: child.className, text: child.textContent.trim().slice(0, 80) }))
+      .map(child => {
+        const bounds = child.getBoundingClientRect();
+        return {
+          tag: child.tagName,
+          type: child.getAttribute('type'),
+          label: child.getAttribute('aria-label') || child.labels?.[0]?.textContent?.trim() || '',
+          id: child.id,
+          right: Math.round(bounds.right),
+          width: Math.round(bounds.width),
+          text: child.textContent.trim().slice(0, 80)
+        };
+      })
   }));
   expect(geometry.pageWidth).toBeLessThanOrEqual(geometry.viewportWidth);
   expect(geometry.visibleOverflow).toEqual([]);
