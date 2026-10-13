@@ -334,7 +334,7 @@ it('records a supplier-confirmed date against a registered material-requirement 
   const submission = api.mock.calls.find(([, options]) => options?.method === 'POST')
   expect(submission[0]).toBe('/api/ledger/jobs/job-1/operational-recovery')
   expect(JSON.parse(submission[1].body)).toMatchObject({ action: 'supplier_follow_up', caseId: item.id, caseHash: item.caseHash,
-    sourceHash: payload.sourceHash, sourceId: source.id, followUpStatus: 'delivery_date_confirmed', expectedAt: '2030-01-12T09:30:00.000Z',
+    sourceHash: payload.sourceHash, sourceId: source.id, followUpStatus: 'delivery_date_confirmed', expectedAt: new Date('2030-01-12T10:30').toISOString(),
     evidenceReference: 'e-mail:2026-09-24', applyExpectedAvailability: true, materialRequirementId: source.id })
   expect(onChanged).toHaveBeenCalledWith(expect.objectContaining({ materialAvailabilityUpdated: true }))
 })
