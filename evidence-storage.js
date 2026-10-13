@@ -15,14 +15,14 @@ class EvidenceStorageError extends Error {
 
 function safeStorageName(originalName, operationId = null) {
   const extension = path.extname(String(originalName || '')).slice(0, 20);
-  if (operationId) {
-    const stableId = crypto.createHash('sha256').update(String(operationId)).digest('hex');
-    return `upload-${stableId}${extension}`;
-  }
   const stem = path.basename(String(originalName || 'evidence'), extension)
     .replace(/[^\w.-]+/g, '-')
     .replace(/^-+|-+$/g, '')
     .slice(0, 80) || 'evidence';
+  if (operationId) {
+    const stableId = crypto.createHash('sha256').update(String(operationId)).digest('hex').slice(0, 32);
+    return `${stableId}-${stem}${extension}`;
+  }
   return `${Date.now()}-${crypto.randomBytes(8).toString('hex')}-${stem}${extension}`;
 }
 
@@ -84,12 +84,33 @@ class LocalEvidenceStorage {
     fs.mkdirSync(this.rootDir, { recursive: true });
   }
 
-  async store(file) {
-    const storageName = safeStorageName(file.originalName);
+  referenceFor(file, { operationId = null } = {}) {
+    const storageName = safeStorageName(file.originalName, operationId);
+    const target = path.resolve(this.rootDir, storageName);
+    if (!target.startsWith(`${this.rootDir}${path.sep}`)) {
+      throw new EvidenceStorageError('invalid_upload_path', 'Evidence storage path could not be resolved safely.', 400);
+    }
+    return path.relative(this.projectRoot, target).replace(/\\/g, '/');
+  }
+
+  async store(file, { operationId = null } = {}) {
+    const storageName = safeStorageName(file.originalName, operationId);
     const sha256 = crypto.createHash('sha256').update(file.buffer).digest('hex');
     const target = path.resolve(this.rootDir, storageName);
     if (!target.startsWith(`${this.rootDir}${path.sep}`)) {
       throw new EvidenceStorageError('invalid_upload_path', 'Evidence storage path could not be resolved safely.', 400);
+    }
+    if (operationId) {
+      try {
+        const retained = await this.read(this.referenceFor(file, { operationId }), {
+          maxBytes: file.buffer.length, expectedSize: file.buffer.length, expectedSha256: sha256
+        });
+        if (!retained.equals(file.buffer)) throw new EvidenceStorageError('evidence_retention_unverified', 'The existing local evidence does not match the retried upload.');
+        return { filename: storageName, storageRef: this.referenceFor(file, { operationId }), size: file.buffer.length,
+          mimeType: file.mimeType, sha256, reused: true };
+      } catch (error) {
+        if (error.code !== 'evidence_not_available' && error.code !== 'ENOENT') throw error;
+      }
     }
     const temporary = path.join(this.rootDir, `.${storageName}.${crypto.randomBytes(4).toString('hex')}.tmp`);
     try {
@@ -104,7 +125,8 @@ class LocalEvidenceStorage {
       storageRef: path.relative(this.projectRoot, target).replace(/\\/g, '/'),
       size: file.size,
       mimeType: file.mimeType,
-      sha256
+      sha256,
+      reused: false
     };
   }
 
@@ -174,6 +196,12 @@ class S3EvidenceStorage {
     return `${this.prefix}/${month}/${storageName}`;
   }
 
+  referenceFor(file, { operationId = null } = {}) {
+    if (!operationId) return `s3://${this.bucket}/${this.objectKey(safeStorageName(file.originalName))}`;
+    const storageName = safeStorageName(file.originalName, operationId);
+    return `s3://${this.bucket}/${this.prefix}/uploads/${storageName}`;
+  }
+
   async request(method, key, body = null, contentType = null, {
     maxResponseBytes = this.maxReadBytes, allowMissing = false, expectedSize = null, expectedSha256 = null
   } = {}) {
@@ -240,9 +268,8 @@ class S3EvidenceStorage {
       throw new EvidenceStorageError('evidence_size_invalid', 'Evidence upload is empty or exceeds the configured storage read limit.', 413);
     }
     const storageName = safeStorageName(file.originalName, operationId);
-    const key = operationId
-      ? `${this.prefix}/uploads/${storageName}`
-      : this.objectKey(storageName);
+    const key = operationId ? `${this.prefix}/uploads/${storageName}` : this.objectKey(storageName);
+    const storageRef = `s3://${this.bucket}/${key}`;
     const sha256 = crypto.createHash('sha256').update(payload).digest('hex');
     if (operationId) {
       const existing = await this.request('GET', key, null, null, { maxResponseBytes: payload.length, allowMissing: true });
@@ -250,7 +277,7 @@ class S3EvidenceStorage {
         assertRetainedObject(existing.body, payload, sha256);
         return {
           filename: storageName,
-          storageRef: `s3://${this.bucket}/${key}`,
+          storageRef,
           size: payload.length,
           mimeType: file.mimeType,
           sha256,
@@ -266,7 +293,7 @@ class S3EvidenceStorage {
     assertRetainedObject(retained.body, payload, sha256);
     return {
       filename: storageName,
-      storageRef: `s3://${this.bucket}/${key}`,
+      storageRef,
       size: payload.length,
       mimeType: file.mimeType,
       sha256,

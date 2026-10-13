@@ -109,15 +109,16 @@ class WhatsAppChannel {
             if (reply?.accessId === access.id) payload.replyTo = reply.messageId;
           }
           const options = { direction: 'inbound', sourceChannel: 'whatsapp', providerId: message.id, providerTimestamp: String(message.timestamp), actor: 'whatsapp_webhook' };
-          const create = attachment => this.chat.ledger.transaction(() => {
+          const create = (attachment, finalizeStorageReservation = null) => this.chat.ledger.transaction(() => {
             this.binding(message.from, access.id);
             const result = this.chat.create(access.id, payload, { ...options, attachment });
             if (!this.chat.event('whatsapp_inbound', hash(message.id))) this.chat.record('whatsapp_inbound', hash(message.id), access.jobId, 'retain_whatsapp_inbound', { messageId: result.id, accessId: access.id, providerId: message.id }, 'whatsapp_webhook');
             const window = this.chat.event('whatsapp_window', access.id);
             if (!window || timestamp > window.timestamp) this.chat.record('whatsapp_window', access.id, access.jobId, 'retain_whatsapp_reply_window', { timestamp, phone: message.from }, 'whatsapp_webhook');
+            if (finalizeStorageReservation && !finalizeStorageReservation()) fail('Evidence quota reservation could not be committed with the WhatsApp message.', 503);
             return result;
           });
-          if (message.type === 'image') await this.storePhoto(await this.media(message.image.id), create);
+          if (message.type === 'image') await this.storePhoto(await this.media(message.image.id), create, message.id);
           else create(null);
           retained++;
         }

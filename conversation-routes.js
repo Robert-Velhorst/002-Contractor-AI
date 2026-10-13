@@ -1,7 +1,7 @@
 const { ClientConversation, fail } = require('./client-conversation');
-const { createHash } = require('node:crypto');
+const { createHash, randomUUID } = require('node:crypto');
 
-function registerConversationRoutes(app, { ledger, requireClientPortalToken, actor, readUploadPayload, storeUploadedFile, evidenceStorage, reserveEvidenceStorage, releaseEvidenceStorageReservation, imageProcessor, sendError }) {
+function registerConversationRoutes(app, { ledger, requireClientPortalToken, actor, readUploadPayload, storeUploadedFile, evidenceStorage, reserveEvidenceStorage, cleanupEvidenceStorageReservation, imageProcessor, sendError }) {
   const chat = new ClientConversation(ledger);
   const office = req => {
     if (!['owner', 'approver', 'office_operator'].includes(req.operator?.role)) fail('Office access required.', 403);
@@ -18,8 +18,10 @@ function registerConversationRoutes(app, { ledger, requireClientPortalToken, act
   const create = (resolve, direction) => run(async (req, res) => {
     const access = resolve(req);
     let stored = null;
-    let retained = false;
-    let reserved = 0;
+    let reservation = null;
+    let reservationOwner = null;
+    let storageRef = null;
+    let reservationCommitted = false;
     try {
       const { payload, file } = await readUploadPayload(req);
       if (typeof payload.analysisOrigin === 'string' && payload.analysisOrigin) {
@@ -28,14 +30,36 @@ function registerConversationRoutes(app, { ledger, requireClientPortalToken, act
       // The authenticated scope is rechecked after the asynchronous upload read.
       resolve(req);
       if (file && (!['image/jpeg', 'image/png', 'image/webp'].includes(file.mimeType) || file.buffer.length > 5 * 1024 * 1024)) fail('Conversation photos must be JPEG, PNG or WebP, at most 5 MB.', 415);
-      if (file) { reserved = reserveEvidenceStorage(file.buffer.length); stored = await storeUploadedFile(file); }
+      if (file) {
+        const sha256 = createHash('sha256').update(file.buffer).digest('hex');
+        const reservationIdentity = createHash('sha256').update(JSON.stringify({ accessId: access.id, direction, entryKey: payload.entryKey })).digest('hex');
+        const requestHash = createHash('sha256').update(JSON.stringify({ reservationIdentity, name: file.originalName, mimeType: file.mimeType, size: file.buffer.length, sha256 })).digest('hex');
+        const reservationId = createHash('sha256').update(`conversation\0${reservationIdentity}`).digest('hex');
+        reservationOwner = randomUUID();
+        reservation = { reservationId, requestHash, ownerLeaseId: reservationOwner,
+          leaseUntil: new Date(Date.now() + 120_000).toISOString(), bytes: file.buffer.length };
+        const result = reserveEvidenceStorage(reservation);
+        reservationCommitted = result.committed === true;
+        storageRef = evidenceStorage.referenceFor(file, { operationId: reservationId });
+        if (!result.committed && !ledger.setEvidenceStorageReservationObject(reservationId, reservationOwner, storageRef, sha256)) {
+          fail('The conversation evidence reservation lease is no longer current.', 503);
+        }
+        stored = await storeUploadedFile(file, { operationId: reservationId });
+      }
       resolve(req);
-      const message = chat.create(access.id, payload, { direction, actor: direction === 'inbound' ? 'client_portal' : actor(req), attachment: stored });
-      retained = !message.replayed;
+      const message = ledger.transaction(() => {
+        resolve(req);
+        const retainedMessage = chat.create(access.id, payload, { direction, actor: direction === 'inbound' ? 'client_portal' : actor(req), attachment: stored });
+        if (reservation && !reservationCommitted
+            && !ledger.commitEvidenceStorageReservation(reservation.reservationId, reservationOwner)) {
+          fail('Evidence quota reservation could not be committed with the conversation message.', 503);
+        }
+        return retainedMessage;
+      });
       res.status(201).json({ success: true, message });
-    } finally {
-      if (stored && !retained) await evidenceStorage.remove(stored.storageRef);
-      releaseEvidenceStorageReservation(reserved);
+    } catch (error) {
+      if (reservation) await cleanupEvidenceStorageReservation(reservation.reservationId, reservationOwner, storageRef, error.code || 'conversation_upload_failed');
+      throw error;
     }
   });
   const photo = (resolve, isClient) => run(async (req, res) => {

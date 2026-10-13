@@ -185,7 +185,6 @@ const parsedEvidenceStorageMaxBytes = Number(evidenceStorageMaxBytesInput || 10 
 const evidenceStorageMaxBytes = Number.isSafeInteger(parsedEvidenceStorageMaxBytes) && parsedEvidenceStorageMaxBytes > 0
   ? parsedEvidenceStorageMaxBytes
   : null;
-let pendingEvidenceStorageBytes = 0;
 const maxMultipartParts = boundedInteger(process.env.CONTRACTOR_AI_MULTIPART_MAX_PARTS, 64, 8, 256);
 const maxMultipartFields = boundedInteger(process.env.CONTRACTOR_AI_MULTIPART_MAX_FIELDS, 32, 4, 128);
 const maxMultipartHeaderPairs = boundedInteger(process.env.CONTRACTOR_AI_MULTIPART_MAX_HEADER_PAIRS, 16, 4, 64);
@@ -528,7 +527,7 @@ function runtimeConfiguration(options = {}) {
         configured: Boolean(evidenceStorageMaxBytes),
         explicit: Boolean(evidenceStorageMaxBytesInput),
         maxBytes: evidenceStorageMaxBytes,
-        pendingBytes: pendingEvidenceStorageBytes,
+        pendingBytes: operatingLedger?.evidenceStorageReservationsUsage?.().bytes || 0,
         usage: operatingLedger?.evidenceStorageUsage?.() || { bytes: 0, objects: 0 }
       }
     },
@@ -6544,7 +6543,7 @@ workBoardRoutes.registerWorkBoardRoutes(app, {
 const conversationRuntime = registerConversationRoutes(app, {
   ledger: operatingLedger, requireClientPortalToken, actor: trustedRequestActor,
   readUploadPayload, storeUploadedFile, evidenceStorage, reserveEvidenceStorage,
-  releaseEvidenceStorageReservation, imageProcessor, sendError
+  cleanupEvidenceStorageReservation, imageProcessor, sendError
 });
 const clientDeliveries = new (require('./client-delivery').ClientDelivery)(operatingLedger);
 const clientCompletionReview = new (require('./client-completion-review').ClientCompletionReview)(operatingLedger);
@@ -6616,18 +6615,27 @@ const whatsappChannel = registerWhatsAppWebhook(whatsappWebhookRouter, {
   route: '/', ledger: operatingLedger, rawParser: express.raw({ type: 'application/json', limit: '1mb', inflate: false }),
   sendError, authenticationRequired: dashboardAuthRequired,
   isReady: () => !isProduction && runtimeMode !== 'hosted' || runtimeConfiguration().ready,
-  async storePhoto(file, retain) {
-    const reserved = reserveEvidenceStorage(file.buffer.length);
-    let stored;
-    let committed = false;
+  async storePhoto(file, retain, providerMessageId) {
+    const sha256 = crypto.createHash('sha256').update(file.buffer).digest('hex');
+    const requestHash = crypto.createHash('sha256').update(stableJson({
+      providerMessageHash: crypto.createHash('sha256').update(String(providerMessageId)).digest('hex'),
+      originalName: file.originalName, size: file.buffer.length, sha256
+    })).digest('hex');
+    const reservationId = crypto.createHash('sha256').update(`whatsapp\0${requestHash}`).digest('hex');
+    const ownerLeaseId = crypto.randomUUID();
+    const reservation = { reservationId, requestHash, ownerLeaseId,
+      leaseUntil: new Date(Date.now() + 120_000).toISOString(), bytes: file.buffer.length };
+    reserveEvidenceStorage(reservation);
+    const storageRef = evidenceStorage.referenceFor(file, { operationId: reservationId });
+    if (!operatingLedger.setEvidenceStorageReservationObject(reservationId, ownerLeaseId, storageRef, sha256)) {
+      throw new UploadRequestError(503, 'evidence_reservation_lease_lost', 'The WhatsApp evidence reservation lease is no longer current.');
+    }
     try {
-      stored = await storeUploadedFile(file);
-      const result = retain(stored);
-      committed = !result.replayed;
-      return result;
-    } finally {
-      if (stored && !committed) await evidenceStorage.remove(stored.storageRef);
-      releaseEvidenceStorageReservation(reserved);
+      const stored = await storeUploadedFile(file, { operationId: reservationId });
+      return retain(stored, () => operatingLedger.commitEvidenceStorageReservation(reservationId, ownerLeaseId));
+    } catch (error) {
+      await cleanupEvidenceStorageReservation(reservationId, ownerLeaseId, storageRef, error.code || 'whatsapp_evidence_failed');
+      throw error;
     }
   },
   async readPhoto(accessId, messageId) {
@@ -8679,26 +8687,80 @@ app.post('/api/test/notifications', (req, res) => {
   });
 });
 
-function reserveEvidenceStorage(bytes) {
-  const requestedBytes = Math.max(0, Number(bytes || 0));
-  const usage = operatingLedger.evidenceStorageUsage();
+function reserveEvidenceStorage(reservation) {
   if (!evidenceStorageMaxBytes) {
     throw new UploadRequestError(503, 'evidence_storage_quota_unavailable', 'Evidence storage is unavailable because its cumulative quota is invalid.');
   }
-  if (usage.bytes + pendingEvidenceStorageBytes + requestedBytes > evidenceStorageMaxBytes) {
-    throw new UploadRequestError(507, 'evidence_storage_quota_exceeded', 'The retained evidence storage quota has been reached. Archive or remove governed evidence before uploading more.', {
-      usageBytes: usage.bytes,
-      pendingBytes: pendingEvidenceStorageBytes,
-      requestedBytes,
-      maxBytes: evidenceStorageMaxBytes
-    });
+  try {
+    return operatingLedger.reserveEvidenceStorage({ ...reservation, maxBytes: evidenceStorageMaxBytes });
+  } catch (error) {
+    if (error instanceof UploadRequestError) throw error;
+    throw new UploadRequestError(error.statusCode || 503, error.code || 'evidence_storage_reservation_failed',
+      error.message || 'Evidence storage quota could not be reserved safely.', error.details);
   }
-  pendingEvidenceStorageBytes += requestedBytes;
-  return requestedBytes;
 }
 
-function releaseEvidenceStorageReservation(bytes) {
-  pendingEvidenceStorageBytes = Math.max(0, pendingEvidenceStorageBytes - Math.max(0, Number(bytes || 0)));
+async function cleanupEvidenceStorageReservation(reservationId, ownerLeaseId, storageRef, errorCode = null) {
+  let claim;
+  try {
+    operatingLedger.markEvidenceStorageCleanupPending(reservationId, ownerLeaseId, errorCode);
+    [claim] = operatingLedger.claimEvidenceStorageCleanup({ reservationId, limit: 1 });
+  } catch (error) {
+    log('warn', 'evidence_storage_cleanup_claim_failed', { reservationId, code: error.code || 'evidence_cleanup_claim_failed' });
+    return false;
+  }
+  if (!claim) return false;
+  if (storageRef && claim.storage_ref !== storageRef) {
+    operatingLedger.finishEvidenceStorageCleanup(claim.reservation_id, claim.cleanupLeaseId, {
+      removed: false, errorCode: 'evidence_cleanup_reference_mismatch'
+    });
+    return false;
+  }
+  try {
+    if (claim.storage_ref) await evidenceStorage.remove(claim.storage_ref);
+    return operatingLedger.finishEvidenceStorageCleanup(claim.reservation_id, claim.cleanupLeaseId, { removed: true });
+  } catch (error) {
+    operatingLedger.finishEvidenceStorageCleanup(claim.reservation_id, claim.cleanupLeaseId, {
+      removed: false, errorCode: error.code || errorCode || 'evidence_cleanup_failed'
+    });
+    log('warn', 'unreferenced_evidence_cleanup_failed', {
+      reservationId: claim.reservation_id,
+      code: error.code || 'evidence_cleanup_failed'
+    });
+    return false;
+  }
+}
+
+async function runEvidenceStorageCleanupBatch() {
+  if (!evidenceStorage || !operatingLedger) return { processed: 0, failed: 0 };
+  let rows;
+  try {
+    rows = operatingLedger.claimEvidenceStorageCleanup({ limit: 10 });
+  } catch (error) {
+    log('warn', 'evidence_storage_cleanup_claim_failed', { code: error.code || 'evidence_cleanup_claim_failed' });
+    return { processed: 0, failed: 1 };
+  }
+  let processed = 0;
+  let failed = 0;
+  for (const row of rows) {
+    try {
+      await evidenceStorage.remove(row.storage_ref);
+      if (!operatingLedger.finishEvidenceStorageCleanup(row.reservation_id, row.cleanupLeaseId, { removed: true })) failed += 1;
+      else processed += 1;
+    } catch (error) {
+      operatingLedger.finishEvidenceStorageCleanup(row.reservation_id, row.cleanupLeaseId, {
+        removed: false, errorCode: error.code || 'evidence_cleanup_failed'
+      });
+      failed += 1;
+      log('warn', 'evidence_storage_cleanup_failed', { reservationId: row.reservation_id, code: error.code || 'evidence_cleanup_failed' });
+    }
+  }
+  return { processed, failed };
+}
+
+if (evidenceStorage && evidenceStorageMaxBytes) {
+  registerAutonomousSchedulerTimer(setInterval(() => { void runEvidenceStorageCleanupBatch(); }, 30_000));
+  registerAutonomousSchedulerTimer(setTimeout(() => { void runEvidenceStorageCleanupBatch(); }, 1_000));
 }
 
 // Ledger evidence intake accepts JSON metadata and bounded multipart uploads.
@@ -8707,7 +8769,9 @@ app.post('/api/ledger/upload', async (req, res) => {
   let idempotency = null;
   let retainedUpload = null;
   let ledgerCommitted = false;
-  let reservedEvidenceBytes = 0;
+  let storageReservation = null;
+  let storageReservationOwner = null;
+  let storageCandidateRef = null;
   try {
     uploadPayload = await readUploadPayload(req, {
       authorizePayload(payload) {
@@ -8773,9 +8837,30 @@ app.post('/api/ledger/upload', async (req, res) => {
       throw new UploadRequestError(503, 'idempotency_claim_failed', 'The evidence retry identity could not be claimed safely.');
     }
 
-    reservedEvidenceBytes = uploadPayload.file ? reserveEvidenceStorage(uploadPayload.file.buffer?.length || 0) : 0;
+    if (uploadPayload.file) {
+      const fileHash = crypto.createHash('sha256').update(uploadPayload.file.buffer).digest('hex');
+      const requestHash = idempotency?.requestHash || crypto.createHash('sha256').update(stableJson({
+        payload: uploadPayload.payload || {}, file: { originalName: uploadPayload.file.originalName,
+          mimeType: uploadPayload.file.mimeType, size: uploadPayload.file.buffer.length, sha256: fileHash }
+      })).digest('hex');
+      storageReservationOwner = idempotency?.leaseId || crypto.randomUUID();
+      const reservationId = idempotency?.claimed
+        ? crypto.createHash('sha256').update(`upload\0${idempotency.keyHash}\0${requestHash}`).digest('hex')
+        : crypto.randomUUID();
+      storageReservation = { reservationId, ownerLeaseId: storageReservationOwner, requestHash,
+        idempotencyKeyHash: idempotency?.keyHash || null };
+      const leaseUntil = idempotency?.leaseUntil || new Date(Date.now() + 120_000).toISOString();
+      const reserved = reserveEvidenceStorage({ ...storageReservation, leaseUntil, bytes: uploadPayload.file.buffer.length });
+      if (reserved.committed) throw new UploadRequestError(409, 'evidence_reservation_already_committed', 'This evidence operation has already committed. Retry with its original idempotency key.');
+      storageCandidateRef = evidenceStorage.referenceFor(uploadPayload.file, { operationId: reservationId });
+      if (!operatingLedger.setEvidenceStorageReservationObject(reservationId, storageReservationOwner,
+        storageCandidateRef, fileHash)) {
+        throw new UploadRequestError(503, 'evidence_reservation_lease_lost', 'The evidence storage reservation lease is no longer current.');
+      }
+      retainedUpload = { storageRef: storageCandidateRef };
+    }
     const storedFile = uploadPayload.file ? await storeUploadedFile(uploadPayload.file, {
-      operationId: idempotency?.claimed ? `${idempotency.keyHash}:${idempotency.requestHash}` : null
+      operationId: storageReservation.reservationId
     }) : null;
     retainedUpload = storedFile;
     const payload = withStoredUpload(uploadPayload.payload || {}, storedFile);
@@ -8829,6 +8914,9 @@ app.post('/api/ledger/upload', async (req, res) => {
             throw new UploadRequestError(503, 'idempotency_completion_failed', 'The evidence retry receipt could not be completed safely.');
           }
         }
+        if (storageReservation && !operatingLedger.commitEvidenceStorageReservation(storageReservation.reservationId, storageReservationOwner)) {
+          throw new UploadRequestError(503, 'evidence_reservation_commit_failed', 'The evidence quota reservation could not be finalized with the ledger record.');
+        }
         return body;
       }
       const ledgerDetail = resolveUploadLedgerJobDetail(payload, actor);
@@ -8873,23 +8961,20 @@ app.post('/api/ledger/upload', async (req, res) => {
           throw new UploadRequestError(503, 'idempotency_completion_failed', 'The evidence retry receipt could not be completed safely.');
         }
       }
+      if (storageReservation && !operatingLedger.commitEvidenceStorageReservation(storageReservation.reservationId, storageReservationOwner)) {
+        throw new UploadRequestError(503, 'evidence_reservation_commit_failed', 'The evidence quota reservation could not be finalized with the ledger record.');
+      }
       return body;
     });
     ledgerCommitted = true;
     return res.json(responseBody);
   } catch (error) {
-    if (retainedUpload && !ledgerCommitted && evidenceStorage?.remove) {
-      try {
-        await evidenceStorage.remove(retainedUpload.storageRef);
-      } catch (cleanupError) {
-        log('warn', 'unreferenced_evidence_cleanup_failed', {
-          requestId: req.requestId,
-          code: cleanupError.code || 'evidence_cleanup_failed'
-        });
-      }
-    }
     if (idempotency?.claimed) {
       operatingLedger.releaseIdempotentRequest(idempotency.keyHash, idempotency.requestHash, idempotency.leaseId);
+    }
+    if (storageReservation && !ledgerCommitted) {
+      await cleanupEvidenceStorageReservation(storageReservation.reservationId, storageReservationOwner,
+        retainedUpload?.storageRef || storageCandidateRef, error.code || 'evidence_upload_failed');
     }
     if (error instanceof UploadRequestError) {
       return sendError(req, res, error.statusCode, error.code, error.message, error.details);
@@ -8905,8 +8990,6 @@ app.post('/api/ledger/upload', async (req, res) => {
       );
     }
     throw error;
-  } finally {
-    releaseEvidenceStorageReservation(reservedEvidenceBytes);
   }
 });
 

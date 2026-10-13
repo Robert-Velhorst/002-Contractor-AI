@@ -6496,6 +6496,36 @@ LEDGER_SCHEMA_MIGRATIONS.push({
     CREATE INDEX IF NOT EXISTS idx_material_requirements_job_status_id ON material_requirements(job_id, status, id);
   `)
 });
+LEDGER_SCHEMA_MIGRATIONS.push({
+  version: '097_durable_evidence_storage_reservations',
+  description: 'Reserve evidence quota atomically across instances and recover orphaned private objects after crashes.',
+  apply: db => db.exec(`
+    CREATE TABLE IF NOT EXISTS evidence_storage_quota_lock (
+      id INTEGER PRIMARY KEY CHECK (id = 1)
+    );
+    INSERT INTO evidence_storage_quota_lock (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
+    CREATE TABLE IF NOT EXISTS evidence_storage_reservations (
+      reservation_id TEXT PRIMARY KEY,
+      request_hash TEXT NOT NULL,
+      idempotency_key_hash TEXT,
+      owner_lease_id TEXT NOT NULL,
+      lease_until TEXT NOT NULL,
+      reserved_bytes INTEGER NOT NULL CHECK (reserved_bytes >= 0),
+      status TEXT NOT NULL CHECK (status IN ('reserved', 'cleanup_pending', 'cleaning', 'committed', 'released')),
+      storage_ref TEXT,
+      sha256 TEXT,
+      cleanup_lease_id TEXT,
+      cleanup_lease_until TEXT,
+      last_error_code TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_evidence_reservations_cleanup
+      ON evidence_storage_reservations(status, lease_until, cleanup_lease_until, updated_at);
+    CREATE INDEX IF NOT EXISTS idx_evidence_reservations_idempotency
+      ON evidence_storage_reservations(idempotency_key_hash, request_hash, status);
+  `)
+});
 class ContractorOperatingLedger {
   constructor(options = {}) {
     const unknownOptions = Object.keys(options).filter(key => !['dbFile', 'databaseUrl', 'stateProvider', 'logger', 'clock', 'companyId', 'expectedCompany', 'authorityKey', 'authorityMaintenance'].includes(key));
@@ -9408,6 +9438,172 @@ class ContractorOperatingLedger {
       bytes: Number(usage?.bytes || 0),
       objects: Number(usage?.objects || 0)
     };
+  }
+
+  evidenceStorageReservationsUsage() {
+    const usage = this.db.prepare(`
+      SELECT COALESCE(SUM(reserved_bytes), 0) AS bytes, COUNT(*) AS reservations
+      FROM evidence_storage_reservations
+      WHERE status IN ('reserved', 'cleanup_pending', 'cleaning')
+    `).get();
+    return { bytes: Number(usage?.bytes || 0), reservations: Number(usage?.reservations || 0) };
+  }
+
+  reserveEvidenceStorage({ reservationId, requestHash, idempotencyKeyHash = null, ownerLeaseId, leaseUntil, bytes, maxBytes }) {
+    const values = {
+      reservationId: normalizeText(reservationId),
+      requestHash: normalizeText(requestHash),
+      idempotencyKeyHash: normalizeText(idempotencyKeyHash) || null,
+      ownerLeaseId: normalizeText(ownerLeaseId),
+      leaseUntil: normalizeText(leaseUntil),
+      bytes: Number(bytes),
+      maxBytes: Number(maxBytes)
+    };
+    if (!values.reservationId || !values.requestHash || !values.ownerLeaseId
+        || !Number.isFinite(Date.parse(values.leaseUntil))
+        || !Number.isSafeInteger(values.bytes) || values.bytes < 1
+        || !Number.isSafeInteger(values.maxBytes) || values.maxBytes < 1) {
+      throw Object.assign(new Error('Evidence quota reservation parameters are invalid.'), { code: 'evidence_reservation_invalid', statusCode: 503 });
+    }
+    const timestamp = nowIso();
+    return this.transaction(() => {
+      const lockSuffix = this.databaseMode === 'postgres' ? ' FOR UPDATE' : '';
+      if (!this.db.prepare(`SELECT id FROM evidence_storage_quota_lock WHERE id = 1${lockSuffix}`).get()) {
+        throw Object.assign(new Error('Evidence storage quota lock is unavailable.'), { code: 'evidence_quota_lock_unavailable', statusCode: 503 });
+      }
+      const existing = this.db.prepare('SELECT * FROM evidence_storage_reservations WHERE reservation_id = ?').get(values.reservationId);
+      if (existing && existing.request_hash !== values.requestHash) {
+        throw Object.assign(new Error('Evidence reservation identity conflicts with a different upload.'), { code: 'evidence_reservation_conflict', statusCode: 409 });
+      }
+      if (existing && existing.idempotency_key_hash !== values.idempotencyKeyHash) {
+        throw Object.assign(new Error('Evidence reservation identity conflicts with a different retry key.'), { code: 'evidence_reservation_conflict', statusCode: 409 });
+      }
+      if (existing?.status === 'committed') return { committed: true, reservedBytes: 0 };
+      const cleanupLeaseUntil = Date.parse(existing?.cleanup_lease_until || '');
+      if (existing?.status === 'cleaning' && Number.isFinite(cleanupLeaseUntil) && cleanupLeaseUntil > Date.parse(timestamp)) {
+        throw Object.assign(new Error('Evidence cleanup is already processing this upload; retry after it completes.'), { code: 'evidence_cleanup_in_progress', statusCode: 409 });
+      }
+      const existingLeaseUntil = Date.parse(existing?.lease_until || '');
+      if (existing && existing.owner_lease_id !== values.ownerLeaseId) {
+        if (existing.status === 'reserved' && Number.isFinite(existingLeaseUntil) && existingLeaseUntil > Date.parse(timestamp)) {
+          throw Object.assign(new Error('Another live upload lease owns this evidence reservation.'), { code: 'evidence_reservation_in_progress', statusCode: 409 });
+        }
+        if (values.idempotencyKeyHash) {
+          const activeRequest = this.db.prepare(`SELECT 1 AS active FROM idempotency_records
+            WHERE key_hash = ? AND request_hash = ? AND status = 'processing' AND lease_id = ? AND lease_until > ?`)
+            .get(values.idempotencyKeyHash, values.requestHash, values.ownerLeaseId, timestamp);
+          if (!activeRequest) {
+            throw Object.assign(new Error('The current idempotency lease does not own this evidence reservation.'), { code: 'evidence_reservation_lease_lost', statusCode: 409 });
+          }
+        }
+      }
+      const usage = this.evidenceStorageUsage();
+      const otherReservations = this.db.prepare(`SELECT COALESCE(SUM(reserved_bytes), 0) AS bytes
+        FROM evidence_storage_reservations
+        WHERE status IN ('reserved', 'cleanup_pending', 'cleaning') AND reservation_id <> ?`)
+        .get(values.reservationId);
+      const pendingBytes = Number(otherReservations?.bytes || 0);
+      if (usage.bytes + pendingBytes + values.bytes > values.maxBytes) {
+        throw Object.assign(new Error('The retained evidence storage quota has been reached. Archive or remove governed evidence before uploading more.'), {
+          code: 'evidence_storage_quota_exceeded', statusCode: 507,
+          details: { usageBytes: usage.bytes, pendingBytes, requestedBytes: values.bytes, maxBytes: values.maxBytes }
+        });
+      }
+      if (existing) {
+        this.db.prepare(`UPDATE evidence_storage_reservations SET idempotency_key_hash = ?, owner_lease_id = ?, lease_until = ?,
+          reserved_bytes = ?, status = 'reserved', cleanup_lease_id = NULL, cleanup_lease_until = NULL,
+          last_error_code = NULL, updated_at = ? WHERE reservation_id = ? AND request_hash = ?`)
+          .run(values.idempotencyKeyHash, values.ownerLeaseId, values.leaseUntil, values.bytes, timestamp, values.reservationId, values.requestHash);
+      } else {
+        this.db.prepare(`INSERT INTO evidence_storage_reservations (
+          reservation_id, request_hash, idempotency_key_hash, owner_lease_id, lease_until, reserved_bytes,
+          status, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, 'reserved', ?, ?)`)
+          .run(values.reservationId, values.requestHash, values.idempotencyKeyHash, values.ownerLeaseId, values.leaseUntil,
+            values.bytes, timestamp, timestamp);
+      }
+      return { committed: false, reservedBytes: values.bytes, usageBytes: usage.bytes, pendingBytes };
+    });
+  }
+
+  setEvidenceStorageReservationObject(reservationId, ownerLeaseId, storageRef, sha256) {
+    const result = this.db.prepare(`UPDATE evidence_storage_reservations SET storage_ref = ?, sha256 = ?, updated_at = ?
+      WHERE reservation_id = ? AND owner_lease_id = ? AND status = 'reserved' AND lease_until > ?`)
+      .run(normalizeText(storageRef), normalizeText(sha256), nowIso(), normalizeText(reservationId), normalizeText(ownerLeaseId), nowIso());
+    return Number(result.changes || 0) === 1;
+  }
+
+  commitEvidenceStorageReservation(reservationId, ownerLeaseId) {
+    const result = this.db.prepare(`UPDATE evidence_storage_reservations SET status = 'committed', cleanup_lease_id = NULL,
+      cleanup_lease_until = NULL, last_error_code = NULL, updated_at = ?
+      WHERE reservation_id = ? AND owner_lease_id = ? AND status = 'reserved' AND storage_ref IS NOT NULL AND lease_until > ?`)
+      .run(nowIso(), normalizeText(reservationId), normalizeText(ownerLeaseId), nowIso());
+    return Number(result.changes || 0) === 1;
+  }
+
+  markEvidenceStorageCleanupPending(reservationId, ownerLeaseId, errorCode = null) {
+    const result = this.db.prepare(`UPDATE evidence_storage_reservations SET status = 'cleanup_pending', cleanup_lease_id = NULL,
+      cleanup_lease_until = NULL, last_error_code = ?, updated_at = ?
+      WHERE reservation_id = ? AND owner_lease_id = ? AND status = 'reserved'`)
+      .run(normalizeText(errorCode) || null, nowIso(), normalizeText(reservationId), normalizeText(ownerLeaseId));
+    return Number(result.changes || 0) === 1;
+  }
+
+  claimEvidenceStorageCleanup({ reservationId = null, limit = 10, leaseMs = 120_000 } = {}) {
+    const timestamp = nowIso();
+    const until = new Date(Date.parse(timestamp) + Math.max(10_000, Number(leaseMs) || 0)).toISOString();
+    const cleanupLeaseId = makeId('evidence_cleanup');
+    const normalizedId = normalizeText(reservationId) || null;
+    const batchSize = Math.max(1, Math.min(100, Math.floor(Number(limit) || 10)));
+    return this.transaction(() => {
+      const lockSuffix = this.databaseMode === 'postgres' ? ' FOR UPDATE' : '';
+      this.db.prepare(`SELECT id FROM evidence_storage_quota_lock WHERE id = 1${lockSuffix}`).get();
+      const candidates = this.db.prepare(`SELECT r.* FROM evidence_storage_reservations r
+        WHERE r.status IN ('reserved', 'cleanup_pending', 'cleaning')
+          AND (r.lease_until <= ? OR r.status = 'cleanup_pending' OR r.cleanup_lease_until <= ?)
+          AND (r.cleanup_lease_until IS NULL OR r.cleanup_lease_until <= ?)
+          AND (? IS NULL OR r.reservation_id = ?)
+          AND (r.idempotency_key_hash IS NULL OR NOT EXISTS (
+            SELECT 1 FROM idempotency_records i WHERE i.key_hash = r.idempotency_key_hash
+              AND i.request_hash = r.request_hash AND i.status = 'processing' AND i.lease_until > ?
+          ))
+        ORDER BY r.updated_at ASC LIMIT ?`).all(timestamp, timestamp, timestamp, normalizedId, normalizedId, timestamp, batchSize);
+      const claimed = [];
+      for (const row of candidates) {
+        if (row.storage_ref) {
+          const referenced = this.db.prepare(`SELECT 1 AS retained FROM documents WHERE storage_ref = ?
+            UNION ALL SELECT 1 AS retained FROM opportunity_evidence WHERE storage_ref = ? LIMIT 1`)
+            .get(row.storage_ref, row.storage_ref);
+          if (referenced) {
+            this.db.prepare(`UPDATE evidence_storage_reservations SET status = 'committed', cleanup_lease_id = NULL,
+              cleanup_lease_until = NULL, last_error_code = NULL, updated_at = ? WHERE reservation_id = ? AND status = ?`)
+              .run(timestamp, row.reservation_id, row.status);
+            continue;
+          }
+        }
+        if (!row.storage_ref) {
+          this.db.prepare(`UPDATE evidence_storage_reservations SET status = 'released', reserved_bytes = 0,
+            cleanup_lease_id = NULL, cleanup_lease_until = NULL, updated_at = ? WHERE reservation_id = ?`)
+            .run(timestamp, row.reservation_id);
+          continue;
+        }
+        const updated = this.db.prepare(`UPDATE evidence_storage_reservations SET status = 'cleaning', cleanup_lease_id = ?,
+          cleanup_lease_until = ?, updated_at = ? WHERE reservation_id = ? AND status = ?
+          AND (cleanup_lease_until IS NULL OR cleanup_lease_until <= ?)`)
+          .run(cleanupLeaseId, until, timestamp, row.reservation_id, row.status, timestamp);
+        if (Number(updated.changes || 0) === 1) claimed.push({ ...row, status: 'cleaning', cleanupLeaseId, cleanupLeaseUntil: until });
+      }
+      return claimed;
+    });
+  }
+
+  finishEvidenceStorageCleanup(reservationId, cleanupLeaseId, { removed, errorCode = null } = {}) {
+    const result = this.db.prepare(`UPDATE evidence_storage_reservations SET status = ?, cleanup_lease_id = NULL,
+      cleanup_lease_until = NULL, last_error_code = ?, updated_at = ?
+      WHERE reservation_id = ? AND status = 'cleaning' AND cleanup_lease_id = ?`)
+      .run(removed === true ? 'released' : 'cleanup_pending', removed === true ? null : normalizeText(errorCode) || 'evidence_cleanup_failed',
+        nowIso(), normalizeText(reservationId), normalizeText(cleanupLeaseId));
+    return Number(result.changes || 0) === 1;
   }
 
   qaResetInventory() {
