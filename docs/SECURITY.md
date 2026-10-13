@@ -20,6 +20,22 @@ The policy covers this repository's application code, deployment templates,
 documentation, and GitHub automation. It does not establish authority to test
 GitHub, Vercel, Meta/WhatsApp, Hetzner, or any other separately operated service.
 
+## Repository safeguards
+
+The public repository uses GitHub CodeQL default setup, Dependabot alerts and
+security updates, weekly dependency update proposals, secret scanning with push
+protection, and private vulnerability reporting. The `main` branch requires a
+pull request, current verification and CodeQL checks, resolved review threads,
+and prohibits deletion and force-pushes. The repository has a single maintainer,
+so it does not require an independent approving review; automated checks are
+not a substitute for one.
+
+GitHub security alerts remain review items until a finding is fixed and a new
+scan confirms the result, or its applicability is documented with evidence.
+Enabling a scanner does not mean that the alert queue is empty. Repository
+security settings and hosted-service controls are separate; local CI does not
+verify the production provider, organization access, or live deployment.
+
 ## Trust boundaries
 
 Contractor.AI treats browser input, uploaded files, portal tokens, proxy headers,
