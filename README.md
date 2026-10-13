@@ -830,6 +830,11 @@ docker run --rm --name contractor-ai `
   ghcr.io/robert-velhorst/002-contractor-ai:v1.1.0-rc.1
 ```
 
+If a release package job fails, the **Publish Contractor.AI release** workflow
+can be run manually from `main` with the already-published release tag. It
+rebuilds the same release only when the tag, `package.json` version, and current
+`main` commit match; it does not permit packaging a stale tag.
+
 The published container is not an EU-hosted service. Hosted mode still requires
 the provider, region, data protection, database, storage, ingress, backup, and
 restore prerequisites in [EU-hosted production](#eu-hosted-production).

@@ -852,6 +852,19 @@ function verifyReleaseContract(root = path.resolve(__dirname, '..')) {
     failures.push('CI workflow references an unavailable major for checkout or setup-node.');
   }
 
+  const releaseWorkflow = fs.readFileSync(path.join(root, '.github', 'workflows', 'publish-release.yml'), 'utf8');
+  for (const requirement of [
+    'workflow_dispatch:',
+    'release_tag:',
+    'docker buildx create --name contractor-ai-release --driver docker-container --use',
+    '--sbom=true',
+    '--provenance=mode=max',
+    'release_sha="$(git rev-parse "refs/tags/$tag^{commit}")"',
+    'gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft'
+  ]) {
+    if (!releaseWorkflow.includes(requirement)) failures.push(`Release workflow is missing a required packaging control: ${requirement}`);
+  }
+
   return {
     valid: failures.length === 0,
     failures,

@@ -3,6 +3,12 @@ name: Publish Contractor.AI release
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing published release tag to package again
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -20,9 +26,12 @@ jobs:
       - name: Verify release tag and main commit
         id: metadata
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG_INPUT: ${{ inputs.release_tag || '' }}
         run: |
           set -euo pipefail
-          tag="$GITHUB_REF_NAME"
+          tag="${RELEASE_TAG_INPUT:-$GITHUB_REF_NAME}"
           if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
             echo "Release tag must use semantic versioning (vMAJOR.MINOR.PATCH[-PRERELEASE])." >&2
             exit 1
@@ -33,8 +42,15 @@ jobs:
             exit 1
           fi
           git fetch origin main:refs/remotes/origin/main
-          if [[ "$(git rev-parse refs/remotes/origin/main)" != "$GITHUB_SHA" ]]; then
-            echo "A release must target the current main commit." >&2
+          git fetch origin "refs/tags/$tag:refs/tags/$tag"
+          main_sha="$(git rev-parse refs/remotes/origin/main)"
+          release_sha="$(git rev-parse "refs/tags/$tag^{commit}")"
+          if [[ "$main_sha" != "$GITHUB_SHA" || "$release_sha" != "$main_sha" ]]; then
+            echo "A release tag must target the current main commit." >&2
+            exit 1
+          fi
+          if [[ "$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" != "false" ]]; then
+            echo "Package jobs require an existing published release." >&2
             exit 1
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
@@ -60,8 +76,9 @@ jobs:
       - name: Attach Windows package to release
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.verify-release-source.outputs.tag }}
         shell: pwsh
-        run: gh release upload "$env:GITHUB_REF_NAME" release/ContractorAI-windows-x64.zip --repo "$env:GITHUB_REPOSITORY" --clobber
+        run: gh release upload "$env:RELEASE_TAG" release/ContractorAI-windows-x64.zip --repo "$env:GITHUB_REPOSITORY" --clobber
 
   container-package:
     needs: verify-release-source
@@ -75,6 +92,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+      - name: Configure Buildx for release attestations
+        run: |
+          set -euo pipefail
+          docker buildx create --name contractor-ai-release --driver docker-container --use
+          docker buildx inspect --bootstrap
       - name: Build and publish container package
         env:
           IMAGE: ${{ needs.verify-release-source.outputs.image }}
