@@ -27,7 +27,7 @@ function bundleFixture(t) {
     'OperationalRecoveryActions', 'SupplierRecoveryLog', 'SupplierRecoveryForm', 'ClientAppointmentImpact',
     'ClientAppointmentReview', 'ClientDateCommitmentsControl', 'ClientDateImpactReview', 'cancellable-read',
     'PipelineWorkspace', 'BidPackageWorkspace', 'PortfolioScheduleWorkspace', 'DispatchWorkspace',
-    'ClientConversationInbox', 'ConversationPhoto', 'conversation-request', 'OpportunityEditor', 'icons',
+    'ClientConversationInbox', 'ConversationPhoto', 'conversation-request', 'ClientDeliveryResponses', 'OpportunityEditor', 'icons',
     'WorkBoard', 'OfflineField', 'ClientPortal'];
   for (const surface of surfaces) writeAsset(directory, `${surface}-fixture.js`);
   writeAsset(directory, 'App-fixture.css', 'body { color: black; }');

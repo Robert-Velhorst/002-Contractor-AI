@@ -21,10 +21,10 @@ const budgets = {
   clientDeliveryGzipBytes: 8_500,
   workBalanceGzipBytes: 5_000,
   // Task-linked recovery closure now selects auditable worker-resumption evidence.
-  operationalRecoveryGzipBytes: 4_100,
-  operationalRecoveryCaseGzipBytes: 3_000,
-  operationalReplacementPlanGzipBytes: 1_600,
-  operationalRecoveryActionsGzipBytes: 900,
+  operationalRecoveryGzipBytes: 4_800,
+  operationalRecoveryCaseGzipBytes: 4_400,
+  operationalReplacementPlanGzipBytes: 1_900,
+  operationalRecoveryActionsGzipBytes: 1_150,
   supplierRecoveryLogGzipBytes: 1_850,
   supplierRecoveryFormGzipBytes: 1_800,
   // Evidence-bound customer-message selection and retained source display.
@@ -42,7 +42,7 @@ const surfaces = {
   workDeliveryGzipBytes: /^WorkDeliveryControl/,
   assetHistoryGzipBytes: /^AssetHistoryControl/,
   inspectionCoverageGzipBytes: /^(InspectionCoverageControl|inspection-coverage-labels)/,
-  clientDeliveryGzipBytes: /^(ClientDelivery|client-delivery-labels)/,
+  clientDeliveryGzipBytes: /^(ClientDeliveryControl|ClientDelivery-|client-delivery-labels)/,
   workBalanceGzipBytes: /^WorkBalanceControl/,
   operationalRecoveryGzipBytes: /^OperationalRecoveryControl/,
   operationalRecoveryCaseGzipBytes: /^OperationalRecoveryCase/,

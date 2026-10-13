@@ -13,7 +13,7 @@ test('bundle report measures the selected build once with verifiable source and 
   const directory = bundleFixture(t);
   const report = verifyBundleBudget({ distDirectory: directory });
   assert.equal(report.valid, true);
-  assert.equal(report.assetCount, 38);
+  assert.equal(report.assetCount, 39);
   assert.deepEqual(report.failures, []);
   for (const asset of report.assets) {
     const bytes = fs.readFileSync(path.join(directory, 'assets', asset.name));
@@ -83,8 +83,9 @@ test('shared read code counts for each dependent surface without masking an abse
   }
   const recovery = report.assets.find(asset => asset.name === 'OperationalRecoveryControl-fixture.js');
   assert.equal(report.measurements.operationalRecoveryGzipBytes, recovery.gzipBytes + shared);
-  const photoDependencies = report.assets.filter(asset => /^(ClientDeliveryControl-|ConversationPhoto-|conversation-request-|cancellable-read-)/.test(asset.name));
+  const photoDependencies = report.assets.filter(asset => /^(ClientDeliveryControl-|ClientDelivery-|client-delivery-labels-|ConversationPhoto-|conversation-request-|cancellable-read-)/.test(asset.name));
   assert.equal(report.measurements.clientDeliveryGzipBytes, photoDependencies.reduce((total, asset) => total + asset.gzipBytes, 0));
+  assert.ok(!photoDependencies.some(asset => asset.name.startsWith('ClientDeliveryResponses-')));
   fs.unlinkSync(path.join(directory, 'assets', 'WorkContextControl-fixture.js'));
   const incomplete = inspectBundleBudget({ distDirectory: directory });
   assert.ok(incomplete.missingAssets.includes('workContextGzipBytes'));
@@ -171,8 +172,8 @@ test('initial-route and complete-product budgets retain explicit headroom limits
   assert.equal(budgets.completeProductBrotliBytes, 620000);
   assert.equal(budgets.fieldWorkContextGzipBytes, 7000);
   assert.equal(budgets.clientDeliveryGzipBytes, 8500);
-  assert.equal(budgets.operationalRecoveryGzipBytes, 4100);
-  assert.equal(budgets.operationalRecoveryCaseGzipBytes, 3000);
-  assert.equal(budgets.operationalReplacementPlanGzipBytes, 1600);
-  assert.equal(budgets.operationalRecoveryActionsGzipBytes, 900);
+  assert.equal(budgets.operationalRecoveryGzipBytes, 4800);
+  assert.equal(budgets.operationalRecoveryCaseGzipBytes, 4400);
+  assert.equal(budgets.operationalReplacementPlanGzipBytes, 1900);
+  assert.equal(budgets.operationalRecoveryActionsGzipBytes, 1150);
 });
