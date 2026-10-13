@@ -778,7 +778,7 @@ recovery responsibility off the local machine.
 
 ### Run locally
 
-Requirements: Node.js 22.x and npm on Windows, macOS, or Linux.
+Requirements: Node.js 22.x or 24.x and npm on Windows, macOS, or Linux. The portable Windows package is built with Node.js 22.x.
 
 ```powershell
 git clone https://github.com/Robert-Velhorst/002-Contractor-AI.git
