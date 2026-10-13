@@ -141,10 +141,15 @@ function migrateCompanyAuthority(db) {
   db.exec(`CREATE TABLE IF NOT EXISTS company_authority_history (
     sequence INTEGER PRIMARY KEY, snapshot_json TEXT NOT NULL, previous_hash TEXT NOT NULL, event_hash TEXT NOT NULL
   );`);
+  ensureAuthorityGuards(db);
+}
+function ensureAuthorityGuards(db) {
+  if (!exists(db)) return false;
   const tables = db.prepare(typeof db.query === 'function'
     ? "SELECT table_name AS name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE'"
     : "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").all();
   installAuthorityGuards(db, tables.map(row => row.name));
+  return true;
 }
 function installAuthorityGuards(db, tables) {
   const postgres = typeof db.query === 'function';
@@ -332,5 +337,5 @@ function abortSource(db, { key, actor, reason, beforeCommit }) {
 
 module.exports = { FORMAT, KEY_FORMAT, generateAuthorityKey, authorityKey, readPrivateKeyFile, targetDescription, sign, verify, digest,
   authorityMarkerFile, readAuthorityMarker, retainAuthorityMarker, assertAuthorityMarker,
-  migrateCompanyAuthority, installAuthorityGuards, readAuthority, assertAuthorityRuntime, persist, authorityRecord, authorityHistoryRecord, verifyAuthorityHistory, prepareSource, sealSourcePackage,
+  migrateCompanyAuthority, ensureAuthorityGuards, installAuthorityGuards, readAuthority, assertAuthorityRuntime, persist, authorityRecord, authorityHistoryRecord, verifyAuthorityHistory, prepareSource, sealSourcePackage,
   validatePreparedPackage, retainTargetVerification, retireSource, activateTarget, abortSource };

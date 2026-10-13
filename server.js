@@ -3503,11 +3503,17 @@ app.get('/api/ledger/documents/:id/content', async (req, res) => {
       || document.data?.contentHash
       || ''
     ).trim().toLowerCase();
-    const evidence = await evidenceStorage.read(document.storageRef, {
-      maxBytes: maxUploadBytes,
-      expectedSize: document.sizeBytes > 0 ? document.sizeBytes : undefined,
-      expectedSha256: expectedChecksum || undefined
-    });
+    let evidence;
+    try {
+      evidence = await evidenceStorage.read(document.storageRef, {
+        maxBytes: maxUploadBytes,
+        expectedSize: document.sizeBytes > 0 ? document.sizeBytes : undefined,
+        expectedSha256: expectedChecksum || undefined
+      });
+    } catch (error) {
+      if (error.code === 'evidence_integrity_failed') error.code = 'evidence_content_integrity_failed';
+      throw error;
+    }
     if (authorizedFieldDrawing) {
       const current = new FieldWorkPack(operatingLedger)
         .drawingFile(document.jobId, req.operator.scope.workerId, document.id);

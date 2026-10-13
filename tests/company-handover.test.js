@@ -45,6 +45,7 @@ test('frozen source rejects business writes from existing connections, generic r
   freeze(f);
   assert.throws(() => oldConnection.prepare('UPDATE jobs SET title = ? WHERE id = ?').run('must not change', f.job.id), /company_authority_blocked/);
   assert.throws(() => oldConnection.prepare('DELETE FROM clients').run(), /company_authority_blocked/);
+  assert.throws(() => oldConnection.prepare('UPDATE evidence_storage_quota_lock SET id = 2 WHERE id = 1').run(), /company_authority_blocked/);
   assert.throws(() => f.ledger.createIntake({ title: 'blocked', client: { name: 'blocked' } }, { actor }), /company_authority_blocked/);
   assert.equal(f.ledger.getJobRow(f.job.id).title, 'Retained repair');
   assert.throws(() => new ContractorOperatingLedger({ dbFile: f.dbFile, authorityKey: f.sourceKey }), { code: 'company_authority_blocked' });

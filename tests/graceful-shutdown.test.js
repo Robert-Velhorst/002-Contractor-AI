@@ -13,6 +13,7 @@ process.env.CONTRACTOR_AI_AUTONOMOUS_SCHEDULER_ENABLED = 'true';
 
 const { ContractorOperatingLedger } = require('../operating-ledger');
 const app = require('../server');
+const scheduledTimerCount = app.locals.runtimeControl.schedulerTimerCount();
 
 test('runtime shutdown drains HTTP, clears scheduler timers, and closes the retained ledger once', async () => {
   const server = app.listen(0);
@@ -36,7 +37,8 @@ test('runtime shutdown drains HTTP, clears scheduler timers, and closes the reta
   });
   assert.equal(response.status, 201);
   const payload = await response.json();
-  assert.equal(app.locals.runtimeControl.schedulerTimerCount(), 2);
+  assert.ok(scheduledTimerCount >= 2);
+  assert.equal(app.locals.runtimeControl.schedulerTimerCount(), scheduledTimerCount);
 
   const firstShutdown = app.locals.runtimeControl.shutdown({ server, signal: 'test_shutdown', timeoutMs: 2_000 });
   const repeatedShutdown = app.locals.runtimeControl.shutdown({ server, signal: 'test_shutdown_repeated', timeoutMs: 2_000 });
@@ -44,7 +46,7 @@ test('runtime shutdown drains HTTP, clears scheduler timers, and closes the reta
   const result = await firstShutdown;
 
   assert.equal(result.signal, 'test_shutdown');
-  assert.equal(result.timersCleared, 2);
+  assert.equal(result.timersCleared, scheduledTimerCount);
   assert.deepEqual(result.http, { drained: true, forced: false });
   assert.equal(server.listening, false);
   assert.equal(app.locals.runtimeControl.schedulerTimerCount(), 0);

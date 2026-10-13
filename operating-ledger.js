@@ -7539,6 +7539,7 @@ class ContractorOperatingLedger {
         this.db.prepare('INSERT INTO ledger_schema_migrations (version, description, applied_at) VALUES (?, ?, ?)')
           .run(migration.version, migration.description, nowIso());
       }
+      require('./company-authority').ensureAuthorityGuards(this.db);
     });
   }
 

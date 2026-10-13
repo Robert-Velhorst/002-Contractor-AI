@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { Readable } = require('node:stream');
+const { SaxesParser } = require('saxes');
 
 const STORAGE_READINESS_PAYLOAD = Buffer.from('contractor-ai-storage-readiness/v1', 'utf8');
 
@@ -28,6 +29,64 @@ function safeStorageName(originalName, operationId = null) {
 
 function encodeS3Path(value) {
   return String(value || '').split('/').map(segment => encodeURIComponent(segment)).join('/');
+}
+
+function encodeS3Query(query = {}) {
+  const encode = value => encodeURIComponent(String(value)).replace(/[!'()*]/g, character => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
+  return Object.entries(query)
+    .filter(([, value]) => value !== undefined && value !== null)
+    .map(([name, value]) => [encode(name), encode(value)])
+    .sort(([leftName, leftValue], [rightName, rightValue]) => {
+      const nameOrder = leftName < rightName ? -1 : leftName > rightName ? 1 : 0;
+      return nameOrder || (leftValue < rightValue ? -1 : leftValue > rightValue ? 1 : 0);
+    })
+    .map(([name, value]) => `${name}=${value}`)
+    .join('&');
+}
+
+function parseS3VersionPage(xml) {
+  const parser = new SaxesParser({ xmlns: false });
+  const stack = [];
+  const versions = [];
+  let current = null;
+  let isTruncated = false;
+  const markers = { key: null, versionId: null };
+  const markerTags = new Map([
+    ['NextKeyMarker', 'key'],
+    ['NextVersionIdMarker', 'versionId']
+  ]);
+
+  parser.on('opentag', node => {
+    stack.push(node.name);
+    if ((node.name === 'Version' || node.name === 'DeleteMarker') && stack.at(-2) === 'ListVersionsResult') {
+      current = { key: '', versionId: '' };
+    }
+  });
+  parser.on('text', value => {
+    const name = stack.at(-1);
+    if (current && (name === 'Key' || name === 'VersionId')) {
+      current[name === 'Key' ? 'key' : 'versionId'] += value;
+    } else if (name === 'IsTruncated') {
+      isTruncated = value.trim() === 'true';
+    } else if (markerTags.has(name)) {
+      markers[markerTags.get(name)] = (markers[markerTags.get(name)] || '') + value;
+    }
+  });
+  parser.on('closetag', node => {
+    const name = node.name;
+    if ((name === 'Version' || name === 'DeleteMarker') && current) {
+      versions.push(current);
+      current = null;
+    }
+    stack.pop();
+  });
+  parser.write(Buffer.isBuffer(xml) ? xml.toString('utf8') : String(xml)).close();
+  return {
+    versions,
+    isTruncated,
+    nextKeyMarker: markers.key,
+    nextVersionIdMarker: markers.versionId
+  };
 }
 
 function hasUnsafeS3Characters(value) {
@@ -203,9 +262,10 @@ class S3EvidenceStorage {
   }
 
   async request(method, key, body = null, contentType = null, {
-    maxResponseBytes = this.maxReadBytes, allowMissing = false, expectedSize = null, expectedSha256 = null
+    maxResponseBytes = this.maxReadBytes, allowMissing = false, expectedSize = null, expectedSha256 = null,
+    query = null, allowBucketRequest = false
   } = {}) {
-    const objectKey = normalizeS3ObjectKey(key);
+    const objectKey = allowBucketRequest && !key ? '' : normalizeS3ObjectKey(key);
     const timestamp = new Date().toISOString().replace(/[:-]|\.\d{3}/g, '');
     const dateStamp = timestamp.slice(0, 8);
     const payload = body ? Buffer.from(body) : Buffer.alloc(0);
@@ -221,13 +281,15 @@ class S3EvidenceStorage {
     const signedHeaderNames = Object.keys(headers).sort();
     const canonicalHeaders = signedHeaderNames.map(name => `${name}:${headers[name]}\n`).join('');
     const signedHeaders = signedHeaderNames.join(';');
-    const canonicalRequest = [method, canonicalUri, '', canonicalHeaders, signedHeaders, payloadHash].join('\n');
+    const canonicalQuery = encodeS3Query(query || {});
+    const canonicalRequest = [method, canonicalUri, canonicalQuery, canonicalHeaders, signedHeaders, payloadHash].join('\n');
     const credentialScope = `${dateStamp}/${this.region}/s3/aws4_request`;
     const stringToSign = ['AWS4-HMAC-SHA256', timestamp, credentialScope, crypto.createHash('sha256').update(canonicalRequest).digest('hex')].join('\n');
     const signingKey = hmac(hmac(hmac(hmac(`AWS4${this.secretAccessKey}`, dateStamp), this.region), 's3'), 'aws4_request');
     const signature = crypto.createHmac('sha256', signingKey).update(stringToSign, 'utf8').digest('hex');
     const url = new URL(this.endpoint.toString());
     url.pathname = canonicalUri;
+    url.search = canonicalQuery;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
@@ -312,7 +374,56 @@ class S3EvidenceStorage {
   }
 
   async remove(storageRef) {
-    await this.request('DELETE', this.keyFromStorageRef(storageRef));
+    const key = this.keyFromStorageRef(storageRef);
+    const versions = [];
+    let keyMarker = null;
+    let versionIdMarker = null;
+    let pages = 0;
+    let listingComplete = false;
+    while (!listingComplete && pages < 1000) {
+      const page = await this.request('GET', '', null, null, {
+        allowBucketRequest: true,
+        maxResponseBytes: 1024 * 1024,
+        query: {
+          versions: '',
+          prefix: key,
+          'max-keys': '100',
+          'key-marker': keyMarker,
+          'version-id-marker': versionIdMarker
+        }
+      });
+      const parsed = parseS3VersionPage(page.body);
+      versions.push(...parsed.versions.filter(version => version.key === key));
+      if (versions.length > 1000) {
+        throw new EvidenceStorageError('object_storage_version_limit_exceeded', 'The orphan has too many retained object versions for automatic cleanup.');
+      }
+      pages += 1;
+      if (!parsed.isTruncated) {
+        listingComplete = true;
+        break;
+      }
+      const nextKeyMarker = parsed.nextKeyMarker || key;
+      const nextVersionIdMarker = parsed.nextVersionIdMarker || null;
+      if (nextKeyMarker === keyMarker && nextVersionIdMarker === versionIdMarker) {
+        throw new EvidenceStorageError('object_storage_version_listing_incomplete', 'Object storage did not return safe version-list pagination markers.');
+      }
+      keyMarker = nextKeyMarker;
+      versionIdMarker = nextVersionIdMarker;
+    }
+    if (!listingComplete) {
+      throw new EvidenceStorageError('object_storage_version_listing_incomplete', 'Object storage returned too many version-list pages for automatic cleanup.');
+    }
+
+    if (versions.length) {
+      for (const version of versions) {
+        if (!version.versionId) {
+          throw new EvidenceStorageError('object_storage_version_id_missing', 'Object storage returned a version without an identifier; cleanup was not completed.');
+        }
+        await this.request('DELETE', key, null, null, { query: { versionId: version.versionId } });
+      }
+    } else {
+      await this.request('DELETE', key);
+    }
     return true;
   }
 
@@ -342,7 +453,7 @@ class S3EvidenceStorage {
       verificationError = error;
     }
     try {
-      await this.request('DELETE', key);
+      await this.remove(`s3://${this.bucket}/${key}`);
     } catch {
       if (!verificationError) {
         throw new EvidenceStorageError('object_storage_cleanup_failed', 'Object storage could not remove its readiness marker.');
