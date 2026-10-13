@@ -81,18 +81,18 @@ function registerLoadingReadContract(test, { prefix, createLedger, skip = false 
     assert.equal(rows(ledger.db, loadingSql).some(row => row.id === 'loading-08'), false);
   });
 
-  test(`${prefix} loading indexes migrate from head 095, preserve records and reopen idempotently`, { skip }, async t => {
+  test(`${prefix} loading indexes reapply after schema head 097 and preserve records`, { skip }, async t => {
     const fixture = await createLedger(t);
     let ledger = fixture.ledger;
     seed(ledger.db);
     for (const index of indexes) ledger.db.exec(`DROP INDEX ${index}`);
     ledger.db.prepare("DELETE FROM ledger_schema_migrations WHERE version = '096_loading_read_indexes'").run();
-    assert.equal(ledger.migrationStatus().applied.at(-1).version, '095_field_reply_notifications');
+    assert.equal(ledger.migrationStatus().currentVersion, '097_durable_evidence_storage_reservations');
     assert.deepEqual(ledger.migrationStatus().pending, ['096_loading_read_indexes']);
     const before = snapshot(ledger.db);
     ledger.close();
     ledger = fixture.reopen();
-    assert.equal(ledger.migrationStatus().currentVersion, '096_loading_read_indexes');
+    assert.equal(ledger.migrationStatus().currentVersion, '097_durable_evidence_storage_reservations');
     assert.deepEqual(ledger.migrationStatus().pending, []);
     assert.deepEqual(snapshot(ledger.db), before);
     const schema = ledger.databaseMode === 'postgres'
