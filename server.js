@@ -3498,7 +3498,17 @@ app.get('/api/ledger/documents/:id/content', async (req, res) => {
         .drawingFile(document.jobId, req.operator.scope?.workerId, document.id);
     }
     if (!evidenceStorage) throw evidenceStorageInitError || new EvidenceStorageError('storage_unavailable', 'Evidence storage is unavailable.');
-    const evidence = await evidenceStorage.read(document.storageRef);
+    const expectedChecksum = String(
+      document.data?.sourceDocumentChecksum
+      || document.data?.analysis?.upload?.sha256
+      || document.data?.contentHash
+      || ''
+    ).trim().toLowerCase();
+    const evidence = await evidenceStorage.read(document.storageRef, {
+      maxBytes: maxUploadBytes,
+      expectedSize: document.sizeBytes > 0 ? document.sizeBytes : undefined,
+      expectedSha256: expectedChecksum || undefined
+    });
     if (authorizedFieldDrawing) {
       const current = new FieldWorkPack(operatingLedger)
         .drawingFile(document.jobId, req.operator.scope.workerId, document.id);
@@ -3508,12 +3518,6 @@ app.get('/api/ledger/documents/:id/content', async (req, res) => {
         throw Object.assign(new Error('The authorized field drawing changed during retrieval.'), { statusCode: 409, code: 'field_drawing_changed_during_retrieval' });
       }
     }
-    const expectedChecksum = String(
-      document.data?.sourceDocumentChecksum
-      || document.data?.analysis?.upload?.sha256
-      || document.data?.contentHash
-      || ''
-    ).trim().toLowerCase();
     if (expectedChecksum) {
       const actualChecksum = crypto.createHash('sha256').update(evidence).digest('hex');
       if (actualChecksum !== expectedChecksum) {
@@ -3551,7 +3555,11 @@ app.get('/api/ledger/opportunity-evidence/:id/content', async (req, res) => {
       return sendError(req, res, 409, 'opportunity_evidence_content_missing', 'This evidence record has no retained private file and checksum.');
     }
     if (!evidenceStorage) throw evidenceStorageInitError || new EvidenceStorageError('storage_unavailable', 'Evidence storage is unavailable.');
-    const evidence = await evidenceStorage.read(retained.storageRef);
+    const evidence = await evidenceStorage.read(retained.storageRef, {
+      maxBytes: maxUploadBytes,
+      expectedSize: retained.sizeBytes > 0 ? retained.sizeBytes : undefined,
+      expectedSha256: retained.contentHash
+    });
     const actualChecksum = crypto.createHash('sha256').update(evidence).digest('hex');
     if (actualChecksum !== retained.contentHash) {
       const error = new Error('The retained opportunity evidence bytes no longer match the upload checksum.');
@@ -3784,7 +3792,11 @@ app.get('/api/ledger/jobs/:jobId/work-pack/drawings/:drawingId/content', async (
     if (!workerId || (req.operator?.role === 'field_worker' && req.query.workerId && req.query.workerId !== workerId)) throw Object.assign(new Error('A matching named worker is required.'), { statusCode: 403 });
     if (!/^[a-f0-9]{64}$/.test(req.query.sourceHash || '')) throw Object.assign(new Error('The downloaded work-pack source hash is required.'), { statusCode: 400 });
     const retained = service.drawingFile(req.params.jobId, workerId, req.params.drawingId, req.query.sourceHash);
-    const bytes = await evidenceStorage.read(retained.document.storageRef);
+    const bytes = await evidenceStorage.read(retained.document.storageRef, {
+      maxBytes: 8 * 1024 * 1024,
+      expectedSize: retained.document.sizeBytes,
+      expectedSha256: retained.sha256
+    });
     const current = service.drawingFile(req.params.jobId, workerId, req.params.drawingId, req.query.sourceHash);
     if (bytes.length !== current.document.sizeBytes || bytes.length > 8 * 1024 * 1024 || bytes.subarray(0, 5).toString() !== '%PDF-'
       || crypto.createHash('sha256').update(bytes).digest('hex') !== current.sha256) throw Object.assign(new Error('Drawing file integrity verification failed.'), { statusCode: 409 });
@@ -3801,7 +3813,11 @@ app.get('/api/ledger/jobs/:jobId/work-pack/sds/:sdsSheetId/content', async (req,
     if (!workerId || (req.operator?.role === 'field_worker' && req.query.workerId && req.query.workerId !== workerId)) throw Object.assign(new Error('A matching named worker is required.'), { statusCode: 403 });
     if (!/^[a-f0-9]{64}$/.test(req.query.sourceHash || '')) throw Object.assign(new Error('The downloaded work-pack source hash is required.'), { statusCode: 400 });
     const retained = service.sdsFile(req.params.jobId, workerId, req.params.sdsSheetId, req.query.sourceHash);
-    const bytes = await evidenceStorage.read(retained.document.storageRef);
+    const bytes = await evidenceStorage.read(retained.document.storageRef, {
+      maxBytes: 8 * 1024 * 1024,
+      expectedSize: retained.document.sizeBytes,
+      expectedSha256: retained.sha256
+    });
     const current = service.sdsFile(req.params.jobId, workerId, req.params.sdsSheetId, req.query.sourceHash);
     if (bytes.length !== current.document.sizeBytes || bytes.length > 8 * 1024 * 1024 || bytes.subarray(0, 5).toString() !== '%PDF-'
       || crypto.createHash('sha256').update(bytes).digest('hex') !== current.sha256) throw Object.assign(new Error('SDS file integrity verification failed.'), { statusCode: 409 });
@@ -3818,7 +3834,11 @@ app.get('/api/ledger/jobs/:jobId/work-pack/submittals/:submittalId/documents/:do
     if (!workerId || (req.operator?.role === 'field_worker' && req.query.workerId && req.query.workerId !== workerId)) throw Object.assign(new Error('A matching named worker is required.'), { statusCode: 403 });
     if (!/^[a-f0-9]{64}$/.test(req.query.sourceHash || '')) throw Object.assign(new Error('The downloaded work-pack source hash is required.'), { statusCode: 400 });
     const retained = service.submittalFile(req.params.jobId, workerId, req.params.submittalId, req.params.documentId, req.query.sourceHash);
-    const bytes = await evidenceStorage.read(retained.document.storageRef);
+    const bytes = await evidenceStorage.read(retained.document.storageRef, {
+      maxBytes: 8 * 1024 * 1024,
+      expectedSize: retained.document.sizeBytes,
+      expectedSha256: retained.sha256
+    });
     const current = service.submittalFile(req.params.jobId, workerId, req.params.submittalId, req.params.documentId, req.query.sourceHash);
     if (bytes.length !== current.document.sizeBytes || bytes.length > 8 * 1024 * 1024 || bytes.subarray(0, 5).toString() !== '%PDF-'
       || crypto.createHash('sha256').update(bytes).digest('hex') !== current.sha256) throw Object.assign(new Error('Submittal file integrity verification failed.'), { statusCode: 409 });
@@ -6561,7 +6581,11 @@ app.post('/api/client-portal/deliveries/:offerId/responses', requireClientPortal
 }), 201));
 const readConversationPhoto = async (accessId, messageId) => {
   const retained = conversationRuntime.chat.attachment(accessId, messageId);
-  const bytes = await evidenceStorage.read(retained.document.storageRef);
+  const bytes = await evidenceStorage.read(retained.document.storageRef, {
+    maxBytes: 5 * 1024 * 1024,
+    expectedSize: retained.document.sizeBytes,
+    expectedSha256: retained.sha256
+  });
   if (crypto.createHash('sha256').update(bytes).digest('hex') !== retained.sha256) throw new UploadRequestError(409, 'photo_integrity_failed', 'Photo integrity check failed.');
   return bytes;
 };
@@ -6608,7 +6632,11 @@ const whatsappChannel = registerWhatsAppWebhook(whatsappWebhookRouter, {
   },
   async readPhoto(accessId, messageId) {
     const retained = conversationRuntime.chat.attachment(accessId, messageId);
-    const bytes = await evidenceStorage.read(retained.document.storageRef);
+    const bytes = await evidenceStorage.read(retained.document.storageRef, {
+      maxBytes: maxUploadBytes,
+      expectedSize: retained.document.sizeBytes,
+      expectedSha256: retained.sha256
+    });
     if (crypto.createHash('sha256').update(bytes).digest('hex') !== retained.sha256) throw new UploadRequestError(409, 'photo_integrity_failed', 'Photo integrity check failed.');
     return { bytes, mimeType: retained.document.mimeType, filename: retained.document.filename };
   }

@@ -21,6 +21,9 @@ test('local evidence storage retains files under the configured private root', a
   assert.match(stored.storageRef, /^data\/uploads\//);
   assert.equal(stored.sha256, crypto.createHash('sha256').update(Buffer.from([0xff, 0xd8, 0xff, 0xe0])).digest('hex'));
   assert.deepEqual(await storage.read(stored.storageRef), Buffer.from([0xff, 0xd8, 0xff, 0xe0]));
+  assert.deepEqual(await storage.read(stored.storageRef, {
+    maxBytes: 4, expectedSize: 4, expectedSha256: stored.sha256
+  }), Buffer.from([0xff, 0xd8, 0xff, 0xe0]));
   const verification = await storage.verify();
   assert.equal(verification.ready, true);
   assert.equal(verification.mode, 'local');
@@ -28,6 +31,18 @@ test('local evidence storage retains files under the configured private root', a
   assert.equal(await storage.remove(stored.storageRef), false);
   await assert.rejects(() => storage.read('../outside.jpg'), error => error instanceof EvidenceStorageError && error.code === 'evidence_not_available');
   await assert.rejects(() => storage.remove('../outside.jpg'), error => error instanceof EvidenceStorageError && error.code === 'invalid_storage_reference');
+});
+
+test('local evidence rejects growth beyond its retained ledger size before reading it', async t => {
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'contractor-ai-storage-growth-'));
+  const rootDir = path.join(projectRoot, 'uploads');
+  const storage = new LocalEvidenceStorage({ rootDir, projectRoot });
+  const stored = await storage.store({ originalName: 'proof.bin', mimeType: 'application/octet-stream', size: 4, buffer: Buffer.from('data') });
+  t.after(() => fs.rmSync(projectRoot, { recursive: true, force: true }));
+  await fs.promises.appendFile(path.join(rootDir, stored.filename), Buffer.from('unexpected'));
+  await assert.rejects(() => storage.read(stored.storageRef, {
+    maxBytes: 4, expectedSize: 4, expectedSha256: stored.sha256
+  }), error => error instanceof EvidenceStorageError && error.code === 'evidence_response_too_large');
 });
 
 test('S3 evidence storage signs private object requests and requires full configuration', async () => {
@@ -138,6 +153,102 @@ test('S3 read-after-write rejects oversized provider responses before buffering 
     () => storage.store({ originalName: 'proof.bin', mimeType: 'application/octet-stream', size: 4, buffer: Buffer.from('data') }),
     error => error instanceof EvidenceStorageError && error.code === 'evidence_response_too_large'
   );
+});
+
+test('S3 evidence reads validate declared size and abort chunked overruns incrementally', async () => {
+  const payload = Buffer.from('good');
+  const digest = crypto.createHash('sha256').update(payload).digest('hex');
+  const verified = new S3EvidenceStorage({
+    endpoint: 'https://s3.eu-central-1.example.test',
+    bucket: 'contractor-private',
+    region: 'eu-central-1',
+    accessKeyId: 'test-access',
+    secretAccessKey: 'test-secret',
+    fetchFn: async () => new Response(payload)
+  });
+  assert.deepEqual(await verified.read('s3://contractor-private/contractor-ai/evidence/proof.jpg', {
+    maxBytes: 16, expectedSize: payload.length, expectedSha256: digest
+  }), payload);
+  await assert.rejects(() => verified.read('s3://contractor-private/contractor-ai/evidence/proof.jpg', {
+    maxBytes: 16, expectedSize: payload.length, expectedSha256: '0'.repeat(64)
+  }), error => error instanceof EvidenceStorageError && error.code === 'evidence_integrity_failed');
+
+  let declaredBodyReads = 0;
+  const declaredMismatch = new S3EvidenceStorage({
+    endpoint: 'https://s3.eu-central-1.example.test',
+    bucket: 'contractor-private',
+    region: 'eu-central-1',
+    accessKeyId: 'test-access',
+    secretAccessKey: 'test-secret',
+    fetchFn: async () => ({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-length': '3' }),
+      body: new ReadableStream({ pull(controller) { declaredBodyReads += 1; controller.enqueue(payload); controller.close(); } }, { highWaterMark: 0 })
+    })
+  });
+  await assert.rejects(() => declaredMismatch.read('s3://contractor-private/contractor-ai/evidence/proof.jpg', {
+    maxBytes: 16, expectedSize: payload.length, expectedSha256: digest
+  }), error => error instanceof EvidenceStorageError && error.code === 'evidence_integrity_failed');
+  assert.equal(declaredBodyReads, 0, 'A false declared length must be rejected before the body is read.');
+
+  let cancelled = false;
+  const chunkedOverrun = new S3EvidenceStorage({
+    endpoint: 'https://s3.eu-central-1.example.test',
+    bucket: 'contractor-private',
+    region: 'eu-central-1',
+    accessKeyId: 'test-access',
+    secretAccessKey: 'test-secret',
+    fetchFn: async () => new Response(new ReadableStream({
+      start(controller) { controller.enqueue(Buffer.from('1234')); controller.enqueue(Buffer.from('5678')); },
+      cancel() { cancelled = true; }
+    }))
+  });
+  await assert.rejects(() => chunkedOverrun.read('s3://contractor-private/contractor-ai/evidence/proof.jpg', {
+    maxBytes: 16, expectedSize: 4
+  }), error => error instanceof EvidenceStorageError && error.code === 'evidence_response_too_large');
+  assert.equal(cancelled, true, 'An oversized chunked response must cancel its stream.');
+});
+
+test('S3 evidence read aborts a stalled body at the configured timeout', async () => {
+  const storage = new S3EvidenceStorage({
+    endpoint: 'https://s3.eu-central-1.example.test',
+    bucket: 'contractor-private',
+    region: 'eu-central-1',
+    accessKeyId: 'test-access',
+    secretAccessKey: 'test-secret',
+    timeoutMs: 500,
+    fetchFn: async (_url, options) => {
+      let streamController;
+      const body = new ReadableStream({ start(controller) { streamController = controller; } });
+      options.signal.addEventListener('abort', () => {
+        const error = new Error('aborted');
+        error.name = 'AbortError';
+        streamController.error(error);
+      }, { once: true });
+      return { ok: true, status: 200, headers: new Headers(), body };
+    }
+  });
+  await assert.rejects(() => storage.read('s3://contractor-private/contractor-ai/evidence/proof.jpg', { maxBytes: 8 }),
+    error => error instanceof EvidenceStorageError && error.code === 'object_storage_timeout');
+});
+
+test('S3 readiness rejects an oversized marker response and still attempts cleanup', async () => {
+  const methods = [];
+  const storage = new S3EvidenceStorage({
+    endpoint: 'https://s3.eu-central-1.example.test',
+    bucket: 'contractor-private',
+    region: 'eu-central-1',
+    accessKeyId: 'test-access',
+    secretAccessKey: 'test-secret',
+    fetchFn: async (_url, options) => {
+      methods.push(options.method);
+      if (options.method === 'GET') return new Response('x'.repeat(256));
+      return new Response(null, { status: 200 });
+    }
+  });
+  await assert.rejects(() => storage.verify(), error => error instanceof EvidenceStorageError && error.code === 'evidence_response_too_large');
+  assert.deepEqual(methods, ['PUT', 'GET', 'DELETE']);
 });
 
 test('S3 exact retry does not create another object version', async () => {

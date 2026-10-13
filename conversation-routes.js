@@ -42,7 +42,11 @@ function registerConversationRoutes(app, { ledger, requireClientPortalToken, act
     const access = resolve(req);
     if (req.query.preview !== undefined && req.query.preview !== '1') fail('Invalid photo preview variant.', 400);
     const retained = chat.attachment(access.id, req.params.messageId, { client: isClient });
-    const bytes = await evidenceStorage.read(retained.document.storageRef);
+    const bytes = await evidenceStorage.read(retained.document.storageRef, {
+      maxBytes: 5 * 1024 * 1024,
+      expectedSize: retained.document.sizeBytes,
+      expectedSha256: retained.sha256
+    });
     if (createHash('sha256').update(bytes).digest('hex') !== retained.sha256) fail('Photo checksum does not match.', 409);
     const preview = req.query.preview === '1' ? await imageProcessor.preview(bytes, retained.document.mimeType) : null;
     resolve(req);

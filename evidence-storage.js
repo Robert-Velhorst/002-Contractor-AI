@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const { Readable } = require('node:stream');
 
 const STORAGE_READINESS_PAYLOAD = Buffer.from('contractor-ai-storage-readiness/v1', 'utf8');
 
@@ -107,12 +108,15 @@ class LocalEvidenceStorage {
     };
   }
 
-  async read(storageRef) {
+  async read(storageRef, options = {}) {
     const target = path.resolve(this.projectRoot, String(storageRef || ''));
     if (!target.startsWith(`${this.rootDir}${path.sep}`) || !fs.existsSync(target)) {
       throw new EvidenceStorageError('evidence_not_available', 'The retained evidence file is not available from this runtime.', 404);
     }
-    return fs.promises.readFile(target);
+    const { maxBytes, expectedSize, expectedSha256 } = normalizeReadOptions(options, 10 * 1024 * 1024);
+    const stat = await fs.promises.stat(target);
+    assertDeclaredSize(stat.size, maxBytes, expectedSize);
+    return readStreamBounded(fs.createReadStream(target), { maxBytes, expectedSize, expectedSha256 });
   }
 
   async remove(storageRef) {
@@ -170,7 +174,9 @@ class S3EvidenceStorage {
     return `${this.prefix}/${month}/${storageName}`;
   }
 
-  async request(method, key, body = null, contentType = null, { maxResponseBytes = this.maxReadBytes, allowMissing = false } = {}) {
+  async request(method, key, body = null, contentType = null, {
+    maxResponseBytes = this.maxReadBytes, allowMissing = false, expectedSize = null, expectedSha256 = null
+  } = {}) {
     const objectKey = normalizeS3ObjectKey(key);
     const timestamp = new Date().toISOString().replace(/[:-]|\.\d{3}/g, '');
     const dateStamp = timestamp.slice(0, 8);
@@ -214,7 +220,7 @@ class S3EvidenceStorage {
       }
       return {
         response,
-        body: method === 'GET' ? await readResponseBounded(response, maxResponseBytes) : null,
+        body: method === 'GET' ? await readResponseBounded(response, { maxBytes: maxResponseBytes, expectedSize, expectedSha256 }) : null,
         missing: false
       };
     } catch (error) {
@@ -268,8 +274,13 @@ class S3EvidenceStorage {
     };
   }
 
-  async read(storageRef) {
-    const result = await this.request('GET', this.keyFromStorageRef(storageRef), null, null, { maxResponseBytes: this.maxReadBytes });
+  async read(storageRef, options = {}) {
+    const limits = normalizeReadOptions(options, this.maxReadBytes);
+    const result = await this.request('GET', this.keyFromStorageRef(storageRef), null, null, {
+      maxResponseBytes: limits.maxBytes,
+      expectedSize: limits.expectedSize,
+      expectedSha256: limits.expectedSha256
+    });
     return result.body;
   }
 
@@ -317,33 +328,61 @@ class S3EvidenceStorage {
   }
 }
 
-async function readResponseBounded(response, maxBytes) {
-  const limit = Number(maxBytes);
-  if (!Number.isSafeInteger(limit) || limit < 0) {
-    throw new EvidenceStorageError('invalid_storage_read_limit', 'Evidence read requires a non-negative byte limit.');
+function normalizeReadOptions(options, defaultMaxBytes) {
+  const maxBytes = options.maxBytes === undefined ? defaultMaxBytes : Number(options.maxBytes);
+  const expectedSize = options.expectedSize === undefined || options.expectedSize === null
+    ? null : Number(options.expectedSize);
+  const expectedSha256 = options.expectedSha256 ? String(options.expectedSha256).trim().toLowerCase() : null;
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) {
+    throw new EvidenceStorageError('invalid_storage_read_limit', 'Evidence read requires valid bounded size and checksum constraints.');
   }
+  if (expectedSize !== null && (!Number.isSafeInteger(expectedSize) || expectedSize < 0)) {
+    throw new EvidenceStorageError('evidence_integrity_failed', 'Evidence ledger size metadata is invalid.', 409);
+  }
+  if (expectedSize !== null && expectedSize > maxBytes) {
+    throw new EvidenceStorageError('evidence_response_too_large', 'Evidence ledger size exceeds the permitted download boundary.', 413);
+  }
+  if (expectedSha256 && !/^[a-f0-9]{64}$/.test(expectedSha256)) {
+    throw new EvidenceStorageError('evidence_integrity_failed', 'Evidence ledger checksum metadata is invalid.', 409);
+  }
+  return { maxBytes, expectedSize, expectedSha256 };
+}
+
+function assertDeclaredSize(size, maxBytes, expectedSize) {
+  if (size > maxBytes || (expectedSize !== null && size !== expectedSize)) {
+    throw new EvidenceStorageError(size > maxBytes ? 'evidence_response_too_large' : 'evidence_integrity_failed',
+      'Retained evidence size does not match the bounded ledger record.', size > maxBytes ? 413 : 409);
+  }
+}
+
+async function readResponseBounded(response, limits) {
   const declaredLength = response.headers?.get('content-length');
-  if (declaredLength && /^\d+$/.test(declaredLength) && Number(declaredLength) > limit) {
-    throw new EvidenceStorageError('evidence_response_too_large', 'Object storage returned more bytes than the verified upload allows.');
+  if (declaredLength && /^\d+$/.test(declaredLength)) {
+    const size = Number(declaredLength);
+    assertDeclaredSize(size, limits.maxBytes, limits.expectedSize);
   }
-  if (!response.body) return Buffer.alloc(0);
-  const reader = response.body.getReader();
+  return readStreamBounded(response.body || Readable.from([]), limits);
+}
+
+async function readStreamBounded(stream, { maxBytes, expectedSize, expectedSha256 }) {
   const chunks = [];
+  const hash = crypto.createHash('sha256');
   let size = 0;
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      const chunk = Buffer.from(value);
-      size += chunk.length;
-      if (size > limit) {
-        await reader.cancel().catch(() => {});
-        throw new EvidenceStorageError('evidence_response_too_large', 'Object storage returned more bytes than the verified upload allows.');
-      }
-      chunks.push(chunk);
+  for await (const value of stream) {
+    const chunk = Buffer.from(value);
+    size += chunk.length;
+    if (size > maxBytes || (expectedSize !== null && size > expectedSize)) {
+      stream.destroy?.();
+      throw new EvidenceStorageError('evidence_response_too_large', 'Evidence provider returned more bytes than the verified upload allows.', 413);
     }
-  } finally {
-    reader.releaseLock();
+    chunks.push(chunk);
+    hash.update(chunk);
+  }
+  if (expectedSize !== null && size !== expectedSize) {
+    throw new EvidenceStorageError('evidence_integrity_failed', 'Evidence byte count does not match the retained ledger record.', 409);
+  }
+  if (expectedSha256 && hash.digest('hex') !== expectedSha256) {
+    throw new EvidenceStorageError('evidence_integrity_failed', 'Evidence checksum does not match the retained ledger record.', 409);
   }
   return Buffer.concat(chunks, size);
 }
