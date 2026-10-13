@@ -101,9 +101,9 @@ Source tests do not substitute for that proof.
 
 ## Build prerequisites
 
-Use JDK 17+, Android platform/build tools 35 and AGP 8.9.2. Review Google's SDK
+Use JDK 17+, Android SDK Platform 35, Android Build Tools 36.0.0 and AGP 9.4.1. Review Google's SDK
 terms through its official installation flow; neither this repository nor its
-build script accepts them. The checked-in Gradle 8.11.1 wrapper downloads the
+build script accepts them. AGP 9.4.1 requires Gradle 9.6.0 or newer. The checked-in Gradle 9.8.1 wrapper downloads the
 official binary distribution and verifies its pinned SHA-256 checksum. The first
 build therefore needs internet access, but a separate Gradle installation is not
 required. The wrapper itself is pinned to Gradle's published JAR checksum.
@@ -145,7 +145,9 @@ or process destruction. Screenshots are blocked with `FLAG_SECURE`, including in
 debug builds; UI-tree tests are not proof of visual rendering.
 
 Official references: [build from the command line](https://developer.android.com/build/building-cmdline),
-[AGP 8.9 prerequisites](https://developer.android.com/build/releases/agp-8-9-0-release-notes),
+[AGP 9.4 prerequisites](https://developer.android.com/build/releases/agp-9-4-0-release-notes),
+[AGP and Gradle compatibility](https://developer.android.com/build/releases/about-agp#updating-gradle),
+[Gradle 9.8.1 checksums](https://gradle.org/release-checksums/),
 [Jetpack Core releases](https://developer.android.com/jetpack/androidx/releases/core),
 [secure FileProvider sharing](https://developer.android.com/reference/androidx/core/content/FileProvider),
 [camera capture intent](https://developer.android.com/reference/android/provider/MediaStore#ACTION_IMAGE_CAPTURE),
