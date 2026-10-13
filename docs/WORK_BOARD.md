@@ -309,7 +309,11 @@ This remains separate from permission to start work and sends no external messag
 
 ## Interfaces
 
-- Public entry points: `POST /api/work-board/register`, `/login`, `/logout`.
+- Public configuration: `GET /api/work-board/config` returns cache-disabled
+  `enabled` and `registrationEnabled` flags so the worker UI can fail closed.
+  Account creation uses `POST /api/work-board/register` only when the separate
+  registration setting is enabled; `POST /login` and `/logout` remain available
+  when the board itself is enabled.
 - Worker authentication: `GET /api/work-board/me`, `/positions`;
   `GET /api/work-board/positions/:id/enrollment-check` returns a read-only,
   personal eligibility snapshot for role, mandatory qualifications, active
@@ -368,8 +372,13 @@ new workflow has not yet been demonstrated.
 
 The work board defaults on only in non-production local mode. Hosted/production
 mode requires explicit `CONTRACTOR_AI_WORK_BOARD_ENABLED=true`; setting it to
-`false` disables the API locally as well. Leave production disabled until the
-privacy, recovery and deployment limitations below are resolved and accepted.
+`false` disables the API locally as well. Public self-registration is controlled
+separately by `CONTRACTOR_AI_WORK_BOARD_REGISTRATION_ENABLED` and defaults to
+`false` in production, even when the work board is enabled. This allows existing
+worker accounts to sign in without opening public account creation. Registration
+is explicitly opt-in and does not add email verification or password recovery.
+Leave production disabled until the privacy, recovery and deployment limitations
+below are resolved and accepted.
 
 Intake decomposition is currently **suggestions from retained tasks**, not a new
 AI scope-estimation engine. Missing trades, dates, rates and resource information

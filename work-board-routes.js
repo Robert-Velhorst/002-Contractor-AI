@@ -2,7 +2,14 @@ const { WorkBoard, fail } = require('./work-board');
 const { FieldWorkPack } = require('./field-work-pack');
 const isWorkBoardPath = path => path === '/api/work-board' || path.startsWith('/api/work-board/');
 
-function registerWorkBoardRoutes(app, { ledger, sendError, actor, authLimit, originAllowed, enabled = true }) {
+function resolveWorkBoardSettings({ isProduction, runtimeMode, enabled: enabledSetting, registrationEnabled: registrationSetting }) {
+  const localDefault = !isProduction && runtimeMode === 'local';
+  const enabled = enabledSetting === undefined ? localDefault : enabledSetting === 'true';
+  const registrationEnabled = registrationSetting === undefined ? localDefault : registrationSetting === 'true';
+  return { enabled, registrationEnabled: enabled && registrationEnabled };
+}
+
+function registerWorkBoardRoutes(app, { ledger, sendError, actor, authLimit, originAllowed, enabled = true, registrationEnabled = enabled }) {
   const board = new WorkBoard(ledger), packs = new FieldWorkPack(ledger);
   const token = req => String(req.headers.authorization || '').replace(/^Bearer /, '');
   const run = fn => async (req, res) => {
@@ -30,7 +37,14 @@ function registerWorkBoardRoutes(app, { ledger, sendError, actor, authLimit, ori
     if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method) && (!req.is('application/json') || !originAllowed(req))) return sendError(req, res, 403, 'work_board_request_forbidden', 'Gebruik een vertrouwde aanvraag met JSON.');
     next();
   });
-  app.post('/api/work-board/register', authLimit, run(async req => ({ account: await board.register(req.body) })));
+  app.get('/api/work-board/config', (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ success: true, enabled: Boolean(enabled), registrationEnabled: Boolean(enabled && registrationEnabled) });
+  });
+  app.post('/api/work-board/register', authLimit, run(async req => {
+    if (!registrationEnabled) fail('Registratie van nieuwe uitvoerenden is niet geopend.', 503, { code: 'work_board_registration_disabled' });
+    return { account: await board.register(req.body) };
+  }));
   app.post('/api/work-board/login', authLimit, run(req => board.login(req.body)));
   app.post('/api/work-board/logout', run(req => { board.logout(token(req)); return {}; }));
   app.get('/api/work-board/me', run(req => { const self = account(req); const { admission: _admission, ...safe } = self; const applications = board.applications(self.id).map(row => ({ ...row, position: board.workerApplicationPosition(row) })); return { account: safe, applications, standbyCallouts: self.status === 'admitted' && self.workerId ? board.workerStandbyCallouts(self.workerId) : [], notifications: board.workerNotifications(self.id) }; }));
@@ -198,4 +212,4 @@ function registerWorkBoardRoutes(app, { ledger, sendError, actor, authLimit, ori
   app.post('/api/ledger/work-board/positions/:id/close', run(req => { owner(req); return { position: board.close(req.params.id, actor(req)) }; }));
   return board;
 }
-module.exports = { registerWorkBoardRoutes, isWorkBoardPath };
+module.exports = { registerWorkBoardRoutes, isWorkBoardPath, resolveWorkBoardSettings };

@@ -13,6 +13,8 @@ test('new worker registers, receives admission and self-enrolls in a published j
   expect(taskResponse.ok()).toBeTruthy();
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto('/work-board.html');
+  const workerConfig = await request.get('/api/work-board/config');
+  expect(await workerConfig.json()).toMatchObject({ enabled: true, registrationEnabled: true });
   await page.getByRole('button', { name: 'Registreren', exact: true }).click();
   await page.getByLabel('Naam', { exact: true }).fill(`Worker ${marker}`);
   await page.getByLabel('Telefoon', { exact: true }).fill('0612345678');

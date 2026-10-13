@@ -30,6 +30,8 @@ export default function WorkBoard() {
   const [token, setToken] = useState(() => sessionStorage.getItem('contractor.work-board.session') || '')
   const [identity, setIdentity] = useState(null), [identitySignedIn, setIdentitySignedIn] = useState(false)
   const [accessChecked, setAccessChecked] = useState(false)
+  const [registrationEnabled, setRegistrationEnabled] = useState(false)
+  const [registrationConfigLoaded, setRegistrationConfigLoaded] = useState(false)
   const [mode, setMode] = useState('login'), [self, setSelf] = useState(null), [positions, setPositions] = useState([]), [pack, setPack] = useState(null)
   const [positionChecks, setPositionChecks] = useState({})
   const [positionSearch, setPositionSearch] = useState('')
@@ -115,6 +117,25 @@ export default function WorkBoard() {
     setIdentity(result.identity || null); setIdentitySignedIn(result.authentication?.method === 'identity' && result.operator?.role === 'field_worker')
     if (result.authentication?.method === 'identity') { sessionStorage.removeItem('contractor.work-board.session'); setToken('') }
   }).catch(reason => { if (live) setError(reason.message) }).finally(() => { if (live) setAccessChecked(true) }); return () => { live = false } }, [])
+  useEffect(() => {
+    if (!accessChecked || token || identitySignedIn) return undefined
+    let live = true
+    companyFetch('/api/work-board/config').then(async response => {
+      if (!response.ok) throw new Error('Werkbordinstellingen niet beschikbaar.')
+      return response.json()
+    }).then(result => {
+      if (live) {
+        setRegistrationEnabled(result.enabled === true && result.registrationEnabled === true)
+        setRegistrationConfigLoaded(true)
+      }
+    }).catch(() => {
+      if (live) {
+        setRegistrationEnabled(false)
+        setRegistrationConfigLoaded(true)
+      }
+    })
+    return () => { live = false }
+  }, [accessChecked, identitySignedIn, token])
   useEffect(() => { if (!accessChecked || !token && !identitySignedIn) return; let live = true; Promise.all([api('/me'), api('/positions')]).then(async ([me, board]) => { const inbox = me.notifications || { notifications: [], unreadCount: 0 }; const currentAvailability = me.account.status === 'admitted' ? (await api('/availability')).availability || { periods: [], conflicts: [] } : { periods: [], conflicts: [] }; if (live) { setSelf(me); setPositions(board.positions); setNotifications(inbox.notifications || []); setUnreadNotifications(inbox.unreadCount || 0); setAvailability(currentAvailability) } }).catch(reason => { if (live) { setError(reason.message); setSelf(null); setPack(null); setIdentitySignedIn(false); resetAvailabilityForm() } }); return () => { live = false } }, [api, token, identitySignedIn, accessChecked, resetAvailabilityForm])
   useEffect(() => { boardSnapshot.current = { self, positions } }, [self, positions])
   useEffect(() => {
@@ -222,7 +243,8 @@ export default function WorkBoard() {
         </li>)}</ol>
       </section>}
       {!token && !identitySignedIn ? <section className="wb-auth"><h1>{mode === 'login' ? 'Inloggen' : 'Aanmelden als uitvoerende'}</h1>
-        <div className="wb-tabs" role="group" aria-label="Account"><button aria-pressed={mode === 'login'} onClick={() => setMode('login')}>Inloggen</button><button aria-pressed={mode === 'register'} onClick={() => setMode('register')}>Registreren</button></div>
+        <div className="wb-tabs" role="group" aria-label="Account"><button aria-pressed={mode === 'login'} onClick={() => setMode('login')}>Inloggen</button>{registrationEnabled && <button aria-pressed={mode === 'register'} onClick={() => setMode('register')}>Registreren</button>}</div>
+        {registrationConfigLoaded && !registrationEnabled && <p className="wb-note" role="status">Registratie van nieuwe uitvoerenden is momenteel gesloten. Neem contact op met de aannemer.</p>}
         <form onSubmit={event => { event.preventDefault(); void act(async () => {
           if (mode === 'register') { await api('/register', { ...form, skills: form.skills.split(',').map(value => value.trim()).filter(Boolean) }); setMode('login'); setNotice('Aanmelding ontvangen. Log in om posities te bekijken. Toelating door de aannemer is nodig voor plaatsing.'); setForm(current => ({ ...current, password: '' })); return }
           const result = await api('/login', { email: form.email, password: form.password }); sessionStorage.setItem('contractor.work-board.session', result.token); setToken(result.token); setForm(current => ({ ...current, password: '' }))

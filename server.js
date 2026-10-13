@@ -6509,12 +6509,15 @@ app.post('/api/ledger/jobs/:id/client-feedback', (req, res) => {
   }), 201);
 });
 
-require('./work-board-routes').registerWorkBoardRoutes(app, {
+const workBoardRoutes = require('./work-board-routes');
+workBoardRoutes.registerWorkBoardRoutes(app, {
   ledger: operatingLedger, sendError, actor: trustedRequestActor,
   authLimit: rateLimitAuthLogin, originAllowed: authenticationOriginAllowed,
-  enabled: process.env.CONTRACTOR_AI_WORK_BOARD_ENABLED === undefined
-    ? !isProduction && runtimeMode === 'local'
-    : process.env.CONTRACTOR_AI_WORK_BOARD_ENABLED === 'true'
+  ...workBoardRoutes.resolveWorkBoardSettings({
+    isProduction, runtimeMode,
+    enabled: process.env.CONTRACTOR_AI_WORK_BOARD_ENABLED,
+    registrationEnabled: process.env.CONTRACTOR_AI_WORK_BOARD_REGISTRATION_ENABLED
+  })
 });
 const conversationRuntime = registerConversationRoutes(app, {
   ledger: operatingLedger, requireClientPortalToken, actor: trustedRequestActor,
