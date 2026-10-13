@@ -769,7 +769,10 @@ test('hosted readiness uses the PostgreSQL ledger adapter when durable services 
   const originalFetch = global.fetch;
   global.fetch = async (input, options = {}) => {
     if (String(input).startsWith(storageEndpoint)) {
-      const body = options.method === 'GET' ? 'contractor-ai-storage-readiness/v1' : null;
+      const url = new URL(String(input));
+      const body = url.searchParams.has('versions')
+        ? '<ListVersionsResult><IsTruncated>false</IsTruncated></ListVersionsResult>'
+        : options.method === 'GET' ? 'contractor-ai-storage-readiness/v1' : null;
       return new Response(body, { status: 200 });
     }
     return originalFetch(input, options);

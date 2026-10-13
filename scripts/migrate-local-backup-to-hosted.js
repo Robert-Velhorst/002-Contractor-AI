@@ -437,6 +437,7 @@ async function insertRows(client, table, columns, rows) {
 }
 
 const MIGRATION_SEED_COLUMNS = {
+  evidence_storage_quota_lock: ['id'],
   work_context_control: ['id', 'revision'],
   inspection_templates: [
     'id',
@@ -460,6 +461,7 @@ async function prepareMigrationSeedTable(client, table, sourceIncludesTable) {
   if (!destinationRows.length) return false;
   const expectedRows = table === 'inspection_templates'
     ? builtInInspectionTemplateRows().map(row => Object.fromEntries(columns.map(column => [column, row[column]])))
+    : table === 'evidence_storage_quota_lock' ? [{ id: 1 }]
     : table === 'work_context_control' ? [{ id: 'current', revision: 0 }] : [];
   const canonical = destinationRows.length === expectedRows.length
     && tableDigest(table, columns, destinationRows) === tableDigest(table, columns, expectedRows);

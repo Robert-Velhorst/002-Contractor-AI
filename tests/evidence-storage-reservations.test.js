@@ -10,7 +10,7 @@ const { ContractorOperatingLedger } = require('../operating-ledger');
 const { LocalEvidenceStorage } = require('../evidence-storage');
 const { postgresTestDatabaseUrl, connectVerifiedPostgresClient } = require('./postgres-test-database');
 
-const postgresConnectionString = postgresTestDatabaseUrl();
+const connectionString = postgresTestDatabaseUrl();
 
 function fixture() {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'contractor-ai-evidence-reservations-'));
@@ -198,14 +198,14 @@ test('local evidence retries resolve to one deterministic object and reject chan
 });
 
 test('PostgreSQL ledger instances share quota locks and fence stale reservation owners', {
-  skip: !postgresConnectionString
+  skip: !connectionString
 }, async t => {
-  const admin = await connectVerifiedPostgresClient(new Client({ connectionString: postgresConnectionString }));
+  const admin = await connectVerifiedPostgresClient(new Client({ connectionString }));
   const databaseName = `contractor_ai_test_evidence_${randomBytes(8).toString('hex')}`;
   let first;
   let second;
   await admin.query(`CREATE DATABASE "${databaseName}"`);
-  const databaseUrl = new URL(postgresConnectionString);
+  const databaseUrl = new URL(connectionString);
   databaseUrl.pathname = `/${databaseName}`;
   t.after(async () => {
     first?.close();
