@@ -169,14 +169,16 @@ class WhatsAppChannel {
   }
 }
 
-function registerWhatsAppWebhook(app, { ledger, rawParser, sendError, authenticationRequired, storePhoto, readPhoto, isReady = () => true, route = '/api/integrations/whatsapp/webhook' }) {
-  const channel = new WhatsAppChannel(new ClientConversation(ledger), { storePhoto, readPhoto });
+function registerWhatsAppWebhook(app, { ledger, rawParser, sendError, authenticationRequired, storePhoto, readPhoto, env = process.env, isReady = () => true, route = '/api/integrations/whatsapp/webhook' }) {
+  const channel = new WhatsAppChannel(new ClientConversation(ledger), { storePhoto, readPhoto, env });
   app.get(route, (req, res) => {
     try {
       const config = channel.config();
       if (!authenticationRequired || !config.enabled || !isReady()) fail('WhatsApp webhook is unavailable.', 503);
       if (req.query['hub.mode'] !== 'subscribe' || req.query['hub.verify_token'] !== config.verifyToken || typeof req.query['hub.challenge'] !== 'string' || req.query['hub.challenge'].length > 1000) fail('Webhook verification failed.', 403);
-      res.type('text/plain').set('X-Content-Type-Options', 'nosniff').set('Cache-Control', 'no-store').send(req.query['hub.challenge']);
+      res.status(200).set('Content-Type', 'text/plain; charset=utf-8')
+        .set('X-Content-Type-Options', 'nosniff').set('Cache-Control', 'no-store')
+        .end(req.query['hub.challenge']);
     } catch (error) { sendError(req, res, error.statusCode || 503, 'whatsapp_webhook_unavailable', error.message); }
   });
   app.post(route, rawParser, async (req, res) => {
