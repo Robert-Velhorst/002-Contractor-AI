@@ -26,10 +26,11 @@ The public repository has GitHub CodeQL default setup, dependency graph and
 automatic dependency submission, Dependabot alerts and security updates, weekly
 dependency update proposals, secret scanning with push protection, and private
 vulnerability reporting enabled. Its active `main`
-ruleset requires a pull request, current verification and CodeQL checks, resolved
-review threads, and prohibits deletion and force-pushes. It does not require an
-independent approving review because the repository currently has one maintainer;
-automated checks are not a substitute for independent review. GitHub's
+ruleset requires a pull request and up-to-date `verify`, `windows-standalone`,
+and three CodeQL language/action checks. It blocks branch deletion and force
+pushes. It does not require an approving review or resolved review threads;
+the repository currently has one maintainer, so automated checks are not a
+substitute for independent review. GitHub's
 non-provider secret patterns and provider validity checks are not currently
 enabled; do not infer those capabilities from provider-pattern scanning or push
 protection.
