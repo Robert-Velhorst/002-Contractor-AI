@@ -30,10 +30,12 @@ ruleset requires a pull request and up-to-date `verify`, `windows-standalone`,
 and three CodeQL language/action checks. It blocks branch deletion and force
 pushes. It does not require an approving review or resolved review threads;
 the repository currently has one maintainer, so automated checks are not a
-substitute for independent review. GitHub's
-non-provider secret patterns and provider validity checks are not currently
-enabled; do not infer those capabilities from provider-pattern scanning or push
-protection.
+substitute for independent review. Generic non-provider secret patterns are
+unavailable for this user-owned repository under the current GitHub plan;
+GitHub documents the feature for organization-owned repositories with GitHub
+Team and Secret Protection. Provider validity checks remain disabled because
+they send detected credentials to issuers for validation. Do not infer either
+capability from provider-pattern scanning or push protection.
 
 GitHub security alerts remain review items until a finding is fixed and a new
 scan confirms the result, or its applicability is documented with evidence.
