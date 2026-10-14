@@ -131,6 +131,7 @@ const RETIRED_PATHS = [
 ];
 
 const REQUIRED_HOSTED_ENV_KEYS = [
+  'CONTRACTOR_AI_IMAGE',
   'CONTRACTOR_AI_COMPANY_ID',
   'CONTRACTOR_AI_PUBLIC_URL',
   'CONTRACTOR_AI_HOSTING_PROVIDER',
@@ -838,12 +839,24 @@ function verifyReleaseContract(root = path.resolve(__dirname, '..')) {
 
   const hostedCompose = fs.readFileSync(path.join(root, 'docker-compose.hosted.yml'), 'utf8');
   for (const requirement of [
+    /image:\s*\$\{CONTRACTOR_AI_IMAGE:-contractor-ai:local\}/,
     /127\.0\.0\.1:/,
     /read_only:\s*true/,
     /cap_drop:\s*\n\s*- ALL/,
     /no-new-privileges:true/
   ]) {
     if (!requirement.test(hostedCompose)) failures.push(`Hosted Compose is missing release hardening: ${requirement}`);
+  }
+
+  const deploymentTarget = fs.readFileSync(path.join(root, 'DEPLOYMENT_TARGET.md'), 'utf8');
+  for (const requirement of [
+    /GHCR/i,
+    /--no-build/,
+    /rollback/i,
+    /Hetzner/i,
+    /CONTRACTOR_AI_IMAGE/
+  ]) {
+    if (!requirement.test(deploymentTarget)) failures.push(`Hetzner deployment guide is missing a required release step: ${requirement}`);
   }
 
   const workflow = fs.readFileSync(path.join(root, '.github', 'workflows', 'verify.yml'), 'utf8');

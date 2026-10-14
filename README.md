@@ -1254,7 +1254,9 @@ docker compose --env-file .env.hosted -f docker-compose.hosted.yml up --build
 Hosted Compose does not provision PostgreSQL or object storage. It runs as a
 non-root user with a read-only filesystem, dropped capabilities, disabled
 privilege escalation, and a loopback-published port. Use a restricted EU-hosted
-HTTPS ingress in front of it.
+HTTPS ingress in front of it. That `--build` command is for controlled staging;
+production must use the published GHCR release image pinned by digest, pull it,
+and start Compose with `--no-build`. Follow the [Hetzner deployment runbook](DEPLOYMENT_TARGET.md).
 
 ### Local-to-hosted migration
 
@@ -1408,6 +1410,7 @@ benchmark artifacts, and packaged releases should not be committed.
 | --- | --- |
 | [Operator runbook](docs/OPERATOR_RUNBOOK.md) | Startup, daily checks, diagnostics, safety stop, recovery, and incidents |
 | [Windows standalone](docs/WINDOWS_STANDALONE.md) | Portable Windows installation and retained data |
+| [Hetzner deployment](DEPLOYMENT_TARGET.md) | Production architecture, release-image deployment, migration, cutover, and rollback |
 | [ngrok operation](docs/NGROK.md) | Verified temporary remote-access lifecycle |
 | [EU hosting](docs/EU_HOSTING.md) | Hosted requirements, migration, recovery, and acceptance |
 | [Company environments](docs/COMPANY_ENVIRONMENTS.md) | Company, storage, session, migration and offline boundaries |
