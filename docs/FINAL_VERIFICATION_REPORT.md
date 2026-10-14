@@ -1,6 +1,34 @@
 # Final Verification Report
 
-## Current Published PR Checkpoint - 2026-10-13
+## Current Production-Readiness Checkpoint - 2026-10-14
+
+The current `main` commit is `8947fe7e18b04bd9bffdb2d59b61f45862c2c0ca`,
+which includes PR #116's release-container publication changes and PR #117's
+security hardening. PR #117's exact-head GitHub checks passed for release
+verification, lint, production build, bundle budget, frontend and Node tests,
+performance, container runtime, browser workflows, Windows standalone and
+CodeQL before it was merged.
+
+A fresh production build from the current-main-derived documentation branch
+passed `verify:bundle` with 117 assets and no failures: largest JavaScript
+370,044/600,000 bytes, largest CSS 245,894/300,000 bytes, total gzip
+700,057/725,000 bytes and Brotli 598,930/620,000 bytes. The release contract
+passed with 111 canonical paths, 12 retired paths, 19 hosted environment keys
+and 812 source files. Historical bundle failures below do not describe this
+current verifier result.
+
+This is not production acceptance. EU hosting still requires an operator-owned
+EU-region provider and DPA, HTTPS ingress, durable hosted database and object
+storage, production secret provisioning, encrypted backups and a witnessed
+restore/recovery exercise, monitoring/alert routing, and independent operator
+and field-device acceptance. Real external communication/accounting/mapping/
+calendar/banking/Peppol/remote-AI providers remain unconfigured. Additional
+dependency and documentation PRs are being retested against this `main`; their
+new exact-head checks are not yet complete. A local Docker smoke attempt timed
+out before `docker version` returned and created no image or container; the
+successful PR #117 CI container gate is the current container evidence.
+
+## Historical PR #97 Checkpoint - 2026-10-13
 
 Open draft PR [#97](https://github.com/Robert-Velhorst/002-Contractor-AI/pull/97)
 is currently at `c03c801d4616f93aca0be7eecf2c703c5799ada9`. This follow-up adds

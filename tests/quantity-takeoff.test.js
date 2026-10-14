@@ -106,6 +106,10 @@ test('draft takeoff measurements can be corrected and removed while invalid form
     error => error.code === 'takeoff_measurement_type_invalid' && error.statusCode === 400
   );
   assert.throws(
+    () => ledger.addTakeoffItem(job.id, takeoff.id, { description: ['Array description'], measurementType: 'count', count: 1, unitPrice: 1 }),
+    error => error.code === 'takeoff_item_description_invalid' && error.statusCode === 400
+  );
+  assert.throws(
     () => ledger.addTakeoffItem(job.id, takeoff.id, { description: 'Invalid WBS', measurementType: 'count', count: 1, unitPrice: 1, wbsCode: '01..20' }),
     error => error.code === 'takeoff_wbs_code_invalid' && error.statusCode === 400
   );

@@ -2,10 +2,10 @@
 
 [![Verify Contractor.AI](https://github.com/Robert-Velhorst/002-Contractor-AI/actions/workflows/verify.yml/badge.svg)](https://github.com/Robert-Velhorst/002-Contractor-AI/actions/workflows/verify.yml)
 
-Contractor.AI is a local-first operations platform for building contractors in
-the Netherlands and wider Europe. It connects office, site, and client workflows
-so teams can trace job scope, decisions, work, evidence, costs, and handover in
-one auditable system instead of coordinating them across disconnected tools.
+Contractor.AI is a local-first construction operations platform for contractors
+in the Netherlands and wider Europe. It brings the contractor's office, the
+executing crew, and the client into one auditable workflow: from incoming work
+and estimating to field execution, evidence, change control, and handover.
 
 It is not a marketing demo or a collection of disconnected prototypes. The
 product runtime is a Node.js 22 application with an Express API, a React/Vite
@@ -27,7 +27,7 @@ Contractor.AI serves three groups through connected experiences:
 | Experience | Typical work |
 | --- | --- |
 | Contractor / office | Intake, estimating, project control, approvals, workforce and resource planning, procurement, finance evidence, client updates, and closeout. |
-| Executing worker | Approved positions, assignment requirements, shared instructions, online/offline work packs, safety and quality records, progress, time, materials, and evidence. |
+| Executing worker / subcontractor | Approved positions, assignment requirements, shared instructions, online/offline work packs, safety and quality records, progress, time, materials, and evidence. |
 | Client | Scoped project conversations, shared photos and details, questions, approval-gated delivery reviews, and recorded replies or reservations. |
 
 The product links those activities to retained jobs, tasks, work packages,
@@ -57,13 +57,32 @@ adapter is not proof that an external provider is live.
 
 Contractor.AI is under active development. Local and CI verification do not by
 themselves establish hosted production readiness, regulatory compliance,
-professional certification, or customer/operator acceptance. See
-[Current Boundaries](#current-boundaries) and the
+professional certification, or customer/operator acceptance. The currently
+published version is a **release candidate**, not a stable or production-ready
+release. See [Release status](#release-status),
+[Current Boundaries](#current-boundaries), and the
 [delivery register](docs/TOTAL_SOLUTION_DELIVERY.md).
+
+## Release Status
+
+The first public package is published as **Contractor.AI 1.1.0-rc.1**. It is
+intended for evaluation and local installation; it is not a claim that an EU
+hosted service, WhatsApp integration, or production operation has been accepted.
+
+- [Release notes and downloads](https://github.com/Robert-Velhorst/002-Contractor-AI/releases/tag/v1.1.0-rc.1)
+- [Windows x64 standalone package](https://github.com/Robert-Velhorst/002-Contractor-AI/releases/download/v1.1.0-rc.1/ContractorAI-windows-x64.zip)
+- Container image: `ghcr.io/robert-velhorst/002-contractor-ai:v1.1.0-rc.1`
+- The Windows archive passed the release workflow's package smoke test; the
+  container build and registry publication also completed successfully.
+
+The release is a prerelease. No stable `v1.1.0` release is being represented
+here. Review the release notes and this README before installing, and keep
+production data out of evaluation deployments.
 
 ## Contents
 
 - [Product overview](#product-overview)
+- [Release status](#release-status)
 - [Current product examples](#current-product-examples)
 - [The short version](#the-short-version)
 - [Who it is for](#who-it-is-for)
@@ -87,7 +106,14 @@ professional certification, or customer/operator acceptance. See
 - [Documentation index](#documentation-index)
 - [Current boundaries](#current-boundaries)
 
+<details>
+<summary>Revision-specific implementation examples</summary>
+
 ## Current Product Examples
+
+The following notes describe implementation changes and measured test fixtures,
+not broad performance guarantees or live production acceptance. Their evidence
+is revision-bound; consult the linked acceptance and verification records.
 
 **Lighter qualification and availability interaction:** qualification workers now
 use the existing 10/25/50-row pagination, rather than rendering every loaded
@@ -234,6 +260,8 @@ Field workers see a limited remaining-scope projection, not private source or
 customer data. This does not auto-schedule crews or make date commitments. See
 [Work Balance](docs/WORK_BALANCE.md).
 
+</details>
+
 ## The short version
 
 For an owner or project team, Contractor.AI provides one place to answer:
@@ -287,6 +315,9 @@ Schedule, Approvals, Dispatch, Disruptions, Resources, Finance, Performance,
 Clients, Field, Operations,** and **Help**. Access is filtered by role.
 
 ### Interactive performance
+
+<details>
+<summary>Implementation and benchmark details</summary>
 
 - Loading-list recommendations count tools and materials independently instead
   of multiplying their joined rows. Job-scoped covering indexes are installed
@@ -504,6 +535,11 @@ that all performance bottlenecks have been removed: aggregate bundle budgets
 still fail, and broader backend, large-dataset and hosted-load profiling remains
 necessary. Cancelling a browser read does not guarantee cancellation of database
 work that has already started on the server.
+
+See the [performance benchmark](docs/PERFORMANCE_BENCHMARK.md),
+[acceptance tests](docs/ACCEPTANCE_TESTS.md), and
+[revision-specific verification report](docs/FINAL_VERIFICATION_REPORT.md).
+</details>
 
 ### Business setup and governance
 
@@ -1160,12 +1196,23 @@ See [API usage audit](docs/API_USAGE_AUDIT.md).
 - Minimized owner support bundles.
 - No public evidence serving or bearer secrets in request paths.
 
+The GitHub repository also has CodeQL default setup, dependency graph and
+automatic dependency submission, Dependabot alerts and security updates,
+provider-pattern secret scanning with push protection, private vulnerability
+reporting, and an active `main` ruleset. The ruleset requires PRs,
+passing verification/CodeQL checks and resolved review conversations, and blocks
+force-pushes and deletion. It does not require an approving review because this
+repository currently has one maintainer. GitHub's non-provider secret patterns
+and provider validity checks are not enabled. These repository controls do not
+replace application or production controls.
+
 Likely personal data includes client details, worker assignment/attendance,
 portal activity, evidence metadata, and uploaded files. The software provides
 controls; it does not by itself establish a lawful basis, retention schedule,
 DPA, DPIA, works-council approval, or GDPR/AVG compliance.
 
-Read [Security and privacy](docs/SECURITY.md),
+Read the [GitHub security policy](.github/SECURITY.md),
+[Security and privacy](docs/SECURITY.md),
 [Privacy rights operations](docs/PRIVACY_OPERATIONS.md), and
 [Accessibility](docs/ACCESSIBILITY.md).
 
