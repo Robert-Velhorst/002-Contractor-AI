@@ -39,6 +39,7 @@ const imageProcessor = createImageProcessor();
 const publicFileRateLimit = rateLimit({
   windowMs: 10 * 60 * 1000,
   limit: 1200,
+  keyGenerator: req => apiRateLimitKey(req),
   standardHeaders: 'draft-8',
   legacyHeaders: false,
   handler: (_req, res) => res.status(429).json({ error: { code: 'rate_limited', message: 'Too many web asset requests.' } })
