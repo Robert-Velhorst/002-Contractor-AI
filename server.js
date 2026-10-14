@@ -1,5 +1,5 @@
 const express = require('express');
-const { rateLimit } = require('express-rate-limit');
+const { ipKeyGenerator, rateLimit } = require('express-rate-limit');
 const cors = require('cors');
 const compression = require('compression');
 const Negotiator = require('negotiator');
@@ -247,6 +247,7 @@ const apiRateBucketLimit = boundedInteger(process.env.CONTRACTOR_AI_RATE_BUCKET_
 const apiRouteRateLimit = rateLimit({
   windowMs: apiRateWindowMs,
   limit: apiRateLimit,
+  keyGenerator: req => apiRateLimitKey(req),
   standardHeaders: true,
   legacyHeaders: false,
   skip: req => req.method === 'OPTIONS' || !req.path.startsWith('/api/') || req.path === '/api/health/ready',
@@ -651,7 +652,7 @@ function rateLimitApi(req, res, next) {
 }
 
 function apiRateLimitKey(req) {
-  const remoteAddress = String(req.ip || req.socket?.remoteAddress || 'unknown');
+  const remoteAddress = ipKeyGenerator(String(req.ip || req.socket?.remoteAddress || 'unknown'), 56);
   const clientDigest = crypto.createHmac('sha256', apiRateSigningKey)
     .update('contractor-ai-api-client\0')
     .update(remoteAddress)
