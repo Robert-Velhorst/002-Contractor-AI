@@ -618,7 +618,8 @@ function attachRequestContext(req, res, next) {
 
   const startedAt = Date.now();
   res.on('finish', () => {
-    if (!req.path.startsWith('/api')) return;
+    const requestPath = String(req.originalUrl || `${req.baseUrl || ''}${req.path || ''}`).split('?')[0];
+    if (!requestPath.startsWith('/api')) return;
     const statusCode = res.statusCode;
     const level = statusCode >= 500 ? 'error' : statusCode >= 400 ? 'warn' : 'info';
     log(level, 'api_request', {
@@ -1053,11 +1054,12 @@ async function verifyEvidenceStorage({ force = false } = {}) {
 }
 
 function logSafeRequestPath(req) {
-  const clientDeliveryPath = String(req.path || req.originalUrl || '').split('?')[0];
+  const requestPath = String(req.originalUrl || `${req.baseUrl || ''}${req.path || ''}`).split('?')[0];
+  const clientDeliveryPath = requestPath;
   if (/^\/api\/client-portal\/deliveries(?:\/[^/]+\/responses)?$/.test(clientDeliveryPath)) return clientDeliveryPath.replace(/\/deliveries\/[^/]+\/responses$/, '/deliveries/:offerId/responses');
-  if (String(req.path || req.originalUrl || '').split('?')[0].startsWith('/api/auth/identity/')) return String(req.path || req.originalUrl || '').split('?')[0];
-  if (String(req.path || req.originalUrl || '').split('?')[0] === '/api/integrations/whatsapp/webhook') return '/api/integrations/whatsapp/webhook';
-  const path = String(req.path || req.originalUrl || '').split('?')[0];
+  if (requestPath.startsWith('/api/auth/identity/')) return requestPath;
+  if (requestPath === '/api/integrations/whatsapp/webhook') return '/api/integrations/whatsapp/webhook';
+  const path = requestPath;
   if (/^\/api\/client-portal(?:[?#]|$|\/(?:messages|feedback|preferences|selections\/|change-orders\/))/.test(path)) {
     return path;
   }

@@ -541,16 +541,25 @@ test('operating ledger persists intake, approvals, audit, and autonomous control
   };
   const query = new URLSearchParams({ requirements: 'budget', ...urlMarkers });
   const apiLogs = [];
-  const originalConsoleLog = console.log;
-  console.log = message => {
+  const originalConsole = { log: console.log, warn: console.warn, error: console.error };
+  const captureApiLog = (originalMethod, message, ...args) => {
     if (typeof message === 'string' && message.includes('"message":"api_request"')) apiLogs.push(message);
-    else originalConsoleLog(message);
+    else originalMethod(message, ...args);
   };
+  for (const method of Object.keys(originalConsole)) {
+    console[method] = (message, ...args) => captureApiLog(originalConsole[method], message, ...args);
+  }
   let getCapabilityPreview;
+  let webhookRequest;
   try {
     getCapabilityPreview = await request(baseUrl, `/api/ledger/jobs/${jobId}/capability-plan?${query}`);
+    webhookRequest = await request(baseUrl, '/api/integrations/whatsapp/webhook');
+    const requestId = webhookRequest.response.headers.get('x-request-id');
+    for (let attempt = 0; attempt < 100 && !apiLogs.some(entry => JSON.parse(entry).requestId === requestId); attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, 5));
+    }
   } finally {
-    console.log = originalConsoleLog;
+    for (const method of Object.keys(originalConsole)) console[method] = originalConsole[method];
   }
   assert.equal(getCapabilityPreview.response.status, 200);
   assert.ok(getCapabilityPreview.body.actions.some(action => action.requirementKey === 'budget'));
@@ -562,6 +571,9 @@ test('operating ledger persists intake, approvals, audit, and autonomous control
     assert.equal(parsed.path.includes('?'), false);
     for (const marker of Object.values(urlMarkers)) assert.equal(logEntry.includes(marker), false);
   }
+  const webhookLog = apiLogs.find(logEntry => JSON.parse(logEntry).requestId === webhookRequest.response.headers.get('x-request-id'));
+  assert.ok(webhookLog);
+  assert.equal(JSON.parse(webhookLog).path, '/api/integrations/whatsapp/webhook');
 
   const capabilityPreview = await request(baseUrl, `/api/ledger/jobs/${jobId}/capability-plan`, {
     method: 'POST',
