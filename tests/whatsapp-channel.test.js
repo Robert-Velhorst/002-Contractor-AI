@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
-const { verifySignature, whatsappConfig, permittedMediaUrl, WhatsAppChannel } = require('../whatsapp-channel');
+const { verifySignature, whatsappConfig, permittedMediaUrl, WhatsAppChannel, registerWhatsAppWebhook } = require('../whatsapp-channel');
 const { ClientConversation } = require('../client-conversation');
 const { ContractorOperatingLedger } = require('../operating-ledger');
 const fs = require('node:fs');
@@ -16,6 +16,42 @@ test('WhatsApp accepts only authenticated exact raw webhook bytes', () => {
   assert.equal(verifySignature(Buffer.from(raw + ' '), signature, secret), false);
   assert.equal(verifySignature(raw, 'sha256=00', secret), false);
   assert.equal(verifySignature(raw, signature, ''), false);
+});
+
+test('Meta verification challenge stays exact plain text even for HTML-looking input', () => {
+  let handler;
+  const env = {
+    CONTRACTOR_AI_WHATSAPP_ENABLED: 'true',
+    CONTRACTOR_AI_WHATSAPP_TOKEN: 'test-token',
+    CONTRACTOR_AI_WHATSAPP_APP_SECRET: 'test-secret-at-least-16',
+    CONTRACTOR_AI_WHATSAPP_VERIFY_TOKEN: 'test-verification-token-at-least-32',
+    CONTRACTOR_AI_WHATSAPP_PHONE_ID: '12345',
+    CONTRACTOR_AI_WHATSAPP_WABA_ID: '67890',
+    CONTRACTOR_AI_WHATSAPP_VERSION: 'v23.0',
+    CONTRACTOR_AI_WHATSAPP_PRIVACY_REFERENCE: 'fixture privacy',
+    CONTRACTOR_AI_WHATSAPP_COST_REFERENCE: 'fixture costs',
+    CONTRACTOR_AI_WHATSAPP_VERIFICATION_REFERENCE: 'fixture verification'
+  };
+  const app = { get(_route, callback) { handler = callback; }, post() {} };
+  registerWhatsAppWebhook(app, {
+    ledger: {}, rawParser() {}, sendError(_req, res, status, code, message) { res.status(status).json({ code, message }); },
+    authenticationRequired: true, env
+  });
+  const headers = {};
+  let status, body;
+  const response = {
+    status(value) { status = value; return this; },
+    set(name, value) { headers[name] = value; return this; },
+    end(value) { body = value; return this; },
+    json(value) { body = value; return this; }
+  };
+  const challenge = '<script>alert(1)</script>';
+  handler({ query: { 'hub.mode': 'subscribe', 'hub.verify_token': env.CONTRACTOR_AI_WHATSAPP_VERIFY_TOKEN, 'hub.challenge': challenge } }, response);
+  assert.equal(status, 200);
+  assert.equal(body, challenge);
+  assert.equal(headers['Content-Type'], 'text/plain; charset=utf-8');
+  assert.equal(headers['X-Content-Type-Options'], 'nosniff');
+  assert.equal(headers['Cache-Control'], 'no-store');
 });
 
 test('signed-channel processing deduplicates intake and blocks retries after submission or uncertain outcome', async t => {

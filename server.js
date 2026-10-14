@@ -55,6 +55,7 @@ const {
 } = require('./hai-connector');
 const { parseMultipartFormData } = require('./multipart-parser');
 const packageMetadata = require('./package.json');
+const { authorizationPayload } = require('./authorization-header');
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -140,6 +141,16 @@ const ledgerFile = process.env.LEDGER_DB_FILE
 const uploadDir = process.env.UPLOAD_DIR
   ? path.resolve(process.env.UPLOAD_DIR)
   : path.join(dataDir, 'uploads');
+const defaultMaxUploadBytes = 10 * 1024 * 1024;
+const maxUploadBytesInput = String(process.env.MAX_UPLOAD_BYTES ?? '').trim();
+const parsedMaxUploadBytes = Number(maxUploadBytesInput || defaultMaxUploadBytes);
+const maxUploadBytes = (!maxUploadBytesInput || /^\d+$/.test(maxUploadBytesInput))
+  && Number.isSafeInteger(parsedMaxUploadBytes)
+  && parsedMaxUploadBytes >= 1_024
+  && parsedMaxUploadBytes <= 100 * 1024 * 1024
+  ? parsedMaxUploadBytes
+  : null;
+const effectiveMaxUploadBytes = maxUploadBytes ?? defaultMaxUploadBytes;
 const evidenceStorageOptions = {
   endpoint: process.env.CONTRACTOR_AI_S3_ENDPOINT,
   bucket: process.env.CONTRACTOR_AI_S3_BUCKET,
@@ -148,7 +159,7 @@ const evidenceStorageOptions = {
   secretAccessKey: process.env.CONTRACTOR_AI_S3_SECRET_ACCESS_KEY,
   prefix: process.env.CONTRACTOR_AI_S3_PREFIX || (configuredCompanyId ? `companies/${configuredCompanyId}/evidence` : 'contractor-ai/evidence'),
   timeoutMs: process.env.CONTRACTOR_AI_STORAGE_TIMEOUT_MS,
-  maxReadBytes: Number(process.env.MAX_UPLOAD_BYTES || 10 * 1024 * 1024)
+  maxReadBytes: effectiveMaxUploadBytes
 };
 let evidenceStorage;
 let evidenceStorageInitError = null;
@@ -179,7 +190,6 @@ let evidenceStorageVerificationCache = evidenceStorageInitError
   : null;
 let evidenceStorageVerificationPromise = null;
 let ledgerDiagnosticsCache = null;
-const maxUploadBytes = Math.max(1024, Number(process.env.MAX_UPLOAD_BYTES || 10 * 1024 * 1024));
 const evidenceStorageMaxBytesInput = String(process.env.CONTRACTOR_AI_EVIDENCE_STORAGE_MAX_BYTES || '').trim();
 const parsedEvidenceStorageMaxBytes = Number(evidenceStorageMaxBytesInput || 10 * 1024 * 1024 * 1024);
 const evidenceStorageMaxBytes = Number.isSafeInteger(parsedEvidenceStorageMaxBytes) && parsedEvidenceStorageMaxBytes > 0
@@ -286,10 +296,7 @@ function configureHttpServer(server) {
 }
 
 function createRequestId() {
-  if (typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID();
-  }
-  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  return crypto.randomUUID();
 }
 
 function isTemplatePlaceholder(value) {
@@ -351,6 +358,9 @@ function runtimeConfiguration(options = {}) {
     issues.push({ code: 'evidence_storage_quota_invalid', message: 'CONTRACTOR_AI_EVIDENCE_STORAGE_MAX_BYTES must be a positive safe integer.' });
   } else if (hosted && !evidenceStorageMaxBytesInput) {
     issues.push({ code: 'hosted_evidence_storage_quota_required', message: 'Hosted mode requires an explicit cumulative evidence storage quota.' });
+  }
+  if (!maxUploadBytes) {
+    issues.push({ code: 'upload_limit_invalid', message: 'MAX_UPLOAD_BYTES must be a base-10 integer between 1024 and 104857600.' });
   }
   if (haiFeedOutputPath && !path.isAbsolute(haiFeedOutputPath)) {
     issues.push({ code: 'hai_feed_path_invalid', message: 'CONTRACTOR_AI_HAI_FEED_PATH must be an absolute path when configured.' });
@@ -1042,8 +1052,7 @@ function extractClientPortalToken(req) {
   const explicitHeader = req.headers['x-client-portal-token'];
   if (Array.isArray(explicitHeader)) return String(explicitHeader[0] || '').trim();
   if (explicitHeader) return String(explicitHeader).trim();
-  const bearer = String(req.headers.authorization || '').match(/^Bearer\s+(.+)$/i);
-  return bearer ? bearer[1].trim() : '';
+  return authorizationPayload(req.headers.authorization || '', 'Bearer');
 }
 
 function requireClientPortalToken(req, res, next) {
@@ -1366,13 +1375,13 @@ function extractAuthToken(req) {
   if (headerToken) return String(headerToken);
 
   const authorization = req.headers.authorization || '';
-  const bearer = authorization.match(/^Bearer\s+(.+)$/i);
-  if (bearer) return bearer[1].trim();
+  const bearer = authorizationPayload(authorization, 'Bearer');
+  if (bearer) return bearer;
 
-  const basic = authorization.match(/^Basic\s+(.+)$/i);
+  const basic = authorizationPayload(authorization, 'Basic');
   if (basic) {
     try {
-      const decoded = Buffer.from(basic[1], 'base64').toString('utf8');
+      const decoded = Buffer.from(basic, 'base64').toString('utf8');
       const separator = decoded.indexOf(':');
       return separator >= 0 ? decoded.slice(separator + 1) : decoded;
     } catch {
@@ -11079,6 +11088,13 @@ function attachPublicOrigin(publicUrl) {
 async function startDirectServer(options = {}) {
   const listenPort = options.port ?? port;
   const listenHost = String(options.host ?? configuredBindHost).trim() || undefined;
+  if (!maxUploadBytes) {
+    log('error', 'upload_limit_invalid', { minimumBytes: 1_024, maximumBytes: 100 * 1024 * 1024 });
+    await shutdownRuntime({ signal: 'invalid_upload_limit' });
+    const error = new Error('MAX_UPLOAD_BYTES must be a base-10 integer between 1024 and 104857600.');
+    error.code = 'upload_limit_invalid';
+    throw error;
+  }
   if (!dashboardAuthRequired && !isLoopbackHostname(listenHost)) {
     log('error', 'credential_free_loopback_required', { host: listenHost || 'system_default' });
     await shutdownRuntime({ signal: 'credential_free_non_loopback' });

@@ -5,6 +5,8 @@ Versioning for the application contract; database migrations remain append-only.
 
 ## Unreleased
 
+- Takeoff measurement types now reject arrays and objects rather than coercing
+  request values into accepted scalar modes.
 - Hardened local and hosted trust boundaries: credential-free mode now requires
   loopback request hosts and listeners, hosted PostgreSQL requires explicit
   `sslmode=verify-full`, and invalid database or object-storage settings are
