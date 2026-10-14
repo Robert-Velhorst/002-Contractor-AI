@@ -60,7 +60,7 @@ test('distinguishes a healthy local runtime from hosted runtime readiness', asyn
       status: 200,
       json: async () => ({
         format: 'contractor-ai-support-bundle/v1',
-        application: { node: 'v22.18.0', runtimeMode: 'local' },
+        application: { node: 'v24.10.0', runtimeMode: 'local' },
         database: { mode: 'sqlite' },
         readiness: { runtimeReady: true, storage: { mode: 'local' } }
       })
@@ -137,6 +137,29 @@ test('distinguishes endpoint timeouts from connection failures', async () => {
     assert.equal(report.readiness.status, 'timeout');
     assert.equal(report.support.status, 'timeout');
     assert.deepEqual(report.endpointFailures.map(failure => failure.code), ['timeout', 'timeout']);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('reports a timeout and connection failure independently for concurrent doctor probes', async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async (url, options) => {
+    if (url.endsWith('/api/health/ready')) {
+      return new Promise((resolve, reject) => {
+        options.signal.addEventListener('abort', () => reject(new DOMException('request aborted', 'AbortError')), { once: true });
+      });
+    }
+    throw new TypeError('connection refused');
+  };
+  try {
+    const report = await runDoctor({ baseUrl: 'http://127.0.0.1:3000', token: '', timeoutMs: 1_000 });
+    assert.equal(report.readiness.status, 'timeout');
+    assert.equal(report.support.status, 'connection_failed');
+    assert.deepEqual(report.endpointFailures, [
+      { endpoint: '/api/health/ready', code: 'timeout' },
+      { endpoint: '/api/operations/support-bundle', code: 'connection_failed' }
+    ]);
   } finally {
     global.fetch = originalFetch;
   }

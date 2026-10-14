@@ -25,17 +25,17 @@ GitHub, Vercel, Meta/WhatsApp, Hetzner, or any other separately operated service
 The public repository has GitHub CodeQL default setup, dependency graph and
 automatic dependency submission, Dependabot alerts and security updates, weekly
 dependency update proposals, secret scanning with push protection, and private
-vulnerability reporting enabled. Its active `main`
-ruleset requires a pull request and up-to-date `verify`, `windows-standalone`,
-and three CodeQL language/action checks. It blocks branch deletion and force
-pushes. It does not require an approving review or resolved review threads;
-the repository currently has one maintainer, so automated checks are not a
-substitute for independent review. Generic non-provider secret patterns are
-unavailable for this user-owned repository under the current GitHub plan;
-GitHub documents the feature for organization-owned repositories with GitHub
-Team and Secret Protection. Provider validity checks remain disabled because
-they send detected credentials to issuers for validation. Do not infer either
-capability from provider-pattern scanning or push protection.
+vulnerability reporting enabled. Its active `main` ruleset requires a pull
+request, up-to-date `verify`, `windows-standalone`, and three CodeQL
+language/action checks, and resolved review threads. It blocks branch deletion
+and force pushes. It does not require an approving review; the repository has a
+single maintainer, so automated checks are not a substitute for independent
+review. Generic non-provider secret patterns are unavailable for this user-owned
+repository under GitHub's current eligibility rules; GitHub documents that
+feature for organization-owned repositories with GitHub Team and Secret
+Protection. Provider validity checks remain disabled because they can send
+detected credentials to issuers for validation. Do not infer either capability
+from provider-pattern scanning or push protection.
 
 GitHub security alerts remain review items until a finding is fixed and a new
 scan confirms the result, or its applicability is documented with evidence.

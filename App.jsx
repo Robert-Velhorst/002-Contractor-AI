@@ -2238,8 +2238,11 @@ function App() {
   }
 
   function refreshCurrentView() {
+    if (sectionRef.current === 'operations') {
+      void refreshSection('operations', resourceViewRef.current)
+      return
+    }
     void refresh()
-    if (sectionRef.current === 'operations') void refreshOperationsCommandPlan()
   }
 
   async function refreshSection(next, nextResourceView = resourceViewRef.current) {

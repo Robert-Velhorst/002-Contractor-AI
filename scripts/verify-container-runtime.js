@@ -31,6 +31,9 @@ function docker(args, options = {}) {
   });
   if (result.error) {
     if (options.allowFailure) return { status: null, stdout: '', stderr: result.error.message };
+    if (result.error.code === 'ETIMEDOUT') {
+      throw new Error(`Docker command timed out after ${options.timeoutMs || 15 * 60 * 1000} ms: docker ${args.slice(0, 2).join(' ')}`);
+    }
     throw result.error;
   }
   const output = {
@@ -279,7 +282,7 @@ function cleanup() {
 }
 
 async function main() {
-  docker(['version', '--format', '{{.Server.Version}}']);
+  docker(['version', '--format', '{{.Server.Version}}'], { timeoutMs: 15_000 });
   process.stdout.write(`Building production image ${imageTag}\n`);
   docker(['build', '--tag', imageTag, '.'], { inherit: true });
   imageCreated = true;

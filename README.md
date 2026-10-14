@@ -8,7 +8,7 @@ executing crew, and the client into one auditable workflow: from incoming work
 and estimating to field execution, evidence, change control, and handover.
 
 It is not a marketing demo or a collection of disconnected prototypes. The
-product runtime is a Node.js 22 application with an Express API, a React/Vite
+product runtime is a Node.js 22 or 24 application with an Express API, a React/Vite
 interface, a transactional SQLite or PostgreSQL ledger, and private evidence
 storage. SQLite and local files support local operation. Hosted mode requires
 configured PostgreSQL, private EU object storage, strong authentication, HTTPS
@@ -46,7 +46,7 @@ adapter is not proof that an external provider is live.
 
 ### Runtime At A Glance
 
-- **Local:** Node.js 22, Express, React/Vite, SQLite, and private local files.
+- **Local:** Node.js 22 or 24, Express, React/Vite, SQLite, and private local files.
 - **Hosted:** PostgreSQL and private S3-compatible EU storage, HTTPS, strong
   authentication, explicit proxy/CORS configuration, and retained recovery and
   provider evidence. Hosted startup fails closed when requirements are absent.
@@ -853,8 +853,8 @@ ghcr.io/robert-velhorst/002-contractor-ai:v1.1.0-rc.1
 ghcr.io/robert-velhorst/002-contractor-ai:sha-<release-source-commit>
 ```
 
-The first published release is [Contractor.AI 1.1.0-rc.1](https://github.com/Robert-Velhorst/002-Contractor-AI/releases/tag/v1.1.0-rc.1), a pre-release for evaluation. It has a [tested Windows archive](https://github.com/Robert-Velhorst/002-Contractor-AI/releases/download/v1.1.0-rc.1/ContractorAI-windows-x64.zip) and a versioned [GHCR package](https://github.com/Robert-Velhorst/002-Contractor-AI/pkgs/container/002-contractor-ai). Its packaging workflow completed successfully, including BuildKit SBOM and provenance generation. The existing RC1 image also carries `sha-9dbb4ae9bb06`, an alias named from the workflow-dispatch revision rather than the release source; use the versioned tag shown above. The workflow now in this repository corrects that alias for future recovery runs.
 
+The first published release is [Contractor.AI 1.1.0-rc.1](https://github.com/Robert-Velhorst/002-Contractor-AI/releases/tag/v1.1.0-rc.1), a pre-release for evaluation. It has a [tested Windows archive](https://github.com/Robert-Velhorst/002-Contractor-AI/releases/download/v1.1.0-rc.1/ContractorAI-windows-x64.zip) and a versioned [GHCR package](https://github.com/Robert-Velhorst/002-Contractor-AI/pkgs/container/002-contractor-ai). Its packaging workflow completed successfully, including BuildKit SBOM and provenance generation. The existing RC1 image also carries `sha-9dbb4ae9bb06`, an alias named from the workflow-dispatch revision rather than the release source; use the versioned tag shown above. The workflow now in this repository corrects that alias for future recovery runs.
 The release is a pre-release for evaluation, not a production-readiness or
 regulatory-compliance claim. For a local container, prepare `.env` from
 `.env.example`, set `CONTRACTOR_AI_REQUIRE_AUTH=true`, and replace the example

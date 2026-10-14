@@ -97,12 +97,20 @@ test('built dashboard uses immutable asset caching, no-store HTML, and compressi
 
 test('Node test runner discovers every test exactly once and npm has no duplicate pretest hook', () => {
   const packageJson = require('../package.json');
-  const { allTestFiles, postgresTestFiles, withTestConcurrency } = require('../scripts/run-node-tests');
+  const { allTestFiles, postgresTestFiles, serialStressTestFiles, withTestConcurrency } = require('../scripts/run-node-tests');
   const files = allTestFiles();
   const postgresFiles = postgresTestFiles(files);
+  const serialStressFiles = serialStressTestFiles(files);
+  const concurrentFiles = files.filter(file => !serialStressFiles.includes(file));
   assert.equal(packageJson.scripts.pretest, undefined);
   assert.match(packageJson.scripts.test, /--test-concurrency=4(?:\s|$)/);
   assert.equal(new Set(files).size, files.length);
+  assert.deepEqual(serialStressFiles, [
+    'tests/evidence-storage-reservations.test.js',
+    'tests/ledger-performance-benchmark.test.js'
+  ]);
+  assert.equal(new Set([...concurrentFiles, ...serialStressFiles]).size, files.length);
+  assert.deepEqual([...concurrentFiles, ...serialStressFiles].sort((left, right) => left.localeCompare(right)), files);
   assert.ok(files.includes('tests/hai-connector.test.js'));
   assert.ok(files.includes('tests/windows-standalone.test.js'));
   assert.deepEqual(files, [...files].sort((left, right) => left.localeCompare(right)));
