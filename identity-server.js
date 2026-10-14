@@ -17,6 +17,7 @@ const identityProviderRateLimit = rateLimit({
   limit: 1200,
   standardHeaders: 'draft-8',
   legacyHeaders: false,
+  skip: req => req.path === '/health/ready' || req.path === '/identity.html' || req.path.startsWith('/assets/'),
   handler: (_req, res) => res.status(429).json({ error: { code: 'identity_rate_limited', message: 'Accountservice ontvangt te veel aanvragen. Probeer later opnieuw.' } })
 });
 
@@ -91,6 +92,7 @@ async function createIdentityApp({ registry, distDir = path.join(__dirname, 'dis
     }
     next();
   });
+  app.use(identityProviderRateLimit);
   app.get('/health/ready', (_req, res) => {
     // Internal health probes have no public issuer origin or proxy TLS headers.
     const migration = registry.db.prepare('SELECT version FROM registry_migrations WHERE version = ?').get(VERSION);
@@ -190,7 +192,6 @@ async function createIdentityApp({ registry, distDir = path.join(__dirname, 'dis
   app.get('/', (_req, res) => res.redirect(302, '/identity.html'));
   app.get('/identity.html', (_req, res) => res.sendFile('index.html', { root: distDir }));
   app.use('/assets', identityAssetRateLimit, express.static(path.join(distDir, 'assets'), { index: false, dotfiles: 'deny', maxAge: '1y', immutable: true }));
-  app.use(identityProviderRateLimit);
   app.use(provider.callback());
   app.use((error, _req, res, _next) => {
     if (res.headersSent) return _next(error);
