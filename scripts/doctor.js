@@ -71,7 +71,10 @@ async function runDoctor(options = parseArguments()) {
       readiness.error ? { endpoint: '/api/health/ready', code: readiness.error } : null,
       support.error ? { endpoint: '/api/operations/support-bundle', code: support.error } : null
     ].filter(Boolean),
-    runtimeCompatibility: { node },
+    runtimeCompatibility: {
+      doctorCli: assessNodeCompatibility(process.version),
+      node
+    },
     deployment: { mode: runtimeMode, databaseMode, storageMode },
     readiness: {
       httpStatus: readiness.status,
