@@ -1047,6 +1047,10 @@ Owner diagnostic:
 npm run doctor -- --url http://127.0.0.1:3000 --token <owner-key>
 ```
 
+The doctor checks an already-running service; it does not start the API. Set the
+URL to the active local API port or hosted HTTPS origin. Unreachable or timed-out
+endpoints are reported separately without returning raw network errors or tokens.
+
 The support bundle contains runtime version, readiness, migrations, aggregate
 counts, audit integrity, and automation state. It excludes customer records,
 evidence bodies, logs, environment values, tokens, cookies, connection strings,
@@ -1189,6 +1193,8 @@ See [API usage audit](docs/API_USAGE_AUDIT.md).
 - Exact CORS and explicit ingress proxy trust.
 - Durable, bounded, HMAC-bucketed API and login rate limits without retaining
   source addresses.
+- Standard per-process rate limits on public file delivery and identity-provider
+  requests, in addition to the durable identity-service request quota.
 - Request, multipart, field, file, and evidence-storage quotas.
 - CSP, HSTS in production, frame denial, MIME-sniffing prevention, and no inline
   event handlers.
@@ -1202,8 +1208,8 @@ See [API usage audit](docs/API_USAGE_AUDIT.md).
 The GitHub repository also has CodeQL default setup, dependency graph and
 automatic dependency submission, Dependabot alerts and security updates,
 provider-pattern secret scanning with push protection, private vulnerability
-reporting, and an active `main` ruleset. The ruleset requires PRs,
-passing verification/CodeQL checks and resolved review conversations, and blocks
+reporting, and an active `main` ruleset. The ruleset requires PRs, passing
+verification/CodeQL checks and resolved review conversations, and blocks
 force-pushes and deletion. It does not require an approving review because this
 repository currently has one maintainer. Generic non-provider secret patterns
 are unavailable for this user-owned repository under the current GitHub plan;

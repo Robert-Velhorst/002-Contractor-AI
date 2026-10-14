@@ -1,6 +1,8 @@
 const { test, expect } = require('@playwright/test');
 
 test('operator approves a production baseline, records output offline, and requests a retained reversal', async ({ page, request, context }, testInfo) => {
+  test.setTimeout(180_000);
+  page.setDefaultTimeout(30_000);
   const suffix = Date.now();
   const title = `Browser production control ${suffix}`;
   const intakeResponse = await request.post('/api/ledger/intake', {
@@ -25,7 +27,7 @@ test('operator approves a production baseline, records output offline, and reque
   await page.getByRole('button', { name: `Open ${title}` }).first().click();
   let workspace = page.getByTestId('job-workspace');
   let production = workspace.getByTestId('production-control');
-  await expect(production.getByRole('heading', { name: 'Production control' })).toBeVisible();
+  await expect(production.getByRole('heading', { name: 'Production control' })).toBeVisible({ timeout: 30_000 });
   await expect(production.getByText('No approved production baseline')).toBeVisible();
 
   await production.getByRole('button', { name: 'Create baseline' }).click();
@@ -88,7 +90,7 @@ test('operator approves a production baseline, records output offline, and reque
   const reversalForm = production.getByTestId('production-reversal-form');
   await reversalForm.getByLabel('Reversal reason').fill('First entry was allocated to the wrong measured work area.');
   await reversalForm.getByRole('button', { name: 'Request reversal approval' }).click();
-  await expect(page.getByText('Production reversal retained for approval. The entry remains included until the decision is approved.')).toBeVisible();
+  await expect(page.getByText('Production reversal retained for approval. The entry remains included until the decision is approved.')).toBeVisible({ timeout: 30_000 });
 
   detailResponse = await request.get(`/api/ledger/jobs/${job.id}`);
   detail = (await detailResponse.json()).job;

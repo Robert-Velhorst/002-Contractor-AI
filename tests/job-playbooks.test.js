@@ -49,10 +49,12 @@ test('job playbook applies garden operating records once and remains idempotent'
   assert.equal(intake.response.status, 201);
   const jobId = intake.body.job.id;
 
-  const preview = await request(baseUrl, `/api/ledger/jobs/${jobId}/playbook?playbookKey=garden_maintenance`);
+  const preview = await request(baseUrl, `/api/ledger/jobs/${jobId}/playbook?playbookKey=garden_maintenance&clientName=query-client-must-not-leak&amount=999999&address=query-address-must-not-leak`);
   assert.equal(preview.response.status, 200);
   assert.equal(preview.body.playbook.key, 'garden_maintenance');
   assert.equal(preview.body.summary.externalCommitments, 0);
+  assert.ok(!JSON.stringify(preview.body).includes('query-client-must-not-leak'));
+  assert.ok(!JSON.stringify(preview.body).includes('query-address-must-not-leak'));
   assert.ok(preview.body.actions.some(action => action.type === 'tool_reservation' && action.label === 'Hedge trimmer'));
   assert.ok(preview.body.actions.some(action => action.type === 'material_requirement' && action.label === 'Green-waste bags'));
   assert.ok(preview.body.actions.some(action => action.type === 'recurring_plan'));

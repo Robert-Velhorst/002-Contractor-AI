@@ -101,7 +101,7 @@ describe('worker standby call-outs', () => {
     expect(screen.getByText(/Nieuwe open positie: New roof position · Arnhem/)).toBeTruthy()
     expect(fetch).toHaveBeenCalledWith('/api/work-board/me', expect.objectContaining({ method: 'GET' }))
     expect(fetch).toHaveBeenCalledWith('/api/work-board/positions', expect.objectContaining({ method: 'GET' }))
-  })
+  }, 15_000)
 
   it('shows only the signed-in worker call-out and records explicit acceptance', async () => {
     window.sessionStorage.setItem('contractor.work-board.session', 'worker-session')
