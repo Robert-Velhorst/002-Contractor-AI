@@ -1,4 +1,5 @@
 const express = require('express');
+const { rateLimit } = require('express-rate-limit');
 const cors = require('cors');
 const compression = require('compression');
 const Negotiator = require('negotiator');
@@ -35,6 +36,13 @@ const { registerWhatsAppWebhook, registerWhatsAppOfficeRoutes } = require('./wha
 const { EvidenceStorageError, createEvidenceStorage } = require('./evidence-storage');
 const { createImageProcessor } = require('./image-processor');
 const imageProcessor = createImageProcessor();
+const publicFileRateLimit = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  limit: 1200,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  handler: (_req, res) => res.status(429).json({ error: { code: 'rate_limited', message: 'Too many web asset requests.' } })
+});
 const { verifySqliteBackupDatabase } = require('./scripts/restore-local-backup');
 const {
   BACKUP_MANIFEST_V3,
@@ -11008,6 +11016,7 @@ app.use('/api', (req, res) => {
 });
 
 if (fs.existsSync(distDir)) {
+  app.use(publicFileRateLimit);
   app.use((req, res, next) => {
     if (!['GET', 'HEAD'].includes(req.method)
       || new Negotiator(req).encoding(['br', 'gzip', 'deflate', 'identity'], { preferred: ['br', 'gzip'] }) !== 'br') return next();

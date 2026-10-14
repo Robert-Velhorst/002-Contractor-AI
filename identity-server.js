@@ -2,6 +2,7 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const express = require('express');
+const { rateLimit } = require('express-rate-limit');
 const { IdentityRegistry, VERSION, fail, equal, hash, registryOptions } = require('./identity-registry');
 const { registryAdapter } = require('./identity-oidc-adapter');
 
@@ -61,6 +62,20 @@ async function createIdentityApp({ registry, distDir = path.join(__dirname, 'dis
   const app = express();
   app.disable('x-powered-by');
   if (trustProxy) app.set('trust proxy', trustProxy);
+  const identityAssetRateLimit = rateLimit({
+    windowMs: 10 * 60 * 1000,
+    limit: 1200,
+    standardHeaders: 'draft-8',
+    legacyHeaders: false,
+    handler: (_req, res) => res.status(429).json({ error: { code: 'identity_rate_limited', message: 'Accountservice ontvangt te veel aanvragen. Probeer later opnieuw.' } })
+  });
+  const identityProviderRateLimit = rateLimit({
+    windowMs: 10 * 60 * 1000,
+    limit: 1200,
+    standardHeaders: 'draft-8',
+    legacyHeaders: false,
+    handler: (_req, res) => res.status(429).json({ error: { code: 'identity_rate_limited', message: 'Accountservice ontvangt te veel aanvragen. Probeer later opnieuw.' } })
+  });
   app.use((req, res, next) => {
     res.set({ 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer',
       'X-Frame-Options': 'DENY', 'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
@@ -174,8 +189,8 @@ async function createIdentityApp({ registry, distDir = path.join(__dirname, 'dis
 
   app.get('/', (_req, res) => res.redirect(302, '/identity.html'));
   app.get('/identity.html', (_req, res) => res.sendFile('index.html', { root: distDir }));
-  app.use('/assets', express.static(path.join(distDir, 'assets'), { index: false, dotfiles: 'deny', maxAge: '1y', immutable: true }));
-  app.use(provider.callback());
+  app.use('/assets', identityAssetRateLimit, express.static(path.join(distDir, 'assets'), { index: false, dotfiles: 'deny', maxAge: '1y', immutable: true }));
+  app.use(identityProviderRateLimit, provider.callback());
   app.use((error, _req, res, _next) => {
     if (res.headersSent) return _next(error);
     const status = error.statusCode || error.status || 500;
