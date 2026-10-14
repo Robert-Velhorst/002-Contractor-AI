@@ -1,0 +1,131 @@
+name: Publish Contractor.AI release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing published release tag to package again
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  verify-release-source:
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.metadata.outputs.image }}
+      tag: ${{ steps.metadata.outputs.tag }}
+      source_sha: ${{ steps.metadata.outputs.source_sha }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+      - name: Verify release tag and main commit
+        id: metadata
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG_INPUT: ${{ inputs.release_tag || '' }}
+        run: |
+          set -euo pipefail
+          tag="${RELEASE_TAG_INPUT:-$GITHUB_REF_NAME}"
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Release tag must use semantic versioning (vMAJOR.MINOR.PATCH[-PRERELEASE])." >&2
+            exit 1
+          fi
+          git fetch origin "refs/tags/$tag:refs/tags/$tag"
+          package_version="$(git show "refs/tags/$tag:package.json" | node -e "process.stdout.write(JSON.parse(require('node:fs').readFileSync(0, 'utf8')).version)")"
+          if [[ "$tag" != "v$package_version" ]]; then
+            echo "Release tag $tag does not match package version $package_version." >&2
+            exit 1
+          fi
+          git fetch origin main:refs/remotes/origin/main
+          main_sha="$(git rev-parse refs/remotes/origin/main)"
+          release_sha="$(git rev-parse "refs/tags/$tag^{commit}")"
+          if [[ "$GITHUB_EVENT_NAME" == "release" ]]; then
+            if [[ "$release_sha" != "$GITHUB_SHA" || "$release_sha" != "$main_sha" ]]; then
+              echo "A new release must target the current main commit." >&2
+              exit 1
+            fi
+          else
+            if [[ "$GITHUB_REF" != "refs/heads/main" || "$GITHUB_SHA" != "$main_sha" ]]; then
+              echo "Manual package recovery must run from the current main branch." >&2
+              exit 1
+            fi
+            if ! git merge-base --is-ancestor "$release_sha" "$main_sha"; then
+              echo "The published release tag is not in current main history." >&2
+              exit 1
+            fi
+          fi
+          if [[ "$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" != "false" ]]; then
+            echo "Package jobs require an existing published release." >&2
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "source_sha=$release_sha" >> "$GITHUB_OUTPUT"
+          echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+  windows-package:
+    needs: verify-release-source
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ needs.verify-release-source.outputs.tag }}
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run package:windows
+      - run: npm run test:windows-package
+      - name: Create Windows archive
+        shell: pwsh
+        run: Compress-Archive -Path release/ContractorAI-windows-x64/* -DestinationPath release/ContractorAI-windows-x64.zip -Force
+      - name: Attach Windows package to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.verify-release-source.outputs.tag }}
+        shell: pwsh
+        run: gh release upload "$env:RELEASE_TAG" release/ContractorAI-windows-x64.zip --repo "$env:GITHUB_REPOSITORY" --clobber
+
+  container-package:
+    needs: verify-release-source
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ needs.verify-release-source.outputs.tag }}
+      - name: Sign in to GitHub Container Registry
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+      - name: Configure Buildx for release attestations
+        run: |
+          set -euo pipefail
+          docker buildx create --name contractor-ai-release --driver docker-container --use
+          docker buildx inspect --bootstrap
+      - name: Build and publish container package
+        env:
+          IMAGE: ${{ needs.verify-release-source.outputs.image }}
+          RELEASE_TAG: ${{ needs.verify-release-source.outputs.tag }}
+        run: |
+          set -euo pipefail
+          docker buildx build \
+            --sbom=true \
+            --provenance=mode=max \
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --label "org.opencontainers.image.revision=${{ needs.verify-release-source.outputs.source_sha }}" \
+            --label "org.opencontainers.image.version=${RELEASE_TAG}" \
+            --tag "${IMAGE}:${RELEASE_TAG}" \
+            --tag "${IMAGE}:sha-${GITHUB_SHA::12}" \
+            --push .

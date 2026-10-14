@@ -3,23 +3,91 @@
 [![Verify Contractor.AI](https://github.com/Robert-Velhorst/002-Contractor-AI/actions/workflows/verify.yml/badge.svg)](https://github.com/Robert-Velhorst/002-Contractor-AI/actions/workflows/verify.yml)
 
 Contractor.AI is a local-first operations platform for building contractors in
-the Netherlands and the wider European market. It brings lead qualification,
-estimating, project controls, approvals, field records, workforce planning,
-procurement, finance evidence, client communication, closeout, and internal
-automation into one auditable operating ledger.
+the Netherlands and wider Europe. It connects office, site, and client workflows
+so teams can trace job scope, decisions, work, evidence, costs, and handover in
+one auditable system instead of coordinating them across disconnected tools.
 
 It is not a marketing demo or a collection of disconnected prototypes. The
 product runtime is a Node.js 22 application with an Express API, a React/Vite
 interface, a transactional SQLite or PostgreSQL ledger, and private evidence
-storage. The same application runs on one Windows laptop, in a local container,
-or as a fail-closed EU-hosted deployment.
+storage. SQLite and local files support local operation. Hosted mode requires
+configured PostgreSQL, private EU object storage, strong authentication, HTTPS
+ingress, and retained provider and recovery evidence. Passing local or CI checks
+does not prove a live EU deployment is configured or accepted.
 
 > **Important:** Contractor.AI prepares and governs work; it does not silently
-> send messages, place orders, commit dates, issue financial claims, initiate
-> payments, or certify compliance. Consequential actions remain separated into
-> evidence, review, approval, package, and verified-delivery stages.
+> send external messages, place orders, commit dates, submit financial claims,
+> initiate payments, or certify legal or safety compliance. External actions
+> require a configured, verified integration and the required human approval.
+
+## Product Overview
+
+Contractor.AI serves three groups through connected experiences:
+
+| Experience | Typical work |
+| --- | --- |
+| Contractor / office | Intake, estimating, project control, approvals, workforce and resource planning, procurement, finance evidence, client updates, and closeout. |
+| Executing worker | Approved positions, assignment requirements, shared instructions, online/offline work packs, safety and quality records, progress, time, materials, and evidence. |
+| Client | Scoped project conversations, shared photos and details, questions, approval-gated delivery reviews, and recorded replies or reservations. |
+
+The product links those activities to retained jobs, tasks, work packages,
+evidence, revisions, decisions, and an audit history. Availability depends on
+user role, source freshness, configuration, and approval status; a screen or
+adapter is not proof that an external provider is live.
+
+| Area | Implemented workflow examples |
+| --- | --- |
+| Commercial | Opportunities, surveys, bids, takeoffs, estimates, contracts, variations, purchase orders, and cost forecasts. |
+| Delivery | Schedules, work packages, dispatch, attendance, field reports, inspections, work balance, partial deliveries, and handover. |
+| People and resources | Worker registration and admission, qualifications, availability, equipment custody, stock, supplier records, and disruption recovery. |
+| Client service | Retained conversations, explicitly shared evidence, client responses, delivery reviews, aftercare, and installed-asset history. |
+| Finance controls | Cost and cash-flow forecasts, invoice and expense evidence, credit notes, and approval-backed handoffs; no payment execution or payroll. |
+| Governance | Role boundaries, approvals, audit history, privacy requests, backup/restore, migration, readiness checks, and bounded internal automation. |
+
+### Runtime At A Glance
+
+- **Local:** Node.js 22, Express, React/Vite, SQLite, and private local files.
+- **Hosted:** PostgreSQL and private S3-compatible EU storage, HTTPS, strong
+  authentication, explicit proxy/CORS configuration, and retained recovery and
+  provider evidence. Hosted startup fails closed when requirements are absent.
+- **API:** `/api/ledger/*` is the authoritative product API.
+- **Automation:** drafts and internal checks only by default. External messages,
+  spend, date commitments, finance actions, and submissions remain approval- and
+  integration-gated.
+
+Contractor.AI is under active development. Local and CI verification do not by
+themselves establish hosted production readiness, regulatory compliance,
+professional certification, or customer/operator acceptance. See
+[Current Boundaries](#current-boundaries) and the
+[delivery register](docs/TOTAL_SOLUTION_DELIVERY.md).
 
 ## Contents
+
+- [Product overview](#product-overview)
+- [Current product examples](#current-product-examples)
+- [The short version](#the-short-version)
+- [Who it is for](#who-it-is-for)
+- [What the product covers](#what-the-product-covers)
+- [How a job moves through the system](#how-a-job-moves-through-the-system)
+- [Roles and access](#roles-and-access)
+- [Automation and safety model](#automation-and-safety-model)
+- [Architecture](#architecture)
+- [Runtime modes](#runtime-modes)
+- [Quick start](#quick-start)
+- [Release package](#release-package)
+- [Daily operation](#daily-operation)
+- [Configuration](#configuration)
+- [Data, evidence, backup, and restore](#data-evidence-backup-and-restore)
+- [API contract](#api-contract)
+- [Security and privacy](#security-and-privacy)
+- [EU-hosted production](#eu-hosted-production)
+- [Development workflow](#development-workflow)
+- [Verification and CI](#verification-and-ci)
+- [Repository map](#repository-map)
+- [Documentation index](#documentation-index)
+- [Current boundaries](#current-boundaries)
+
+## Current Product Examples
 
 **Lighter qualification and availability interaction:** qualification workers now
 use the existing 10/25/50-row pagination, rather than rendering every loaded
@@ -31,8 +99,10 @@ The production-UI 500-worker fixture types 46 characters without repeating row
 render work or issuing business commands and opens the exact 500th worker's
 evidence editor. This preserves the register's default 500-worker loading cap
 and does not paginate job requirements or claim whole-browser RAM/latency gains.
-See [the verification report](docs/FINAL_VERIFICATION_REPORT.md) for current
-checks, the scoped contrast correction and remaining release-size gates.
+See the [acceptance-test register](docs/ACCEPTANCE_TESTS.md) for required release
+evidence. The [verification report](docs/FINAL_VERIFICATION_REPORT.md) contains
+dated checkpoints; it is not a live status page, and results apply only to their
+stated revision.
 
 **Lighter client-directory interaction:** the loaded client register renders 25
 rows by default, with 10/25/50-row pages. Search normalizes its eight existing
@@ -41,8 +111,8 @@ are reused while typing. New records, language, edit authority, busy state and
 callbacks still update the view. Pagination uses the same controls as the crew,
 equipment, partner and receipt registers. This does not change the existing
 500-client API loading limit or claim universal latency/RAM gains. See
-[the verification report](docs/FINAL_VERIFICATION_REPORT.md) for measured checks
-and the remaining release-size gates.
+the dated [verification checkpoints](docs/FINAL_VERIFICATION_REPORT.md) for
+measured checks; they apply only to the stated revision.
 
 **Clearer field-safety history:** an active stop-work assessment now explicitly
 requires reassessment instead of appearing to expire by itself. Superseded
@@ -50,10 +120,8 @@ assessments remain visible as history, and the stop-work badge is translated in
 Dutch. The safety rows also have stronger text contrast. This changes display,
 not authorization: only the live ledger can validate current safety sources.
 Production bundling reuses the installed React automatic JSX runtime without
-replacing its behavior. The latest local build passes the aggregate release-size
-gate; hosted production acceptance remains separate. Current evidence and open
-acceptance work are in
-[the verification report](docs/FINAL_VERIFICATION_REPORT.md).
+replacing its behavior. This changes display and build wiring, not authorization
+or field safety decisions. Hosted production acceptance remains a separate gate.
 
 **Safer disruption recovery:** six recovery forms now share a synchronous write
 lock and retain uncertain requests for an identical retry. Supplier forms stay
@@ -62,8 +130,7 @@ Actual-cost allocations and corrections survive a lost response and reload
 without creating a second allocation; stock retries recheck edit rights. The
 cash-flow control waits for the first forecast before exposing editable defaults
 or totals. These are local behavior fixes, not autonomous spending, new external
-integrations or production acceptance. The latest local bundle-budget check
-passes; see [the verification report](docs/FINAL_VERIFICATION_REPORT.md).
+integrations or production acceptance.
 
 **Safer release checks:** the browser runner binds its results to the exact built
 files, packaged runtime closure, application sources and browser tests. A change
@@ -76,9 +143,9 @@ explicitly guarded disposable PostgreSQL URL and its configured CA are retained.
 Use `npm test` for these controls; direct `node --test` bypasses the wrapper.
 This is environment hygiene for trusted repository tests, not a security sandbox.
 Results and screenshots
-stay outside the repository. See [acceptance tests](docs/ACCEPTANCE_TESTS.md) and
-[the current verification report](docs/FINAL_VERIFICATION_REPORT.md); these checks
-do not replace production hosting or live-provider acceptance.
+stay outside the repository. See the [acceptance tests](docs/ACCEPTANCE_TESTS.md)
+and dated [verification checkpoints](docs/FINAL_VERIFICATION_REPORT.md). These
+checks do not replace production hosting or live-provider acceptance.
 
 **Safer offline documents:** drawings, safety sheets and approved technical PDFs
 share one bounded download verifier. It checks the retained size, PDF signature
@@ -166,27 +233,6 @@ overproduction and unallocated output stop a new position from being published.
 Field workers see a limited remaining-scope projection, not private source or
 customer data. This does not auto-schedule crews or make date commitments. See
 [Work Balance](docs/WORK_BALANCE.md).
-
-- [The short version](#the-short-version)
-- [Who it is for](#who-it-is-for)
-- [What the product covers](#what-the-product-covers)
-- [How a job moves through the system](#how-a-job-moves-through-the-system)
-- [Roles and access](#roles-and-access)
-- [Automation and safety model](#automation-and-safety-model)
-- [Architecture](#architecture)
-- [Runtime modes](#runtime-modes)
-- [Quick start](#quick-start)
-- [Daily operation](#daily-operation)
-- [Configuration](#configuration)
-- [Data, evidence, backup, and restore](#data-evidence-backup-and-restore)
-- [API contract](#api-contract)
-- [Security and privacy](#security-and-privacy)
-- [EU-hosted production](#eu-hosted-production)
-- [Development workflow](#development-workflow)
-- [Verification and CI](#verification-and-ci)
-- [Repository map](#repository-map)
-- [Documentation index](#documentation-index)
-- [Current boundaries](#current-boundaries)
 
 ## The short version
 
@@ -735,8 +781,9 @@ different, verified company environment.
 
 ### Windows standalone
 
-The release workflow creates `ContractorAI-windows-x64.zip` with Node.js 22, the
-production build, and production dependencies. Extract it and run
+The GitHub release workflow creates and tests
+`ContractorAI-windows-x64.zip` with Node.js 22, the production build, and
+production dependencies. Extract it and run
 `ContractorAI.cmd`. The launcher creates a random owner key on first start,
 stores configuration and data under `%LOCALAPPDATA%\ContractorAI`, binds to
 `127.0.0.1`, and opens the dashboard.
@@ -756,6 +803,41 @@ docker compose up --build
 ```
 
 Data is retained in the `contractor-ai-data` named volume.
+
+## Release Package
+
+Published GitHub releases attach a tested Windows standalone archive and publish
+a Docker image to GitHub Container Registry (GHCR). Container releases include
+an SPDX software bill of materials and build provenance generated by BuildKit.
+Tags use the release version and the source commit, for example:
+
+```text
+ghcr.io/robert-velhorst/002-contractor-ai:v1.1.0-rc.1
+ghcr.io/robert-velhorst/002-contractor-ai:sha-<commit>
+```
+
+The first release is a pre-release for evaluation, not a production-readiness or
+regulatory-compliance claim. For a local container, prepare `.env` from
+`.env.example`, set `CONTRACTOR_AI_REQUIRE_AUTH=true`, and replace the example
+owner credential with a private random secret before starting the image:
+
+```powershell
+docker pull ghcr.io/robert-velhorst/002-contractor-ai:v1.1.0-rc.1
+docker run --rm --name contractor-ai `
+  -p 127.0.0.1:3000:3000 `
+  --env-file .env `
+  --mount source=contractor-ai-data,target=/var/lib/contractor-ai `
+  ghcr.io/robert-velhorst/002-contractor-ai:v1.1.0-rc.1
+```
+
+If a release package job fails, the **Publish Contractor.AI release** workflow
+can be run manually from `main` with the already-published release tag. It
+rebuilds the exact source commit for that tag only when its version matches and
+the tag is in current `main` history; it rejects draft and stale/unrelated tags.
+
+The published container is not an EU-hosted service. Hosted mode still requires
+the provider, region, data protection, database, storage, ingress, backup, and
+restore prerequisites in [EU-hosted production](#eu-hosted-production).
 
 ## Daily operation
 

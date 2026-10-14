@@ -2,6 +2,7 @@ const { randomBytes, randomUUID, scrypt, timingSafeEqual, createHash } = require
 const { promisify } = require('node:util');
 const { verifyAppliedVariationTask } = require('./variation-implementation');
 const { assignmentTradePartnerRequirement, workerHasVerifiedTradePartner, workerMatchesAssignmentTradePartner } = require('./work-board-company-scope');
+const { isValidEmailAddress } = require('./email-validation');
 const derive = promisify(scrypt);
 const MAX_AUTOMATED_STANDBY_CALLOUTS = 3;
 const hash = value => createHash('sha256').update(value).digest('hex');
@@ -484,7 +485,7 @@ class WorkBoard {
   accounts() { return this.ledger.db.prepare('SELECT id FROM work_board_accounts ORDER BY created_at DESC LIMIT 500').all().map(row => this.account(row.id)); }
   async register(input) {
     const email = text(input.email, 'E-mail', 254).toLowerCase();
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) fail('Vul een geldig e-mailadres in.');
+    if (!isValidEmailAddress(email)) fail('Vul een geldig e-mailadres in.');
     const password = this.password(input.password);
     if (input.privacyAccepted !== true) fail('Bevestig de verwerking van je aanmeldgegevens.');
     const skills = normalizeProfileSkills(input.skills);
