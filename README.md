@@ -1047,6 +1047,10 @@ Owner diagnostic:
 npm run doctor -- --url http://127.0.0.1:3000 --token <owner-key>
 ```
 
+The doctor checks an already-running service; it does not start the API. Set the
+URL to the active local API port or hosted HTTPS origin. Unreachable or timed-out
+endpoints are reported separately without returning raw network errors or tokens.
+
 The support bundle contains runtime version, readiness, migrations, aggregate
 counts, audit integrity, and automation state. It excludes customer records,
 evidence bodies, logs, environment values, tokens, cookies, connection strings,

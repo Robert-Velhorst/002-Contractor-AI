@@ -33,6 +33,13 @@ async function readJson(baseUrl, route, options = {}) {
     });
     const payload = await response.json().catch(() => ({}));
     return { ok: response.ok, status: response.status, payload };
+  } catch (error) {
+    return {
+      ok: false,
+      status: null,
+      payload: {},
+      error: error?.name === 'AbortError' ? 'timeout' : 'connection_failed'
+    };
   } finally {
     clearTimeout(timeout);
   }
@@ -60,11 +67,15 @@ async function runDoctor(options = parseArguments()) {
     ready: runtimeReady,
     hostedRuntimeReady: hostedRuntimeIssues.length === 0,
     hostedRuntimeIssues,
+    endpointFailures: [
+      readiness.error ? { endpoint: '/api/health/ready', code: readiness.error } : null,
+      support.error ? { endpoint: '/api/operations/support-bundle', code: support.error } : null
+    ].filter(Boolean),
     runtimeCompatibility: { node },
     deployment: { mode: runtimeMode, databaseMode, storageMode },
     readiness: {
       httpStatus: readiness.status,
-      status: readiness.payload?.status || readiness.payload?.error?.code || 'unavailable',
+      status: readiness.error || readiness.payload?.status || readiness.payload?.error?.code || 'unavailable',
       checks: readiness.payload?.checks || null,
       requestId: readiness.payload?.requestId || null
     },
@@ -82,7 +93,7 @@ async function runDoctor(options = parseArguments()) {
       automation: support.payload.control?.automation
     } : {
       httpStatus: support.status,
-      status: support.payload?.error?.code || 'unavailable',
+      status: support.error || support.payload?.error?.code || 'unavailable',
       requestId: support.payload?.error?.requestId || null
     }
   };
