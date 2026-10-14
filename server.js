@@ -4245,9 +4245,10 @@ app.post('/api/ledger/jobs/:id/restore', (req, res) => {
 });
 
 app.get('/api/ledger/jobs/:id/playbook', (req, res) => {
+  const playbookKey = typeof req.query.playbookKey === 'string' ? req.query.playbookKey : '';
   return handleLedgerRequest(req, res, () => ({
     success: true,
-    ...operatingLedger.buildJobPlaybookPlan(req.params.id, req.query || {}),
+    ...operatingLedger.buildJobPlaybookPlan(req.params.id, { playbookKey }),
     dashboard: operatingLedger.dashboardSummary()
   }));
 });
