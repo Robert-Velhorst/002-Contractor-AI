@@ -92,7 +92,6 @@ async function createIdentityApp({ registry, distDir = path.join(__dirname, 'dis
     }
     next();
   });
-  app.use(identityProviderRateLimit);
   app.get('/health/ready', (_req, res) => {
     // Internal health probes have no public issuer origin or proxy TLS headers.
     const migration = registry.db.prepare('SELECT version FROM registry_migrations WHERE version = ?').get(VERSION);
@@ -192,7 +191,7 @@ async function createIdentityApp({ registry, distDir = path.join(__dirname, 'dis
   app.get('/', (_req, res) => res.redirect(302, '/identity.html'));
   app.get('/identity.html', (_req, res) => res.sendFile('index.html', { root: distDir }));
   app.use('/assets', identityAssetRateLimit, express.static(path.join(distDir, 'assets'), { index: false, dotfiles: 'deny', maxAge: '1y', immutable: true }));
-  app.use(provider.callback());
+  app.use('/', identityProviderRateLimit, provider.callback());
   app.use((error, _req, res, _next) => {
     if (res.headersSent) return _next(error);
     const status = error.statusCode || error.status || 500;
