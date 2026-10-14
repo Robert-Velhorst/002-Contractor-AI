@@ -28,7 +28,7 @@ COPY client-completion-review.js contractual-closeout.js conversation-analysis-q
 COPY field-safety-projection.js field-task-scope.js jha-safety-definition.js task-jha-applicability.js ./
 COPY resource-planner.js resource-planner-worker.js shared-material-stock.js supplier-performance.js ./
 COPY submittal-attachment-manifest.js work-board-company-scope.js worker-availability-recurrence.js ./
-COPY server.js operating-ledger.js company-runtime.js contractor-review.js field-work-pack.js work-board.js work-board-routes.js client-conversation.js conversation-routes.js conversation-analysis.js whatsapp-channel.js framework-catalog.js contractor-framework-catalog.json weather-service.js evidence-storage.js hai-connector.js postgres-sync-database.js postgres-sync-worker.js backup-manifest.js runtime-lock.js csv-safety.js bounded-json.js multipart-parser.js ./
+COPY server.js operating-ledger.js company-runtime.js contractor-review.js field-work-pack.js work-board.js work-board-routes.js client-conversation.js conversation-routes.js conversation-analysis.js whatsapp-channel.js framework-catalog.js contractor-framework-catalog.json weather-service.js evidence-storage.js hai-connector.js postgres-sync-database.js postgres-sync-worker.js backup-manifest.js runtime-lock.js csv-safety.js bounded-json.js multipart-parser.js authorization-header.js email-validation.js ./
 COPY scripts/restore-local-backup.js ./scripts/restore-local-backup.js
 COPY scripts/migrate-local-backup-to-hosted.js ./scripts/migrate-local-backup-to-hosted.js
 COPY scripts/runtime-healthcheck.js ./scripts/runtime-healthcheck.js

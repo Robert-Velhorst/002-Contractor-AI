@@ -82,6 +82,8 @@ const REQUIRED_PATHS = [
   'framework-catalog.js',
   'hai-connector.js',
   'operating-ledger.js',
+  'authorization-header.js',
+  'email-validation.js',
   'postgres-sync-database.js',
   'postgres-sync-worker.js',
   'runtime-lock.js',
