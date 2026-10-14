@@ -533,6 +533,36 @@ test('operating ledger persists intake, approvals, audit, and autonomous control
   assert.equal(dashboardAfterIntake.response.status, 200);
   assert.equal(dashboardAfterIntake.body.dashboard.metrics.jobs, startingJobCount + 1);
 
+  const urlMarkers = {
+    scheduledAt: '2099-01-01T08:00:00.000Z',
+    dueAt: '2099-01-02T17:00:00.000Z',
+    amount: '987654321',
+    toolName: 'URL-only private tool name'
+  };
+  const query = new URLSearchParams({ requirements: 'budget', ...urlMarkers });
+  const apiLogs = [];
+  const originalConsoleLog = console.log;
+  console.log = message => {
+    if (typeof message === 'string' && message.includes('"message":"api_request"')) apiLogs.push(message);
+    else originalConsoleLog(message);
+  };
+  let getCapabilityPreview;
+  try {
+    getCapabilityPreview = await request(baseUrl, `/api/ledger/jobs/${jobId}/capability-plan?${query}`);
+  } finally {
+    console.log = originalConsoleLog;
+  }
+  assert.equal(getCapabilityPreview.response.status, 200);
+  assert.ok(getCapabilityPreview.body.actions.some(action => action.requirementKey === 'budget'));
+  const capabilityResponse = JSON.stringify(getCapabilityPreview.body);
+  for (const marker of Object.values(urlMarkers)) assert.equal(capabilityResponse.includes(marker), false);
+  assert.ok(apiLogs.length > 0);
+  for (const logEntry of apiLogs) {
+    const parsed = JSON.parse(logEntry);
+    assert.equal(parsed.path.includes('?'), false);
+    for (const marker of Object.values(urlMarkers)) assert.equal(logEntry.includes(marker), false);
+  }
+
   const capabilityPreview = await request(baseUrl, `/api/ledger/jobs/${jobId}/capability-plan`, {
     method: 'POST',
     body: JSON.stringify({ mode: 'preview', requirementKeys: ['site_visit', 'documents'], actor: 'capability-test' })

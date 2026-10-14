@@ -1028,11 +1028,11 @@ async function verifyEvidenceStorage({ force = false } = {}) {
 }
 
 function logSafeRequestPath(req) {
-  const clientDeliveryPath = String(req.originalUrl || req.path || '').split('?')[0];
+  const clientDeliveryPath = String(req.path || req.originalUrl || '').split('?')[0];
   if (/^\/api\/client-portal\/deliveries(?:\/[^/]+\/responses)?$/.test(clientDeliveryPath)) return clientDeliveryPath.replace(/\/deliveries\/[^/]+\/responses$/, '/deliveries/:offerId/responses');
-  if (String(req.originalUrl || req.path).split('?')[0].startsWith('/api/auth/identity/')) return String(req.originalUrl || req.path).split('?')[0];
-  if (String(req.originalUrl || req.path).split('?')[0] === '/api/integrations/whatsapp/webhook') return '/api/integrations/whatsapp/webhook';
-  const path = String(req.originalUrl || req.path || '');
+  if (String(req.path || req.originalUrl || '').split('?')[0].startsWith('/api/auth/identity/')) return String(req.path || req.originalUrl || '').split('?')[0];
+  if (String(req.path || req.originalUrl || '').split('?')[0] === '/api/integrations/whatsapp/webhook') return '/api/integrations/whatsapp/webhook';
+  const path = String(req.path || req.originalUrl || '').split('?')[0];
   if (/^\/api\/client-portal(?:[?#]|$|\/(?:messages|feedback|preferences|selections\/|change-orders\/))/.test(path)) {
     return path;
   }
@@ -4245,7 +4245,17 @@ app.post('/api/ledger/jobs/:id/playbook', (req, res) => {
 app.get('/api/ledger/jobs/:id/capability-plan', (req, res) => {
   return handleLedgerRequest(req, res, () => ({
     success: true,
-    ...operatingLedger.buildJobCapabilityPlan(req.params.id, req.query || {}),
+    ...operatingLedger.buildJobCapabilityPlan(req.params.id, {
+      capabilities: req.query.capabilities,
+      capabilityKeys: req.query.capabilityKeys,
+      capability_keys: req.query.capability_keys,
+      requirements: req.query.requirements,
+      requirementKeys: req.query.requirementKeys,
+      requirement_keys: req.query.requirement_keys,
+      includeOpen: req.query.includeOpen,
+      include_open: req.query.include_open,
+      limit: req.query.limit
+    }),
     dashboard: operatingLedger.dashboardSummary()
   }));
 });
@@ -11041,7 +11051,7 @@ app.use((req, res, next) => {
     return sendError(req, res, 503, 'web_client_not_built', 'Run npm run build before starting the production web client.');
   }
   res.setHeader('Cache-Control', 'no-store');
-  return res.sendFile(path.join(distDir, 'index.html'));
+  return res.sendFile('index.html', { root: distDir });
 });
 
 app.use((error, req, res, next) => {

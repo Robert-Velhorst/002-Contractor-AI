@@ -173,7 +173,7 @@ async function createIdentityApp({ registry, distDir = path.join(__dirname, 'dis
   app.use('/registry/service', service);
 
   app.get('/', (_req, res) => res.redirect(302, '/identity.html'));
-  app.get('/identity.html', (_req, res) => res.sendFile(path.join(distDir, 'index.html')));
+  app.get('/identity.html', (_req, res) => res.sendFile('index.html', { root: distDir }));
   app.use('/assets', express.static(path.join(distDir, 'assets'), { index: false, dotfiles: 'deny', maxAge: '1y', immutable: true }));
   app.use(provider.callback());
   app.use((error, _req, res, _next) => {
