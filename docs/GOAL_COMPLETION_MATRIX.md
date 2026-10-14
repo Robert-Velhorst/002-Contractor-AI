@@ -477,8 +477,39 @@ coercing them into accepted scalar modes. The focused takeoff suite passes 9/9,
 targeted ESLint and `git diff --check` pass, and the release-contract check is
 valid (111 canonical paths, 12 retired paths, 19 hosted environment keys, 811
 source files). The fix is published to PR #117 at `c21f4cde`; its refreshed
-GitHub checks are pending. This does not close the main-branch CodeQL alert
-until the change is merged and a subsequent main scan confirms it.
+GitHub checks passed, and the security-hardening PR was merged into `main` at
+`8947fe7e18b04bd9bffdb2d59b61f45862c2c0ca`. The exact-head `verify`, Windows
+standalone and CodeQL checks passed before merge. A post-merge main-branch scan
+is still required to confirm the main-branch alert state.
+
+## Phase 212 current release and production-readiness checkpoint
+
+On 2026-10-14, the current `main` tree is `8947fe7e18b04bd9bffdb2d59b61f45862c2c0ca`.
+The production-bundle verifier was run against a fresh Vite production build
+from the current-main-derived documentation branch. It passed with 117 assets,
+zero failures, largest JavaScript 370,044/600,000 bytes, largest CSS
+245,894/300,000 bytes, complete-product gzip 700,057/725,000 bytes and Brotli
+598,930/620,000 bytes. The release-contract verifier passed with 111 canonical
+paths, 12 retired paths, 19 hosted environment keys and 812 source files.
+These checks correct the older bundle measurements below; those values remain
+historical evidence and are not the current bundle gate result.
+
+PR #117's exact-head CI passed release verification, lint, production build,
+bundle verification, frontend and Node tests, performance, container smoke,
+browser workflows, Windows standalone packaging and CodeQL before its merge.
+The local Docker daemon did not respond to `docker version` in a later local
+smoke attempt, so no local image/container was created by that attempt. The
+successful CI container run is the available container evidence; it is not a
+live EU deployment or provider acceptance.
+
+EU-hosted production is still not accepted: an operator must provision and
+verify the EU region, DPA, HTTPS ingress, durable PostgreSQL and object storage,
+secrets, encrypted backups, restore/recovery objectives, monitoring and
+independent operator/device acceptance. Real messaging, accounting, mapping,
+calendar, banking, Peppol and remote AI providers remain unconfigured. The
+remaining dependency and documentation branches require exact-head CI after
+their update to current `main`; local checks or earlier branch runs do not
+replace those checks.
 
 ## Release interpretation
 
@@ -492,15 +523,16 @@ unavailability have real PostgreSQL evidence. Live object storage, production
 hosting, managed recovery and independent acceptance remain unverified. The
 active user objective is now production readiness, not partial feature growth.
 
-September 30 Phase 198: the separate bundle-budget gate fails despite a
+Historical September 30 Phase 198: the separate bundle-budget gate failed despite a
 successful functional build and source contract. Largest JS is 610,125/600,000
 bytes, aggregate gzip 674,681/578,500 and Brotli 583,409/540,000; five surface
-limits also fail. These unchanged limits block a release-readiness claim.
+limits also failed. These historical thresholds and measurements are superseded
+by the current verifier result recorded in Phase 212.
 
-Phase 199 fixes only the largest-JS limit (591,140 bytes). Its measured
-aggregate figures were gzip 676,627/578,500 and Brotli 585,512/540,000, with
-the same five surface failures. Full component/browser/container validation
-does not clear these remaining release gates.
+Historical Phase 199 fixes only the largest-JS limit (591,140 bytes). Its
+measured aggregate figures were gzip 676,627/578,500 and Brotli 585,512/540,000,
+with the same five surface failures. Those historical measurements are
+superseded by Phase 212 and do not describe the current release gate.
 
 The local-first product may be released only when the final automated and browser
 gates pass. EU-hosted production must remain blocked until phases 069 and 100 and
