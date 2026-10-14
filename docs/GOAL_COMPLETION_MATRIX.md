@@ -470,6 +470,16 @@ the safety fixes are not claimed as a size reduction. No thresholds are raised.
 Local readiness passes on loopback port 3002; production/package/container,
 managed storage, provider acceptance, commit and push remain unperformed.
 
+## Phase 211 takeoff input-type hardening
+
+Takeoff `measurementType` now rejects array and object values instead of
+coercing them into accepted scalar modes. The focused takeoff suite passes 9/9,
+targeted ESLint and `git diff --check` pass, and the release-contract check is
+valid (111 canonical paths, 12 retired paths, 19 hosted environment keys, 811
+source files). The fix is published to PR #117 at `c21f4cde`; its refreshed
+GitHub checks are pending. This does not close the main-branch CodeQL alert
+until the change is merged and a subsequent main scan confirms it.
+
 ## Release interpretation
 
 Phase 200 verifies the covered hosted ledger contracts locally: 896 local
