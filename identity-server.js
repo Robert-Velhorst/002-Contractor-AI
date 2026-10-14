@@ -5,6 +5,20 @@ const express = require('express');
 const { rateLimit } = require('express-rate-limit');
 const { IdentityRegistry, VERSION, fail, equal, hash, registryOptions } = require('./identity-registry');
 const { registryAdapter } = require('./identity-oidc-adapter');
+const identityAssetRateLimit = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  limit: 1200,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  handler: (_req, res) => res.status(429).json({ error: { code: 'identity_rate_limited', message: 'Accountservice ontvangt te veel aanvragen. Probeer later opnieuw.' } })
+});
+const identityProviderRateLimit = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  limit: 1200,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  handler: (_req, res) => res.status(429).json({ error: { code: 'identity_rate_limited', message: 'Accountservice ontvangt te veel aanvragen. Probeer later opnieuw.' } })
+});
 
 function cookie(req, name) {
   const entries = String(req.headers.cookie || '').split(';').map(item => item.trim()).filter(item => item.startsWith(`${name}=`));
@@ -62,20 +76,6 @@ async function createIdentityApp({ registry, distDir = path.join(__dirname, 'dis
   const app = express();
   app.disable('x-powered-by');
   if (trustProxy) app.set('trust proxy', trustProxy);
-  const identityAssetRateLimit = rateLimit({
-    windowMs: 10 * 60 * 1000,
-    limit: 1200,
-    standardHeaders: 'draft-8',
-    legacyHeaders: false,
-    handler: (_req, res) => res.status(429).json({ error: { code: 'identity_rate_limited', message: 'Accountservice ontvangt te veel aanvragen. Probeer later opnieuw.' } })
-  });
-  const identityProviderRateLimit = rateLimit({
-    windowMs: 10 * 60 * 1000,
-    limit: 1200,
-    standardHeaders: 'draft-8',
-    legacyHeaders: false,
-    handler: (_req, res) => res.status(429).json({ error: { code: 'identity_rate_limited', message: 'Accountservice ontvangt te veel aanvragen. Probeer later opnieuw.' } })
-  });
   app.use((req, res, next) => {
     res.set({ 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer',
       'X-Frame-Options': 'DENY', 'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
