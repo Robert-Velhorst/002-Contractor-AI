@@ -244,6 +244,21 @@ const AUTONOMOUS_SCHEDULER_KEY = 'ledger_autonomous_cycle';
 const apiRateWindowMs = boundedInteger(process.env.CONTRACTOR_AI_RATE_WINDOW_MS, 60_000, 1_000, 86_400_000);
 const apiRateLimit = boundedInteger(process.env.CONTRACTOR_AI_RATE_LIMIT, 1_000, 50, 1_000_000);
 const apiRateBucketLimit = boundedInteger(process.env.CONTRACTOR_AI_RATE_BUCKET_LIMIT, 5_000, 100, 100_000);
+const apiRouteRateLimit = rateLimit({
+  windowMs: apiRateWindowMs,
+  limit: apiRateLimit,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: req => req.method === 'OPTIONS' || !req.path.startsWith('/api/') || req.path === '/api/health/ready',
+  handler: (req, res) => {
+    const resetAt = req.rateLimit?.resetTime;
+    const retryAfter = resetAt instanceof Date
+      ? Math.max(1, Math.ceil((resetAt.getTime() - Date.now()) / 1_000))
+      : Math.ceil(apiRateWindowMs / 1_000);
+    res.setHeader('Retry-After', String(retryAfter));
+    return sendError(req, res, 429, 'rate_limited', 'Too many requests. Try again shortly.');
+  }
+});
 const apiRateSigningKey = configuredOperatorTokens().length
   ? operatorSessionSigningKey
   : crypto.createHash('sha256').update('contractor-ai-local-api-rate\0').update(path.resolve(ledgerFile)).digest();
@@ -2618,6 +2633,7 @@ app.use(cors({
     return callback(null, false);
   }
 }));
+app.use(apiRouteRateLimit);
 app.use('/api', (req, res, next) => {
   const company = operatingLedger.company;
   res.setHeader('X-Contractor-Company', company.id);
