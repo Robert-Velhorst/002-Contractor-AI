@@ -36,7 +36,7 @@ test('does not report readiness when the application runs on an unsupported Node
       status: 200,
       json: async () => ({
         format: 'contractor-ai-support-bundle/v1',
-        application: { node: 'v26.0.0', runtimeMode: 'hosted' },
+        application: { node: 'v24.22.0', runtimeMode: 'hosted' },
         database: { mode: 'postgres' },
         readiness: { runtimeReady: true }
       })
