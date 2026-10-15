@@ -45,6 +45,7 @@ test('deployment wrapper and sudoers policy fail closed on mutable deployment in
   assert.match(script, /CONTRACTOR_AI_S3_PREFIX must stay within/);
   assert.match(script, /CONTRACTOR_AI_EVIDENCE_STORAGE_MAX_BYTES must be a positive integer/);
   assert.match(script, /unrestricted or hop-count rule/);
+  assert.match(script, /! "\$proxy" =~ \/0\+\(\[,\[:space:\]\]\|\$\)/);
   assert.match(script, /@sha256:\[a-f0-9\]\{64\}/);
   assert.match(script, /readonly ENV_BIN=\/usr\/bin\/env/);
   assert.match(script, /"\$ENV_BIN" -i "PATH=\$SAFE_PATH" HOME=\/root "\$DOCKER" compose/);
