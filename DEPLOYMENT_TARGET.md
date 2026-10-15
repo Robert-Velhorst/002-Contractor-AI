@@ -3,10 +3,17 @@
 Hetzner is the target for production. This guide describes the release path; it
 does not certify a provider, DPA, region, database, storage bucket, backup
 policy, or live deployment. The current General-Server is a CPX12 in
-Falkenstein. The deploy account can log in over SSH but has no Docker or sudo
-privileges. `/opt/contractor-ai` was absent at the last read-only inspection, so
-Contractor.AI is not installed there. Do not grant the deploy account the
-`docker` group: Docker access is effectively root access.
+Falkenstein (`159.69.55.178`). The last confirmed normal-OS inspection found
+a deploy account without Docker or sudo privileges and no `/opt/contractor-ai`
+installation. On 2026-10-15 the server was rebooted into Hetzner Rescue Mode;
+the Hetzner web console now shows Debian 12 Rescue System at a `rescue login:`
+prompt. SSH from this workstation is intentionally blocked because the server
+host key no longer matches the saved key. Do not replace the saved key until
+the rescue host key is verified independently. Root password reset and
+authenticated rescue-shell access have not been completed. The prior
+deploy-account SSH check does not establish current access while Rescue Mode
+is active. Do not grant the deploy account the `docker` group: Docker access
+is effectively root access.
 
 ## Required architecture
 
@@ -47,6 +54,15 @@ traffic and resize only after capacity review.
    and the handover authority key separately with mode `0600`; neither belongs
    in Git, an image, shell history, or a deploy user's readable home. Fill all
    hosted values from `.env.hosted.example`; placeholders must be rejected.
+   Install `deploy/contractor-ai-deploy` as root-owned
+   `/usr/local/sbin/contractor-ai-deploy` (mode `0755`) and install the
+   `deploy/contractor-ai-deploy.sudoers` policy with `visudo` validation. Keep
+   the deploy account out of the `docker` group. The wrapper permits only
+   `validate`, `pull`, `start`, `stop` and `status`; it uses fixed absolute
+   paths, requires root-owned deployment files and never evaluates `.env.hosted`
+   as shell code. Docker Compose runs with a clean root environment, so caller
+   variables cannot override `.env.hosted`. Its `start` action pulls the pinned
+   image and uses `up --detach --no-build`.
 4. Authenticate the host to GHCR using a dedicated, read-only package credential
    held in a root-readable Docker credential store. Resolve the digest for the
    exact release tag, then pin that digest in `.env.hosted`:
@@ -60,15 +76,16 @@ traffic and resize only after capacity review.
    `CONTRACTOR_AI_IMAGE`. Pull and inspect the pinned image before activation:
 
    ```sh
-   cd /opt/contractor-ai
-   docker compose --env-file .env.hosted -f docker-compose.hosted.yml pull
-   docker compose --env-file .env.hosted -f docker-compose.hosted.yml images contractor-ai
+   sudo /usr/local/sbin/contractor-ai-deploy validate
+   sudo /usr/local/sbin/contractor-ai-deploy pull
    ```
 
-   Confirm the listed image corresponds to the recorded digest. The deploy
-   wrapper must pass the same private environment file for Compose
-   interpolation. Start with `up -d --no-build`; never build on the production
-   VM. Verify container health, `/api/health/ready`, authenticated
+   Before pulling, compare `CONTRACTOR_AI_IMAGE` with the immutable digest
+   recorded from the exact release and verify that release's provenance. The
+   wrapper passes the same private environment file for Compose interpolation;
+   Docker pulls that digest rather than resolving a mutable tag. Start through
+   the wrapper; never build on the production VM. Verify
+   container health, `/api/health/ready`, authenticated
    `/api/readiness`, migration head, audit integrity, storage verification,
    release SHA, logs and proxy TLS before enabling external traffic.
 5. Keep worker access, public registration, scheduler and external integrations
@@ -116,9 +133,10 @@ the prior image digest. A rollback is not complete until those checks pass.
 
 ## Current blockers
 
-The current server login recovery and non-root SSH login were verified, but no
-application, environment file, database, object store, proxy route, Contractor.AI
-TLS certificate, migration, or production backup is installed or verified.
+The server is currently in Rescue Mode; root password recovery and return to
+the normal OS remain outstanding. No application, environment file, database,
+object store, proxy route, Contractor.AI TLS certificate, migration, or
+production backup is installed or verified.
 Domain DNS still points elsewhere and a request to the current destination
 timed out during inspection. The current server's capacity has not been load
 tested. The existing `v1.1.0-rc.1` release points to commit

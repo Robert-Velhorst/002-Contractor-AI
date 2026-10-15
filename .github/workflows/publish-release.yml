@@ -77,7 +77,12 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
-          ref: ${{ needs.verify-release-source.outputs.tag }}
+          ref: ${{ needs.verify-release-source.outputs.source_sha }}
+      - name: Verify immutable release source
+        env:
+          SOURCE_SHA: ${{ needs.verify-release-source.outputs.source_sha }}
+        shell: pwsh
+        run: if ((git rev-parse HEAD).Trim() -ne $env:SOURCE_SHA) { throw 'Checked out source does not match the verified release commit.' }
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: 22
@@ -104,7 +109,13 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
-          ref: ${{ needs.verify-release-source.outputs.tag }}
+          ref: ${{ needs.verify-release-source.outputs.source_sha }}
+      - name: Verify immutable release source
+        env:
+          SOURCE_SHA: ${{ needs.verify-release-source.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
       - name: Sign in to GitHub Container Registry
         env:
           GH_TOKEN: ${{ github.token }}

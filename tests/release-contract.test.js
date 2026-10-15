@@ -21,6 +21,13 @@ test('release contract retains only the canonical runtime and mandatory delivery
   assert.ok(result.checks.hostedEnvironmentKeys >= 11);
 });
 
+test('release packages use the exact commit SHA that passed source verification', () => {
+  const workflow = fs.readFileSync(path.join(__dirname, '..', '.github/workflows/publish-release.yml'), 'utf8');
+  assert.equal((workflow.match(/^\s+ref: \$\{\{ needs\.verify-release-source\.outputs\.source_sha \}\}$/gm) || []).length, 2);
+  assert.equal((workflow.match(/Verify immutable release source/g) || []).length, 2);
+  assert.doesNotMatch(workflow, /^\s+ref: \$\{\{ needs\.verify-release-source\.outputs\.tag \}\}$/m);
+});
+
 test('production image includes the current work allocation and work-board runtime modules', () => {
   const dockerfile = fs.readFileSync(path.join(__dirname, '..', 'Dockerfile'), 'utf8');
   const buildStage = dockerfile.split('AS runtime')[0];
