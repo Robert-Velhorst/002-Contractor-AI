@@ -3,18 +3,22 @@ const assert = require('node:assert/strict');
 const { runDoctor } = require('../scripts/doctor');
 const { assessNodeCompatibility, nodeCompatibilityIssue } = require('../scripts/node-compatibility');
 
-test('checks the running app against the declared Node major version', () => {
+test('checks the running app against all declared Node major versions', () => {
   assert.deepEqual(assessNodeCompatibility('v22.18.0'), {
-    status: 'supported', supported: true, actual: 'v22.18.0', required: '22.x'
+    status: 'supported', supported: true, actual: 'v22.18.0', required: '22.x || 24.x'
   });
-  assert.deepEqual(assessNodeCompatibility('v25.2.1'), {
-    status: 'unsupported', supported: false, actual: 'v25.2.1', required: '22.x'
+  assert.deepEqual(assessNodeCompatibility('v24.10.0'), {
+    status: 'supported', supported: true, actual: 'v24.10.0', required: '22.x || 24.x'
+  });
+  assert.deepEqual(assessNodeCompatibility('v26.0.0'), {
+    status: 'unsupported', supported: false, actual: 'v26.0.0', required: '22.x || 24.x'
   });
   assert.equal(assessNodeCompatibility('unknown').status, 'unknown');
+  assert.equal(assessNodeCompatibility('v24.10.0', '22.x || latest').status, 'unknown');
 });
 
 test('enforces the supported Node version in production and hosted modes only', () => {
-  const unsupported = assessNodeCompatibility('v25.2.1');
+  const unsupported = assessNodeCompatibility('v26.0.0');
   assert.equal(nodeCompatibilityIssue(unsupported, { isProduction: false, runtimeMode: 'local' }), null);
   assert.equal(nodeCompatibilityIssue(unsupported, { isProduction: true, runtimeMode: 'local' })?.code, 'unsupported_node_version');
   assert.equal(nodeCompatibilityIssue(unsupported, { isProduction: false, runtimeMode: 'hosted' })?.code, 'unsupported_node_version');
@@ -32,7 +36,7 @@ test('does not report readiness when the application runs on an unsupported Node
       status: 200,
       json: async () => ({
         format: 'contractor-ai-support-bundle/v1',
-        application: { node: 'v25.2.1', runtimeMode: 'hosted' },
+        application: { node: 'v26.0.0', runtimeMode: 'hosted' },
         database: { mode: 'postgres' },
         readiness: { runtimeReady: true }
       })
@@ -82,7 +86,7 @@ test('reports hosted runtime readiness only with supported Node and durable prov
       status: 200,
       json: async () => ({
         format: 'contractor-ai-support-bundle/v1',
-        application: { node: 'v22.18.0', runtimeMode: 'hosted' },
+        application: { node: 'v24.10.0', runtimeMode: 'hosted' },
         database: { mode: 'postgres' },
         readiness: { runtimeReady: true, storage: { mode: 's3' } }
       })
@@ -93,6 +97,59 @@ test('reports hosted runtime readiness only with supported Node and durable prov
     assert.equal(report.hostedRuntimeReady, true);
     assert.deepEqual(report.hostedRuntimeIssues, []);
     assert.deepEqual(report.deployment, { mode: 'hosted', databaseMode: 'postgres', storageMode: 's3' });
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('reports endpoint connection failures without exposing raw network errors', async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async url => {
+    const error = new Error(`connect ECONNREFUSED ${url} bearer-secret`);
+    error.code = 'ECONNREFUSED';
+    throw error;
+  };
+  try {
+    const report = await runDoctor({ baseUrl: 'http://127.0.0.1:3000', token: 'bearer-secret', timeoutMs: 1_000 });
+    assert.equal(report.ready, false);
+    assert.equal(report.readiness.status, 'connection_failed');
+    assert.equal(report.support.status, 'connection_failed');
+    assert.deepEqual(report.endpointFailures, [
+      { endpoint: '/api/health/ready', code: 'connection_failed' },
+      { endpoint: '/api/operations/support-bundle', code: 'connection_failed' }
+    ]);
+    assert.equal(JSON.stringify(report).includes('bearer-secret'), false);
+    assert.equal(JSON.stringify(report).includes('ECONNREFUSED'), false);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('reports the doctor CLI Node version separately when the target is unreachable', async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async () => { throw new Error('connection refused'); };
+  try {
+    const report = await runDoctor({ baseUrl: 'http://127.0.0.1:3000', token: '', timeoutMs: 1_000 });
+    assert.deepEqual(report.runtimeCompatibility.doctorCli, assessNodeCompatibility(process.version));
+    assert.deepEqual(report.runtimeCompatibility.node, assessNodeCompatibility(null));
+    assert.equal(report.ready, false);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('distinguishes endpoint timeouts from connection failures', async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async () => {
+    const error = new Error('The operation was aborted');
+    error.name = 'AbortError';
+    throw error;
+  };
+  try {
+    const report = await runDoctor({ baseUrl: 'http://127.0.0.1:3000', token: '', timeoutMs: 1_000 });
+    assert.equal(report.readiness.status, 'timeout');
+    assert.equal(report.support.status, 'timeout');
+    assert.deepEqual(report.endpointFailures.map(failure => failure.code), ['timeout', 'timeout']);
   } finally {
     global.fetch = originalFetch;
   }

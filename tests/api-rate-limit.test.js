@@ -100,3 +100,26 @@ test('HMAC bucket assignment bounds retained API limiter cardinality', async t =
     database.close();
   }
 });
+
+test('IPv6 callers in one /56 share the privacy-preserving request bucket', async t => {
+  const loaded = loadServer({ limit: 50, bucketCount: 100, trustedProxy: 'loopback' });
+  t.after(() => fs.rmSync(loaded.stateDirectory, { recursive: true, force: true }));
+  await withServer(loaded.app, async baseUrl => {
+    for (const address of ['2001:db8:abcd:1201::1', '2001:db8:abcd:12ff::99']) {
+      const result = await request(baseUrl, '/api/not-a-route', {
+        headers: { 'X-Forwarded-For': address }
+      });
+      assert.equal(result.response.status, 404);
+    }
+  });
+
+  const database = new DatabaseSync(path.join(loaded.stateDirectory, 'ledger.sqlite'), { readOnly: true });
+  try {
+    const rows = database.prepare('SELECT key_hash FROM api_rate_limits').all();
+    assert.equal(rows.length, 1);
+    assert.match(rows[0].key_hash, /^[a-f0-9]{64}$/);
+    assert.equal(JSON.stringify(rows).includes('2001:db8'), false);
+  } finally {
+    database.close();
+  }
+});

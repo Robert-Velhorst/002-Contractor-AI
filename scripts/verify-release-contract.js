@@ -859,6 +859,7 @@ function verifyReleaseContract(root = path.resolve(__dirname, '..')) {
     'workflow_dispatch:',
     'release_tag:',
     'docker buildx create --name contractor-ai-release --driver docker-container --use',
+    '--tag "${IMAGE}:sha-${SOURCE_SHA::12}"',
     '--sbom=true',
     '--provenance=mode=max',
     'release_sha="$(git rev-parse "refs/tags/$tag^{commit}")"',
@@ -873,6 +874,9 @@ function verifyReleaseContract(root = path.resolve(__dirname, '..')) {
   }
   if (!releaseWorkflow.includes('--label "org.opencontainers.image.revision=${{ needs.verify-release-source.outputs.source_sha }}"')) {
     failures.push('Container provenance labels must use the validated release source commit.');
+  }
+  if (releaseWorkflow.includes('--tag "${IMAGE}:sha-${GITHUB_SHA::12}"')) {
+    failures.push('Container source tags must use the validated release tag commit, not the workflow-dispatch commit.');
   }
 
   return {

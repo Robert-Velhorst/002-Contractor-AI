@@ -766,7 +766,14 @@ function buildTakeoffWorkBreakdown(items = []) {
 }
 
 function normalizeTakeoffItem(payload = {}) {
-  const description = normalizeText(payload.description || payload.name, '');
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    throw ledgerInputError('takeoff_item_invalid', 'Takeoff measurement must be an object.');
+  }
+  const descriptionInput = payload.description || payload.name;
+  if (descriptionInput !== undefined && descriptionInput !== null && typeof descriptionInput !== 'string') {
+    throw ledgerInputError('takeoff_item_description_invalid', 'Takeoff item description must be text.');
+  }
+  const description = normalizeText(descriptionInput, '');
   if (description.length < 2 || description.length > 240) {
     throw ledgerInputError('takeoff_item_description_invalid', 'Takeoff item description must be between 2 and 240 characters.');
   }
@@ -778,7 +785,11 @@ function normalizeTakeoffItem(payload = {}) {
   if (!TAKEOFF_MEASUREMENT_TYPES.has(measurementType)) {
     throw ledgerInputError('takeoff_measurement_type_invalid', `Measurement type must be one of: ${[...TAKEOFF_MEASUREMENT_TYPES].join(', ')}.`);
   }
-  const category = normalizeStatus(payload.category, 'material');
+  const categoryInput = payload.category;
+  if (categoryInput !== undefined && typeof categoryInput !== 'string') {
+    throw ledgerInputError('takeoff_category_invalid', 'Takeoff category must be a supported text value.');
+  }
+  const category = normalizeStatus(categoryInput, 'material');
   if (!TAKEOFF_CATEGORIES.has(category)) {
     throw ledgerInputError('takeoff_category_invalid', `Takeoff category must be one of: ${[...TAKEOFF_CATEGORIES].join(', ')}.`);
   }

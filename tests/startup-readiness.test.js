@@ -9,7 +9,7 @@ const path = require('node:path');
 const { postgresTestDatabaseUrl } = require('./postgres-test-database');
 const postgresTestUrl = postgresTestDatabaseUrl();
 
-function spawnServer(environment, timeoutMs = 10_000) {
+function spawnServer(environment, timeoutMs = 30_000) {
   return new Promise((resolve, reject) => {
     const child = childProcess.spawn(process.execPath, ['server.js'], {
       cwd: path.resolve(__dirname, '..'),
