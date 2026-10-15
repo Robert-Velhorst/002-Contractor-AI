@@ -125,6 +125,19 @@ test('reports endpoint connection failures without exposing raw network errors',
   }
 });
 
+test('reports the doctor CLI Node version separately when the target is unreachable', async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async () => { throw new Error('connection refused'); };
+  try {
+    const report = await runDoctor({ baseUrl: 'http://127.0.0.1:3000', token: '', timeoutMs: 1_000 });
+    assert.deepEqual(report.runtimeCompatibility.doctorCli, assessNodeCompatibility(process.version));
+    assert.deepEqual(report.runtimeCompatibility.node, assessNodeCompatibility(null));
+    assert.equal(report.ready, false);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test('distinguishes endpoint timeouts from connection failures', async () => {
   const originalFetch = global.fetch;
   global.fetch = async () => {
