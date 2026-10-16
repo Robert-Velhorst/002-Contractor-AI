@@ -1336,6 +1336,7 @@ public final class MainActivity extends Activity {
         if (pdf != null) showPack(); else if (data != null) showJobs(); else finish();
     }
     @SuppressWarnings("deprecation")
+    @SuppressLint("GestureBackNavigation")
     @Override public void onBackPressed() { if (Build.VERSION.SDK_INT < 33) handleBack(); }
     @Override protected void onResume() { super.onResume(); activityVisible = true; scheduleReplyRefresh(); }
     @Override protected void onPause() { activityVisible = false; replyHandler.removeCallbacks(refreshReplies); super.onPause(); }
