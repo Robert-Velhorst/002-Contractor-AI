@@ -31,10 +31,10 @@ jobs:
         run: |
           set -euo pipefail
           sdk="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
-          test -f "$sdk/platforms/android-37.0/android.jar"
+          test -f "$sdk/platforms/android-37.2/android.jar"
           test -f "$sdk/build-tools/37.0.0/source.properties"
           if [ ! -e "$sdk/platforms/android-37" ]; then
-            ln -s "$sdk/platforms/android-37.0" "$sdk/platforms/android-37"
+            ln -s "$sdk/platforms/android-37.2" "$sdk/platforms/android-37"
           fi
           test -f "$sdk/platforms/android-37/android.jar"
           echo "ANDROID_HOME=$sdk" >> "$GITHUB_ENV"
