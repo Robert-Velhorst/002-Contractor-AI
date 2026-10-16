@@ -32,6 +32,14 @@ function postgresTestFiles(testFiles = allTestFiles()) {
     .match(/CONTRACTOR_AI_POSTGRES_TEST_URL|require\('\.\/postgres-test-database'\)/));
 }
 
+function serialStressTestFiles(testFiles = allTestFiles()) {
+  const serialFiles = new Set([
+    'ledger-performance-benchmark.test.js',
+    'evidence-storage-reservations.test.js'
+  ]);
+  return testFiles.filter(file => serialFiles.has(path.posix.basename(file)));
+}
+
 function withTestConcurrency(args, concurrency) {
   const normalized = [];
   for (let index = 0; index < args.length; index += 1) {
@@ -93,20 +101,28 @@ function runNodeTests(args = process.argv.slice(2)) {
   let result;
   try {
     const discovered = hasExplicitTestFile ? [] : allTestFiles();
-    const sharedPostgresFiles = process.env.CONTRACTOR_AI_POSTGRES_TEST_URL && !hasExplicitTestFile
-      ? postgresTestFiles(discovered)
+    const serialStressFiles = hasExplicitTestFile ? [] : serialStressTestFiles(discovered);
+    const concurrentCandidates = discovered.filter(file => !serialStressFiles.includes(file));
+    const sharedPostgresFiles = process.env.CONTRACTOR_AI_POSTGRES_TEST_URL
+      ? postgresTestFiles(concurrentCandidates)
       : [];
+    let concurrentResult;
     if (sharedPostgresFiles.length) {
       const sharedSet = new Set(sharedPostgresFiles);
-      const parallelFiles = discovered.filter(file => !sharedSet.has(file));
+      const parallelFiles = concurrentCandidates.filter(file => !sharedSet.has(file));
       console.log(`Running ${parallelFiles.length} isolated test files in parallel, then ${sharedPostgresFiles.length} shared PostgreSQL files serially.`);
-      result = executeTests([...args, ...parallelFiles], runtimeDirectory);
-      if (!result.error && result.status === 0) {
-        result = executeTests([...withTestConcurrency(args, 1), ...sharedPostgresFiles], runtimeDirectory);
+      concurrentResult = executeTests([...args, ...parallelFiles], runtimeDirectory);
+      if (!concurrentResult.error && concurrentResult.status === 0) {
+        concurrentResult = executeTests([...withTestConcurrency(args, 1), ...sharedPostgresFiles], runtimeDirectory);
       }
     } else {
-      const testArguments = hasExplicitTestFile ? args : [...args, ...discovered];
-      result = executeTests(testArguments, runtimeDirectory);
+      const testArguments = hasExplicitTestFile ? args : [...args, ...concurrentCandidates];
+      concurrentResult = executeTests(testArguments, runtimeDirectory);
+    }
+    result = concurrentResult;
+    if (!hasExplicitTestFile && !concurrentResult.error && concurrentResult.status === 0 && serialStressFiles.length) {
+      console.log(`Running ${serialStressFiles.length} resource stress test files serially after the functional suite.`);
+      result = executeTests([...withTestConcurrency(args, 1), ...serialStressFiles], runtimeDirectory);
     }
   } finally {
     cleanupRuntimeDirectory(runtimeDirectory);
@@ -132,5 +148,6 @@ module.exports = {
   nodeTestEnvironment,
   postgresTestFiles,
   runNodeTests,
+  serialStressTestFiles,
   withTestConcurrency
 };

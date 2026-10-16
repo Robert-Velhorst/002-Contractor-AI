@@ -154,3 +154,26 @@ test('distinguishes endpoint timeouts from connection failures', async () => {
     global.fetch = originalFetch;
   }
 });
+
+test('reports a timeout and connection failure independently for concurrent doctor probes', async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async (url, options) => {
+    if (url.endsWith('/api/health/ready')) {
+      return new Promise((resolve, reject) => {
+        options.signal.addEventListener('abort', () => reject(new DOMException('request aborted', 'AbortError')), { once: true });
+      });
+    }
+    throw new TypeError('connection refused');
+  };
+  try {
+    const report = await runDoctor({ baseUrl: 'http://127.0.0.1:3000', token: '', timeoutMs: 1_000 });
+    assert.equal(report.readiness.status, 'timeout');
+    assert.equal(report.support.status, 'connection_failed');
+    assert.deepEqual(report.endpointFailures, [
+      { endpoint: '/api/health/ready', code: 'timeout' },
+      { endpoint: '/api/operations/support-bundle', code: 'connection_failed' }
+    ]);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});

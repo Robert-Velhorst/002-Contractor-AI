@@ -97,12 +97,20 @@ test('built dashboard uses immutable asset caching, no-store HTML, and compressi
 
 test('Node test runner discovers every test exactly once and npm has no duplicate pretest hook', () => {
   const packageJson = require('../package.json');
-  const { allTestFiles, postgresTestFiles, withTestConcurrency } = require('../scripts/run-node-tests');
+  const { allTestFiles, postgresTestFiles, serialStressTestFiles, withTestConcurrency } = require('../scripts/run-node-tests');
   const files = allTestFiles();
   const postgresFiles = postgresTestFiles(files);
+  const serialStressFiles = serialStressTestFiles(files);
+  const concurrentFiles = files.filter(file => !serialStressFiles.includes(file));
   assert.equal(packageJson.scripts.pretest, undefined);
   assert.match(packageJson.scripts.test, /--test-concurrency=4(?:\s|$)/);
   assert.equal(new Set(files).size, files.length);
+  assert.deepEqual(serialStressFiles, [
+    'tests/evidence-storage-reservations.test.js',
+    'tests/ledger-performance-benchmark.test.js'
+  ]);
+  assert.equal(new Set([...concurrentFiles, ...serialStressFiles]).size, files.length);
+  assert.deepEqual([...concurrentFiles, ...serialStressFiles].sort((left, right) => left.localeCompare(right)), files);
   assert.ok(files.includes('tests/hai-connector.test.js'));
   assert.ok(files.includes('tests/windows-standalone.test.js'));
   assert.deepEqual(files, [...files].sort((left, right) => left.localeCompare(right)));
@@ -169,6 +177,7 @@ test('browser test servers use the same Node executable as the test runner', () 
     delete require.cache[filename];
     const config = require(filename);
     assert.equal(config.webServer.length, 2);
+    assert.equal(config.use.launchOptions, undefined);
     for (const server of config.webServer) {
       assert.equal(server.command, `"${process.execPath}" server.js`);
       assert.equal(server.reuseExistingServer, false);
@@ -179,6 +188,34 @@ test('browser test servers use the same Node executable as the test runner', () 
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
     }
+  }
+});
+
+test('browser test config accepts only installed Chrome channels when explicitly selected', () => {
+  const filename = require.resolve('../playwright.config');
+  const previous = {
+    runtime: process.env.CONTRACTOR_AI_BROWSER_RUNTIME_DIR,
+    localPort: process.env.CONTRACTOR_AI_BROWSER_LOCAL_PORT,
+    authPort: process.env.CONTRACTOR_AI_BROWSER_AUTH_PORT,
+    channel: process.env.CONTRACTOR_AI_BROWSER_CHANNEL
+  };
+  try {
+    process.env.CONTRACTOR_AI_BROWSER_RUNTIME_DIR = path.join(os.tmpdir(), 'contractor-ai-browser-config-contract');
+    process.env.CONTRACTOR_AI_BROWSER_LOCAL_PORT = '49101';
+    process.env.CONTRACTOR_AI_BROWSER_AUTH_PORT = '49102';
+    process.env.CONTRACTOR_AI_BROWSER_CHANNEL = 'chrome';
+    delete require.cache[filename];
+    assert.deepEqual(require(filename).use.launchOptions, { channel: 'chrome' });
+    process.env.CONTRACTOR_AI_BROWSER_CHANNEL = 'unstable';
+    delete require.cache[filename];
+    assert.throws(() => require(filename), /must be chrome or msedge/);
+  } finally {
+    delete require.cache[filename];
+    const restore = (key, value) => value === undefined ? delete process.env[key] : process.env[key] = value;
+    restore('CONTRACTOR_AI_BROWSER_RUNTIME_DIR', previous.runtime);
+    restore('CONTRACTOR_AI_BROWSER_LOCAL_PORT', previous.localPort);
+    restore('CONTRACTOR_AI_BROWSER_AUTH_PORT', previous.authPort);
+    restore('CONTRACTOR_AI_BROWSER_CHANNEL', previous.channel);
   }
 });
 

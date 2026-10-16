@@ -158,7 +158,7 @@ function browserTestEnvironment(env = process.env) {
     'XDG_RUNTIME_DIR', 'DISPLAY', 'WAYLAND_DISPLAY', 'LANG', 'LC_ALL', 'LC_CTYPE',
     'TZ', 'CI', 'FORCE_COLOR', 'NO_COLOR', 'TERM', 'COLORTERM',
     'PLAYWRIGHT_BROWSERS_PATH', 'PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD',
-    'CONTRACTOR_AI_VISUAL_QA_DIR'
+    'CONTRACTOR_AI_VISUAL_QA_DIR', 'CONTRACTOR_AI_BROWSER_CHANNEL'
   ]);
   // Scrub the Playwright parent too: its web servers inherit that environment.
   return {

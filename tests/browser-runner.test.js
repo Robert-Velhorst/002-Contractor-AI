@@ -50,6 +50,7 @@ test('browser child environment retains case-insensitive platform, CI and browse
     Path: 'platform-path', SystemRoot: 'platform-root', TEMP: 'temporary-files', TMPDIR: 'temporary-files',
     HOME: 'home', USERPROFILE: 'profile', LOCALAPPDATA: 'local-appdata', LANG: 'nl_NL.UTF-8', TZ: 'Europe/Amsterdam',
     CI: 'true', PLAYWRIGHT_BROWSERS_PATH: 'browser-cache', CONTRACTOR_AI_VISUAL_QA_DIR: 'screenshots',
+    CONTRACTOR_AI_BROWSER_CHANNEL: 'chrome',
     contractor_ai_database_url: 'postgres://fixture.invalid', npm_config_registry: 'https://fixture.invalid'
   };
   const safe = browserTestEnvironment(source);

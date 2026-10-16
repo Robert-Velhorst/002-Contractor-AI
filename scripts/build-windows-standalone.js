@@ -87,6 +87,7 @@ const runtimeFiles = [
   'multipart-parser.js',
   'operating-ledger.js',
   'authorization-header.js',
+  'trusted-proxy.js',
   'email-validation.js',
   'package.json',
   'package-lock.json',

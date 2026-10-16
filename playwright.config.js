@@ -17,6 +17,10 @@ function configuredPort(name) {
 const localPort = configuredPort('CONTRACTOR_AI_BROWSER_LOCAL_PORT');
 const authPort = configuredPort('CONTRACTOR_AI_BROWSER_AUTH_PORT');
 if (localPort === authPort) throw new Error('Browser test servers require distinct ports.');
+const browserChannel = String(process.env.CONTRACTOR_AI_BROWSER_CHANNEL || '').trim();
+if (browserChannel && !['chrome', 'msedge'].includes(browserChannel)) {
+  throw new Error('CONTRACTOR_AI_BROWSER_CHANNEL must be chrome or msedge.');
+}
 const browserRoleTokens = JSON.stringify({
   owner: 'browser-owner-token-at-least-32-characters',
   office_operator: 'browser-office-token-at-least-32-characters',
@@ -36,6 +40,7 @@ module.exports = defineConfig({
   reporter: 'line',
   use: {
     baseURL: `http://127.0.0.1:${localPort}`,
+    ...(browserChannel ? { launchOptions: { channel: browserChannel } } : {}),
     screenshot: 'only-on-failure',
     trace: 'retain-on-failure'
   },

@@ -5,6 +5,7 @@ const express = require('express');
 const { ipKeyGenerator, rateLimit } = require('express-rate-limit');
 const { IdentityRegistry, VERSION, fail, equal, hash, registryOptions } = require('./identity-registry');
 const { registryAdapter } = require('./identity-oidc-adapter');
+const { parseTrustedProxyConfiguration } = require('./trusted-proxy');
 const identityRateLimitSecret = crypto.randomBytes(32);
 const identityRateLimitBuckets = 5000;
 function identityRateLimitKeyFor(req) {
@@ -46,6 +47,7 @@ function cookie(req, name) {
 }
 
 async function createIdentityApp({ registry, distDir = path.join(__dirname, 'dist'), trustProxy = false } = {}) {
+  const trustedProxyConfiguration = parseTrustedProxyConfiguration(trustProxy);
   const { Provider } = await import('oidc-provider');
   const secure = new URL(registry.issuer).protocol === 'https:';
   const suffix = hash(registry.issuer).slice(0, 12);
@@ -92,10 +94,11 @@ async function createIdentityApp({ registry, distDir = path.join(__dirname, 'dis
     },
     renderError: async ctx => { ctx.type = 'text/plain'; ctx.body = 'Aanmelden is niet gelukt. Open je bedrijfsomgeving en begin opnieuw.'; },
   });
-  provider.proxy = Boolean(trustProxy);
+  provider.proxy = Boolean(trustedProxyConfiguration);
   const app = express();
   app.disable('x-powered-by');
-  if (trustProxy) app.set('trust proxy', trustProxy);
+  app.set('trust proxy', trustedProxyConfiguration || false);
+  if (trustedProxyConfiguration) app.get('trust proxy fn');
   app.use(identityRequestRateLimit);
   app.use((req, res, next) => {
     res.set({ 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer',
@@ -253,4 +256,4 @@ if (require.main === module) startIdentityServer().then(({ server, registry }) =
   });
 }).catch(error => { process.stderr.write(`Identity startup failed: ${error.code || 'configuration_error'}\n`); process.exitCode = 1; });
 
-module.exports = { createIdentityApp, startIdentityServer, cookie, identityRateLimitKeyFor };
+module.exports = { createIdentityApp, startIdentityServer, cookie, identityRateLimitKeyFor, parseTrustedProxyConfiguration };
