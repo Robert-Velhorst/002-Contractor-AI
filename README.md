@@ -1454,6 +1454,4 @@ commitments.
 
 ## License
 
-`package.json` declares MIT. A repository-level `LICENSE` file is not currently
-present, so add and review one before relying on that metadata for distribution
-or third-party use.
+This repository is licensed under the GNU Affero General Public License v3.0 only (`AGPL-3.0-only`). See [`LICENSE`](LICENSE) for the complete terms.
