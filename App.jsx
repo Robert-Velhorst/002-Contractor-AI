@@ -2239,7 +2239,9 @@ function App() {
 
   function refreshCurrentView() {
     if (sectionRef.current === 'operations') {
-      void refreshSection('operations', resourceViewRef.current)
+      void refresh().then(() => {
+        if (sectionRef.current === 'operations') void refreshOperationsCommandPlan()
+      })
       return
     }
     void refresh()

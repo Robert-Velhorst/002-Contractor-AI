@@ -416,7 +416,7 @@ test('dashboard warms code without ledger reads and cancels abandoned mobile sec
   await testInfo.attach('navigation-observation', { path: observationPath, contentType: 'application/json' });
 });
 
-test('manual operations refresh does not reuse an aborted navigation signal', async ({ page }) => {
+test('manual operations refresh reloads shared operator state without reusing an aborted navigation signal', async ({ page }) => {
   await page.goto('/');
   await page.getByLabel(/^(Language|Taal)$/).selectOption('en-GB');
   const nav = page.getByRole('navigation', { name: 'Work areas', exact: true });
@@ -426,9 +426,20 @@ test('manual operations refresh does not reuse an aborted navigation signal', as
   await nav.getByRole('button', { name: 'Operations', exact: true }).click();
   expect((await first).ok()).toBe(true);
   await expect(page.locator('.workspace-content')).not.toHaveAttribute('inert');
+  const sharedStateResponses = new Set();
+  page.on('response', response => {
+    const url = new URL(response.url());
+    if (response.request().method() === 'GET') sharedStateResponses.add(`${url.pathname}${url.search}`);
+  });
   const refreshed = page.waitForResponse(isPlan);
   await page.getByRole('button', { name: 'Refresh data', exact: true }).click();
   expect((await refreshed).ok()).toBe(true);
+  await expect.poll(() => [...sharedStateResponses]).toEqual(expect.arrayContaining([
+    '/api/session',
+    '/api/ledger/jobs?limit=100',
+    '/api/ledger/dashboard',
+    '/api/ledger/approvals?status=pending&limit=100',
+  ]));
   await expect(page.locator('.workspace-content')).not.toHaveAttribute('inert');
   await expect(page.locator('.error-banner')).toHaveCount(0);
 });
