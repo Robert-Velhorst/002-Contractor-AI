@@ -26,6 +26,7 @@ import java.util.Calendar;
 import java.text.DateFormat;
 import java.util.Date;
 import java.util.List;
+import java.util.Iterator;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -667,7 +668,13 @@ public final class MainActivity extends Activity {
             text("Bron actueel: " + (item.optBoolean("sourceCurrent") ? "ja" : "nee") + " | Integriteit: " + (item.optBoolean("integrityValid") ? "geverifieerd" : "controleren") + " | " + (item.optBoolean("isLatestForWorkerPlan") ? "Meest recent" : "Vervangen door nieuwere beoordeling") + (item.optBoolean("expired") ? " | Verlopen" : "") + " | Geldig tot: " + item.optString("validUntil"), 15);
             text(item.optString("stopWorkReason"), 15); textRows(item.optJSONArray("observedHazards"), "Waargenomen gevaar: "); textRows(item.optJSONArray("blockers"), "Controlepunt: ");
             JSONObject checks = item.optJSONObject("checks");
-            if (checks != null) for (String key : checks.keySet()) text(key + ": " + (checks.optBoolean(key) ? "bevestigd" : "niet bevestigd"), 15);
+            if (checks != null) {
+                Iterator<String> keys = checks.keys();
+                while (keys.hasNext()) {
+                    String key = keys.next();
+                    text(key + ": " + (checks.optBoolean(key) ? "bevestigd" : "niet bevestigd"), 15);
+                }
+            }
         }
     }
     private void safetyBriefingControls(JSONObject workPack) {
