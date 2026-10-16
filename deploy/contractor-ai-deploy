@@ -53,6 +53,31 @@ check_file "$ENV_FILE" 600
 check_file "$COMPOSE_FILE_PATH"
 [[ -x "$DOCKER" && -x "$ENV_BIN" ]] || fail 'Docker or env CLI is missing from its fixed system path.'
 
+check_environment_keys() {
+  local invalid
+  invalid=$(awk '
+    /^[[:space:]]*#/ || /^[[:space:]]*$/ { next }
+    {
+      line = $0
+      sub(/^[[:space:]]*/, "", line)
+      if (line !~ /^[A-Za-z_][A-Za-z0-9_]*=/) {
+        print "invalid"
+        exit
+      }
+      key = line
+      sub(/[[:space:]]*=.*/, "", key)
+      sub(/[[:space:]]*$/, "", key)
+      if (seen[key]++) {
+        print key
+        exit
+      }
+    }
+  ' "$ENV_FILE")
+  [[ -z "$invalid" ]] || fail "hosted environment file contains a duplicate or invalid assignment: $invalid"
+}
+
+check_environment_keys
+
 run_compose() {
   "$ENV_BIN" -i "PATH=$SAFE_PATH" HOME=/root "$DOCKER" compose \
     --env-file "$ENV_FILE" -f "$COMPOSE_FILE_PATH" "$@"
@@ -137,6 +162,9 @@ validate_configuration() {
   [[ "$(env_value CONTRACTOR_AI_WORK_BOARD_REGISTRATION_ENABLED)" != true ]] || fail 'public worker registration must remain disabled until separately accepted.'
 
   run_compose config --quiet
+  local configured_images
+  configured_images=$(run_compose config --images)
+  [[ "$configured_images" == "$image" ]] || fail 'resolved Compose image does not exactly match the validated immutable image.'
 }
 
 case "$action" in

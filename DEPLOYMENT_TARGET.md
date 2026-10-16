@@ -1,23 +1,15 @@
 # Hetzner Production Deployment
 
-Hetzner is the target for production. This guide describes the release path; it
-does not certify a provider, DPA, region, database, storage bucket, backup
-policy, or live deployment. The current General-Server is a CPX12 in
-Falkenstein (`159.69.55.178`). The Hetzner console currently shows Debian 12
-Rescue System at `rescue login:`; it reports boot since 2026-10-16 22:33
-Europe/Amsterdam. The installed normal OS was previously observed as Ubuntu
-24.04.4 LTS with hostname `013-hire-ai`, an existing host for another service.
-Do not reinstall, reset, or overwrite its disk. Rescue and normal-OS
-credentials have not been entered during this deployment attempt. The rescue
-SSH host identity is not verified; do not accept a changed host key or replace
-the saved key. A prior strict SSH check against the normal OS matched the
-workstation's saved key, but public-key authentication was rejected for both
-`deploy` and `root`; password authentication was not attempted. The last
-authenticated normal-OS inspection found no Docker or sudo privileges for
-`deploy` and no `/opt/contractor-ai` installation. Current services, disk
-contents, resource usage, and free space cannot be inspected until an operator
-opens an authenticated rescue shell. Do not grant `deploy` the `docker` group:
-Docker access is effectively root access.
+Hetzner is the intended EU production target. This guide describes the release
+path; it does not certify a provider, DPA, region, database, storage bucket,
+backup policy, or live deployment. An authenticated, read-only console
+inspection on 2026-10-16 confirmed the installed operating system and Docker
+Compose are available, and existing production workloads already share the VM.
+Contractor.AI was not installed. Perform a private capacity and ingress review
+before provisioning. Keep hostnames, addresses and other services' inventory
+in private operator records. Do not reset or reinstall the host, or grant a
+deployment identity the `docker` group: Docker access is effectively root
+access.
 
 ## Required architecture
 
@@ -38,11 +30,11 @@ Docker access is effectively root access.
 - Independent, encrypted backup retention and a tested database plus object
   version restore procedure.
 
-The current VM is a small CPX12 (2 vCPU, 2 GB RAM, 40 GB local disk). It is an
-existing target, not proof of production capacity. Measure memory and disk while
-pulling and starting the image; do not build release images on this host. Keep
-the database and evidence outside the VM. Set resource alerts before production
-traffic and resize only after capacity review.
+The existing VM is shared and has limited spare capacity; this is not proof of
+production capacity. Keep the database and evidence outside the VM. Measure
+memory and disk while pulling and starting any image; do not build release
+images on this host. Set resource alerts before production traffic and assess
+capacity and co-residency before deployment.
 
 ## Release and deployment
 
@@ -137,17 +129,13 @@ the prior image digest. A rollback is not complete until those checks pass.
 
 ## Current blockers
 
-The server is currently in Hetzner Rescue Mode at a `rescue login:` prompt; no
-authenticated shell is available to inspect the installed Ubuntu system,
-existing workloads, or capacity. The normal disk was previously observed as
-Ubuntu 24.04.4 with hostname `013-hire-ai`, so preserve it and verify its
-services before any provisioning. Contractor.AI's installation, environment
-file, database, object store, proxy route, TLS certificate, migration, and
-production backup are not installed or verified. Do not reset or reinstall
-the VM.
-Domain DNS still points elsewhere and a request to the current destination
-timed out during inspection. The current server's capacity has not been load
-tested. The existing `v1.1.0-rc.1` release points to commit
+Contractor.AI's installation, environment file, database, object store, proxy
+route, TLS certificate, migration, and production backup are not installed or
+verified. The console inventory confirmed that the host already serves other
+production workloads and has limited spare capacity; do not reset or reinstall
+it. DNS ownership, target records, ingress configuration and cutover are not
+verified. The host's Contractor.AI capacity has not been load tested. The
+existing `v1.1.0-rc.1` release points to commit
 `62d0872cd7a44d123a4e4535936702f21cb8ec1b`, but its release workflow's container
 job failed because attestations were requested from the default Docker driver.
 The tag's GHCR manifest is present, but that failed run does not establish a

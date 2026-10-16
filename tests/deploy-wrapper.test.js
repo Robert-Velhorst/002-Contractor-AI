@@ -40,6 +40,9 @@ test('deployment wrapper and sudoers policy fail closed on mutable deployment in
   assert.match(script, /\[\[ "\$\(id -u\)" -eq 0 \]\]/);
   assert.match(script, /stat -c '%u' "\$file"/);
   assert.match(script, /check_file "\$ENV_FILE" 600/);
+  assert.match(script, /check_environment_keys\r?\n/);
+  assert.match(script, /contains a duplicate or invalid assignment/);
+  assert.match(script, /line !~ \/\^\[A-Za-z_\]\[A-Za-z0-9_\]\*=\//);
   assert.match(script, /setting must appear exactly once/);
   assert.match(script, /CORS_ORIGINS must include the exact/);
   assert.match(script, /CONTRACTOR_AI_S3_PREFIX must stay within/);
@@ -50,6 +53,8 @@ test('deployment wrapper and sudoers policy fail closed on mutable deployment in
   assert.match(script, /readonly ENV_BIN=\/usr\/bin\/env/);
   assert.match(script, /"\$ENV_BIN" -i "PATH=\$SAFE_PATH" HOME=\/root "\$DOCKER" compose/);
   assert.match(script, /run_compose config --quiet/);
+  assert.match(script, /run_compose config --images/);
+  assert.match(script, /resolved Compose image does not exactly match/);
   assert.match(script, /run_compose up --detach --no-build contractor-ai/);
   assert.match(script, /stat -c '%u' \/opt/);
   assert.doesNotMatch(script, /\b(?:source|eval)\b/);
