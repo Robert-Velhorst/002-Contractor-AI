@@ -1,0 +1,39 @@
+name: Verify Android app
+
+on:
+  pull_request:
+    paths:
+      - "android/**"
+      - "scripts/build-android.ps1"
+      - ".github/workflows/android-verify.yml"
+  push:
+    branches: [main]
+    paths:
+      - "android/**"
+      - "scripts/build-android.ps1"
+      - ".github/workflows/android-verify.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  android-build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Verify preinstalled Android SDK components
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdk="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          test -f "$sdk/platforms/android-36/android.jar"
+          test -f "$sdk/build-tools/36.0.0/source.properties"
+          echo "ANDROID_HOME=$sdk" >> "$GITHUB_ENV"
+      - name: Build and lint Android app
+        working-directory: android
+        run: ./gradlew --no-daemon :app:assembleDebug :app:lintDebug

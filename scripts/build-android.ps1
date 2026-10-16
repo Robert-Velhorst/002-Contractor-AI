@@ -1,7 +1,7 @@
 param([string]$Sdk = $env:ANDROID_HOME, [string]$Gradle)
 $ErrorActionPreference = 'Stop'
-if (-not $Sdk -or -not (Test-Path -LiteralPath (Join-Path $Sdk 'platforms/android-36/android.jar'))) {
-    throw 'Install Android SDK platform 36 using the official tools after reviewing their terms, then set ANDROID_HOME. No licenses are accepted by this script.'
+if (-not $Sdk -or -not (Test-Path -LiteralPath (Join-Path $Sdk 'platforms/android-36/android.jar')) -or -not (Test-Path -LiteralPath (Join-Path $Sdk 'build-tools/36.0.0/source.properties'))) {
+    throw 'Install Android SDK platform 36 and Build Tools 36.0.0 using the official tools after reviewing their terms, then set ANDROID_HOME. No licenses are accepted by this script.'
 }
 if (-not $env:JAVA_HOME -or -not (Test-Path -LiteralPath (Join-Path $env:JAVA_HOME 'bin/java.exe'))) {
     throw 'Set JAVA_HOME to an installed JDK 17 or later.'
