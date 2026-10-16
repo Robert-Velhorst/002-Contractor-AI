@@ -1,5 +1,48 @@
 # Security and Privacy
 
+## Report a Vulnerability
+
+Use GitHub's **Report a vulnerability** action on this repository's Security tab
+to send a private vulnerability report. Do not open a public issue or pull
+request for an unpatched security problem. If private reporting is unavailable,
+contact the repository owner privately through a channel listed on the GitHub
+profile; do not include credentials or personal/customer information in a public
+message.
+
+Include the affected revision or release, a concise impact statement, and a
+minimal reproducible example using synthetic data. Avoid accessing, changing, or
+exporting another person's data; do not test against live infrastructure or
+third-party providers without explicit authorization. The maintainer will assess
+reports and coordinate a fix and disclosure where appropriate. This project does
+not currently promise a response-time SLA or a supported-version window.
+
+The policy covers this repository's application code, deployment templates,
+documentation, and GitHub automation. It does not establish authority to test
+GitHub, Vercel, Meta/WhatsApp, Hetzner, or any other separately operated service.
+
+## Repository safeguards
+
+The public repository has GitHub CodeQL default setup, dependency graph and
+automatic dependency submission, Dependabot alerts and security updates, weekly
+dependency update proposals, secret scanning with push protection, and private
+vulnerability reporting enabled. Its active `main`
+ruleset requires a pull request and up-to-date `verify`, `windows-standalone`,
+and three CodeQL language/action checks. It blocks branch deletion and force
+pushes. It does not require an approving review or resolved review threads;
+the repository currently has one maintainer, so automated checks are not a
+substitute for independent review. Generic non-provider secret patterns are
+unavailable for this user-owned repository under the current GitHub plan;
+GitHub documents the feature for organization-owned repositories with GitHub
+Team and Secret Protection. Provider validity checks remain disabled because
+they send detected credentials to issuers for validation. Do not infer either
+capability from provider-pattern scanning or push protection.
+
+GitHub security alerts remain review items until a finding is fixed and a new
+scan confirms the result, or its applicability is documented with evidence.
+Enabling a scanner does not mean that the alert queue is empty. Repository
+security settings and hosted-service controls are separate; local CI does not
+verify the production provider, organization access, or live deployment.
+
 ## Trust boundaries
 
 Contractor.AI treats browser input, uploaded files, portal tokens, proxy headers,
@@ -35,8 +78,9 @@ Rotate the role key to invalidate its sessions after suspected disclosure.
   source address.
 - Helmet-equivalent explicit security headers and CSP compatible with the Vite
   production bundle; no inline event handlers or runtime HTML-string UI rendering.
-- JSON and upload size limits; extension, MIME, signature, path, checksum, ownership,
-  and status checks for evidence.
+- JSON and upload size limits; `MAX_UPLOAD_BYTES` is validated as a finite,
+  bounded base-10 integer before the server listens. Extension, MIME, signature,
+  path, checksum, ownership, and status checks apply to evidence.
 - Stored evidence is read through authenticated ledger routes, never public static
   paths or object URLs.
 - Request bodies cannot select an audit identity. The server binds every parsed

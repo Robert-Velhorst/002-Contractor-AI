@@ -7,10 +7,15 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   verify:
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    permissions:
+      contents: read
     services:
       postgres:
         image: postgres:16-alpine
@@ -29,10 +34,10 @@ jobs:
     env:
       CONTRACTOR_AI_POSTGRES_TEST_URL: postgresql://contractor_ai:contractor-ai-ci-password@localhost:5432/contractor_ai_test_ci?sslmode=verify-full
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
-          node-version: 22
+          node-version: 26.12.0
           cache: npm
       - run: npm ci
       - name: Enable TLS on PostgreSQL test service
@@ -68,7 +73,7 @@ jobs:
       - run: npm run verify:bundle -- --report artifacts/bundle-budget-ci.json
       - name: Upload bundle-budget evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: bundle-budget-report
           path: artifacts/bundle-budget-ci.json
@@ -81,7 +86,7 @@ jobs:
         timeout-minutes: 10
       - name: Upload ledger performance report
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ledger-performance-report
           path: artifacts/ledger-benchmark-ci.json
@@ -96,7 +101,7 @@ jobs:
           TMPDIR: ${{ runner.temp }}
       - name: Upload browser candidate and failure evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: browser-candidate-evidence
           path: ${{ runner.temp }}/contractor-ai-browser-results-*
@@ -105,11 +110,13 @@ jobs:
   windows-standalone:
     runs-on: windows-latest
     timeout-minutes: 30
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
-          node-version: 22
+          node-version: 26.12.0
           cache: npm
       - run: npm ci
       - run: npm run package:windows
@@ -117,7 +124,7 @@ jobs:
       - name: Package portable Windows folder
         shell: powershell
         run: Compress-Archive -Path release/ContractorAI-windows-x64/* -DestinationPath release/ContractorAI-windows-x64.zip -Force
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ContractorAI-windows-x64
           path: release/ContractorAI-windows-x64.zip

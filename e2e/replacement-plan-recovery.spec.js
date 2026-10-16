@@ -26,6 +26,11 @@ test('recovery replacement survives a lost server response without duplicate pro
     expect(response.ok(), await response.text()).toBeTruthy();
     return response.json();
   }
+  async function openProject() {
+    const row = page.getByRole('row').filter({ hasText: title });
+    await expect(row).toHaveCount(1);
+    await row.getByRole('button', { name: `${title} openen`, exact: true }).click();
+  }
   const original = (await post('/api/ledger/workers', { name: `Afwezige ${suffix}`, role, status: 'available' })).worker;
   const replacement = (await post('/api/ledger/workers', { name: `Vervanger ${suffix}`, role, status: 'available' })).worker;
   const scheduledStart = new Date(Date.now() + 20 * 86400000).toISOString();
@@ -48,7 +53,7 @@ test('recovery replacement survives a lost server response without duplicate pro
   await page.getByLabel(/^(Language|Taal)$/).selectOption('nl-NL');
   await expect(page.getByRole('button', { name: 'Projecten', exact: true })).toBeEnabled();
   await page.getByRole('button', { name: 'Projecten', exact: true }).click();
-  await page.getByRole('button', { name: `${title} openen`, exact: true }).click();
+  await openProject();
   const panel = page.getByRole('region', { name: 'Operationele herstelcasussen' });
   const replacementPanel = panel.getByRole('region', { name: 'Vervanging over opdrachten' });
   await expect(replacementPanel).toBeVisible();
@@ -112,7 +117,7 @@ test('recovery replacement survives a lost server response without duplicate pro
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
   await page.screenshot({ path: `${screenshotRoot}-mobile.png`, fullPage: false });
   await page.reload();
-  await page.getByRole('button', { name: `${title} openen`, exact: true }).click();
+  await openProject();
   await expect(replacementPanel.getByText(`Vervangingsplan ingediend voor onafhankelijke goedkeuring: ${retained.approval.id}. Bezetting blijft ongewijzigd tot besluit.`)).toBeVisible();
   expect(errors).toEqual([]);
   expect(failedRequests).toHaveLength(1);

@@ -82,6 +82,8 @@ const REQUIRED_PATHS = [
   'framework-catalog.js',
   'hai-connector.js',
   'operating-ledger.js',
+  'authorization-header.js',
+  'email-validation.js',
   'postgres-sync-database.js',
   'postgres-sync-worker.js',
   'runtime-lock.js',
@@ -842,11 +844,39 @@ function verifyReleaseContract(root = path.resolve(__dirname, '..')) {
     failures.push('CI PostgreSQL contract must run with sslmode=verify-full and an explicit trusted CA.');
   }
   if (!workflow.includes("SHOW ssl")) failures.push('CI workflow must verify PostgreSQL TLS is active.');
-  for (const windowsRequirement of ['windows-standalone:', 'runs-on: windows-latest', 'npm run package:windows', 'npm run test:windows-package', 'actions/upload-artifact@v7']) {
+  for (const windowsRequirement of ['windows-standalone:', 'runs-on: windows-latest', 'npm run package:windows', 'npm run test:windows-package']) {
     if (!workflow.includes(windowsRequirement)) failures.push(`CI workflow is missing Windows package verification: ${windowsRequirement}`);
+  }
+  if (!/^\s+uses: actions\/upload-artifact@[a-f0-9]{40} # v7\.0\.2$/m.test(workflow)) {
+    failures.push('CI workflow must upload Windows package evidence with the pinned actions/upload-artifact v7.0.2 action.');
   }
   if (workflow.includes('actions/checkout@v7') || workflow.includes('actions/setup-node@v7')) {
     failures.push('CI workflow references an unavailable major for checkout or setup-node.');
+  }
+
+  const releaseWorkflow = fs.readFileSync(path.join(root, '.github', 'workflows', 'publish-release.yml'), 'utf8');
+  for (const requirement of [
+    'workflow_dispatch:',
+    'release_tag:',
+    'docker buildx create --name contractor-ai-release --driver docker-container --use',
+    '--tag "${IMAGE}:sha-${SOURCE_SHA::12}"',
+    '--sbom=true',
+    '--provenance=mode=max',
+    'release_sha="$(git rev-parse "refs/tags/$tag^{commit}")"',
+    'git merge-base --is-ancestor "$release_sha" "$main_sha"',
+    'ref: ${{ needs.verify-release-source.outputs.tag }}',
+    'gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft'
+  ]) {
+    if (!releaseWorkflow.includes(requirement)) failures.push(`Release workflow is missing a required packaging control: ${requirement}`);
+  }
+  if ((releaseWorkflow.match(/^\s+ref: \$\{\{ needs\.verify-release-source\.outputs\.tag \}\}$/gm) || []).length !== 2) {
+    failures.push('Windows and container packages must check out the exact validated release tag.');
+  }
+  if (!releaseWorkflow.includes('--label "org.opencontainers.image.revision=${{ needs.verify-release-source.outputs.source_sha }}"')) {
+    failures.push('Container provenance labels must use the validated release source commit.');
+  }
+  if (releaseWorkflow.includes('--tag "${IMAGE}:sha-${GITHUB_SHA::12}"')) {
+    failures.push('Container source tags must use the validated release tag commit, not the workflow-dispatch commit.');
   }
 
   return {

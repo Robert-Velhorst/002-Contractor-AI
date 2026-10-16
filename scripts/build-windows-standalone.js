@@ -86,6 +86,8 @@ const runtimeFiles = [
   'hai-connector.js',
   'multipart-parser.js',
   'operating-ledger.js',
+  'authorization-header.js',
+  'email-validation.js',
   'package.json',
   'package-lock.json',
   'postgres-sync-database.js',
@@ -115,7 +117,7 @@ function run(command, args, cwd = root) {
 function assertBuildHost() {
   if (process.platform !== 'win32' || process.arch !== 'x64') throw new Error('The standalone package must be built on Windows x64.');
   const major = Number(process.versions.node.split('.')[0]);
-  if (major !== 22) throw new Error('The standalone package must be built with Node.js 22.x.');
+  if (major !== 26) throw new Error('The standalone package must be built with Node.js 26.x.');
 }
 
 function copyRuntimeFile(relative) {

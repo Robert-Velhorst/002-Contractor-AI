@@ -99,7 +99,13 @@ test('a screen-only change preserves the built React cache identity without an e
   const entryId = path.resolve(__dirname, '../cache-contract-entry.jsx');
   const screenId = path.resolve(__dirname, '../cache-contract-screen.jsx');
   const warnings = [];
-  async function fixture(title) {
+  async function fixture(variant) {
+    const screenSources = {
+      first: 'export default function Screen() { return <main>First screen</main> }',
+      changed: 'export default function Screen() { return <main>Changed screen</main> }',
+    };
+    const screenSource = screenSources[variant];
+    assert.ok(screenSource, 'fixture uses a known static screen source');
     const result = await build({
       configFile: false, root: path.resolve(__dirname, '..'), logLevel: 'silent',
       plugins: [
@@ -107,7 +113,7 @@ test('a screen-only change preserves the built React cache identity without an e
           resolveId(id) { if (id === entryId || id === screenId) return id; },
           load(id) {
             if (id === entryId) return `import { lazy } from 'react'; import { createRoot } from 'react-dom/client'; const Screen = lazy(() => import(${JSON.stringify(screenId)})); createRoot(document.getElementById('root')).render(<Screen />);`;
-            if (id === screenId) return `export default function Screen() { return <main>${title}</main> }`;
+            if (id === screenId) return screenSource;
           }
         },
         ...production.plugins.flat(Infinity).filter(plugin =>
@@ -127,8 +133,8 @@ test('a screen-only change preserves the built React cache identity without an e
     assert.ok(entry.imports.includes(react.fileName), 'entry uses the same real React runtime');
     return { react, screen: chunks.find(item => item.name === 'cache-contract-screen') };
   }
-  const before = await fixture('First screen');
-  const after = await fixture('Changed screen');
+  const before = await fixture('first');
+  const after = await fixture('changed');
   assert.notEqual(before.screen.code, after.screen.code);
   assert.notEqual(before.screen.fileName, after.screen.fileName);
   assert.equal(before.react.code, after.react.code);
