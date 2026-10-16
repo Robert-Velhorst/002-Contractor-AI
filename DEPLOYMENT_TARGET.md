@@ -3,18 +3,21 @@
 Hetzner is the target for production. This guide describes the release path; it
 does not certify a provider, DPA, region, database, storage bucket, backup
 policy, or live deployment. The current General-Server is a CPX12 in
-Falkenstein (`159.69.55.178`). The current Hetzner console shows Ubuntu
-24.04.4 LTS at the `013-hire-ai` login prompt. This is an existing host for
-another service; do not reinstall, reset, or overwrite it. The operating
-system has not been authenticated during this deployment attempt. Strict
-SSH host-key validation succeeded against the key already stored on this
-workstation, but public-key authentication was rejected for both `deploy` and
-`root`; password authentication was not attempted. The last authenticated
-normal-OS inspection found no Docker or sudo privileges for `deploy` and no
-`/opt/contractor-ai` installation. No current inspection of existing services,
-resource usage, or free disk space is possible until an operator opens an
-authenticated shell. Do not grant `deploy` the `docker` group: Docker access
-is effectively root access.
+Falkenstein (`159.69.55.178`). The Hetzner console currently shows Debian 12
+Rescue System at `rescue login:`; it reports boot since 2026-10-16 22:33
+Europe/Amsterdam. The installed normal OS was previously observed as Ubuntu
+24.04.4 LTS with hostname `013-hire-ai`, an existing host for another service.
+Do not reinstall, reset, or overwrite its disk. Rescue and normal-OS
+credentials have not been entered during this deployment attempt. The rescue
+SSH host identity is not verified; do not accept a changed host key or replace
+the saved key. A prior strict SSH check against the normal OS matched the
+workstation's saved key, but public-key authentication was rejected for both
+`deploy` and `root`; password authentication was not attempted. The last
+authenticated normal-OS inspection found no Docker or sudo privileges for
+`deploy` and no `/opt/contractor-ai` installation. Current services, disk
+contents, resource usage, and free space cannot be inspected until an operator
+opens an authenticated rescue shell. Do not grant `deploy` the `docker` group:
+Docker access is effectively root access.
 
 ## Required architecture
 
@@ -134,12 +137,14 @@ the prior image digest. A rollback is not complete until those checks pass.
 
 ## Current blockers
 
-The Ubuntu server is at an OS login prompt and no authenticated shell is
-available to inspect existing workloads or capacity. Contractor.AI's
-installation, environment file, database, object store, proxy route, TLS
-certificate, migration, and production backup are not installed or verified.
-The host already serves another application, so co-residency and capacity must
-be assessed before provisioning; do not reset or reinstall the VM.
+The server is currently in Hetzner Rescue Mode at a `rescue login:` prompt; no
+authenticated shell is available to inspect the installed Ubuntu system,
+existing workloads, or capacity. The normal disk was previously observed as
+Ubuntu 24.04.4 with hostname `013-hire-ai`, so preserve it and verify its
+services before any provisioning. Contractor.AI's installation, environment
+file, database, object store, proxy route, TLS certificate, migration, and
+production backup are not installed or verified. Do not reset or reinstall
+the VM.
 Domain DNS still points elsewhere and a request to the current destination
 timed out during inspection. The current server's capacity has not been load
 tested. The existing `v1.1.0-rc.1` release points to commit
