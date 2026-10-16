@@ -17,8 +17,8 @@ test('review API retains internal analysis and durable coverage with validated p
     fs.rmSync(directory, { recursive: true, force: true });
   });
   const base = `http://127.0.0.1:${server.address().port}`;
-  async function request(route, data) {
-    const response = await fetch(base + route, data ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) } : {});
+  async function request(route, data, method = 'POST') {
+    const response = await fetch(base + route, data ? { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) } : {});
     return { status: response.status, body: await response.json() };
   }
   const intake = await request('/api/ledger/intake', { title: 'Impact API', contractValue: 5000, scheduledStart: new Date(Date.now() + 60 * 60 * 1000).toISOString(), client: { name: 'Review customer' }, tasks: [{ title: 'Foundation', durationHours: 8 }], assignAutomatically: false });
@@ -28,6 +28,22 @@ test('review API retains internal analysis and durable coverage with validated p
     { description: 'Concrete pads', measurementType: 'manual', quantity: 4, unit: 'm3', unitCost: 120, unitPrice: 210, costCode: 'CON-100', wbsCode: '01.20', workPackage: 'Foundations' }
   ] });
   assert.equal(takeoff.status, 201);
+  const takeoffItemsRoute = `/api/ledger/jobs/${job.id}/takeoffs/${takeoff.body.takeoff.id}/items`;
+  for (const field of ['quantity', 'count', 'unitPrice']) {
+    const invalidItem = { description: 'Untrusted numeric value', measurementType: field === 'quantity' ? 'manual' : 'count', unitPrice: 10 };
+    invalidItem[field] = [4];
+    const rejected = await request(takeoffItemsRoute, invalidItem);
+    assert.equal(rejected.status, 400, `${field} array should be rejected: ${JSON.stringify(rejected.body)}`);
+    assert.equal(rejected.body.error.code, 'takeoff_measurement_invalid');
+  }
+  const validItem = await request(takeoffItemsRoute, {
+    description: 'Valid measured count', measurementType: 'count', count: '2', unitPrice: '10'
+  });
+  assert.equal(validItem.status, 201);
+  assert.equal(validItem.body.item.quantity, 2);
+  const rejectedUpdate = await request(`${takeoffItemsRoute}/${validItem.body.item.id}`, { count: [3] }, 'PUT');
+  assert.equal(rejectedUpdate.status, 400);
+  assert.equal(rejectedUpdate.body.error.code, 'takeoff_measurement_invalid');
   const material = await request(`/api/ledger/jobs/${job.id}/materials`, { name: 'Cement bags', quantity: 8, unit: 'bags', status: 'needed' });
   assert.equal(material.status, 201);
   const selection = await request(`/api/ledger/jobs/${job.id}/client-selections`, { title: 'Cement finish', options: ['Smooth', 'Brushed'] });

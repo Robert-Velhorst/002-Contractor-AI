@@ -1,4 +1,5 @@
 const express = require('express');
+const { ipKeyGenerator, rateLimit } = require('express-rate-limit');
 const cors = require('cors');
 const compression = require('compression');
 const Negotiator = require('negotiator');
@@ -35,6 +36,14 @@ const { registerWhatsAppWebhook, registerWhatsAppOfficeRoutes } = require('./wha
 const { EvidenceStorageError, createEvidenceStorage } = require('./evidence-storage');
 const { createImageProcessor } = require('./image-processor');
 const imageProcessor = createImageProcessor();
+const publicFileRateLimit = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  limit: 1200,
+  keyGenerator: req => apiRateLimitKey(req),
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  handler: (_req, res) => res.status(429).json({ error: { code: 'rate_limited', message: 'Too many web asset requests.' } })
+});
 const { verifySqliteBackupDatabase } = require('./scripts/restore-local-backup');
 const {
   BACKUP_MANIFEST_V3,
@@ -55,6 +64,7 @@ const {
 } = require('./hai-connector');
 const { parseMultipartFormData } = require('./multipart-parser');
 const packageMetadata = require('./package.json');
+const { authorizationPayload } = require('./authorization-header');
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -140,6 +150,16 @@ const ledgerFile = process.env.LEDGER_DB_FILE
 const uploadDir = process.env.UPLOAD_DIR
   ? path.resolve(process.env.UPLOAD_DIR)
   : path.join(dataDir, 'uploads');
+const defaultMaxUploadBytes = 10 * 1024 * 1024;
+const maxUploadBytesInput = String(process.env.MAX_UPLOAD_BYTES ?? '').trim();
+const parsedMaxUploadBytes = Number(maxUploadBytesInput || defaultMaxUploadBytes);
+const maxUploadBytes = (!maxUploadBytesInput || /^\d+$/.test(maxUploadBytesInput))
+  && Number.isSafeInteger(parsedMaxUploadBytes)
+  && parsedMaxUploadBytes >= 1_024
+  && parsedMaxUploadBytes <= 100 * 1024 * 1024
+  ? parsedMaxUploadBytes
+  : null;
+const effectiveMaxUploadBytes = maxUploadBytes ?? defaultMaxUploadBytes;
 const evidenceStorageOptions = {
   endpoint: process.env.CONTRACTOR_AI_S3_ENDPOINT,
   bucket: process.env.CONTRACTOR_AI_S3_BUCKET,
@@ -148,7 +168,7 @@ const evidenceStorageOptions = {
   secretAccessKey: process.env.CONTRACTOR_AI_S3_SECRET_ACCESS_KEY,
   prefix: process.env.CONTRACTOR_AI_S3_PREFIX || (configuredCompanyId ? `companies/${configuredCompanyId}/evidence` : 'contractor-ai/evidence'),
   timeoutMs: process.env.CONTRACTOR_AI_STORAGE_TIMEOUT_MS,
-  maxReadBytes: Number(process.env.MAX_UPLOAD_BYTES || 10 * 1024 * 1024)
+  maxReadBytes: effectiveMaxUploadBytes
 };
 let evidenceStorage;
 let evidenceStorageInitError = null;
@@ -179,7 +199,6 @@ let evidenceStorageVerificationCache = evidenceStorageInitError
   : null;
 let evidenceStorageVerificationPromise = null;
 let ledgerDiagnosticsCache = null;
-const maxUploadBytes = Math.max(1024, Number(process.env.MAX_UPLOAD_BYTES || 10 * 1024 * 1024));
 const evidenceStorageMaxBytesInput = String(process.env.CONTRACTOR_AI_EVIDENCE_STORAGE_MAX_BYTES || '').trim();
 const parsedEvidenceStorageMaxBytes = Number(evidenceStorageMaxBytesInput || 10 * 1024 * 1024 * 1024);
 const evidenceStorageMaxBytes = Number.isSafeInteger(parsedEvidenceStorageMaxBytes) && parsedEvidenceStorageMaxBytes > 0
@@ -226,6 +245,22 @@ const AUTONOMOUS_SCHEDULER_KEY = 'ledger_autonomous_cycle';
 const apiRateWindowMs = boundedInteger(process.env.CONTRACTOR_AI_RATE_WINDOW_MS, 60_000, 1_000, 86_400_000);
 const apiRateLimit = boundedInteger(process.env.CONTRACTOR_AI_RATE_LIMIT, 1_000, 50, 1_000_000);
 const apiRateBucketLimit = boundedInteger(process.env.CONTRACTOR_AI_RATE_BUCKET_LIMIT, 5_000, 100, 100_000);
+const apiRouteRateLimit = rateLimit({
+  windowMs: apiRateWindowMs,
+  limit: apiRateLimit,
+  keyGenerator: req => apiRateLimitKey(req),
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: req => req.method === 'OPTIONS' || !req.path.startsWith('/api/') || req.path === '/api/health/ready',
+  handler: (req, res) => {
+    const resetAt = req.rateLimit?.resetTime;
+    const retryAfter = resetAt instanceof Date
+      ? Math.max(1, Math.ceil((resetAt.getTime() - Date.now()) / 1_000))
+      : Math.ceil(apiRateWindowMs / 1_000);
+    res.setHeader('Retry-After', String(retryAfter));
+    return sendError(req, res, 429, 'rate_limited', 'Too many requests. Try again shortly.');
+  }
+});
 const apiRateSigningKey = configuredOperatorTokens().length
   ? operatorSessionSigningKey
   : crypto.createHash('sha256').update('contractor-ai-local-api-rate\0').update(path.resolve(ledgerFile)).digest();
@@ -286,10 +321,7 @@ function configureHttpServer(server) {
 }
 
 function createRequestId() {
-  if (typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID();
-  }
-  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  return crypto.randomUUID();
 }
 
 function isTemplatePlaceholder(value) {
@@ -351,6 +383,9 @@ function runtimeConfiguration(options = {}) {
     issues.push({ code: 'evidence_storage_quota_invalid', message: 'CONTRACTOR_AI_EVIDENCE_STORAGE_MAX_BYTES must be a positive safe integer.' });
   } else if (hosted && !evidenceStorageMaxBytesInput) {
     issues.push({ code: 'hosted_evidence_storage_quota_required', message: 'Hosted mode requires an explicit cumulative evidence storage quota.' });
+  }
+  if (!maxUploadBytes) {
+    issues.push({ code: 'upload_limit_invalid', message: 'MAX_UPLOAD_BYTES must be a base-10 integer between 1024 and 104857600.' });
   }
   if (haiFeedOutputPath && !path.isAbsolute(haiFeedOutputPath)) {
     issues.push({ code: 'hai_feed_path_invalid', message: 'CONTRACTOR_AI_HAI_FEED_PATH must be an absolute path when configured.' });
@@ -583,7 +618,8 @@ function attachRequestContext(req, res, next) {
 
   const startedAt = Date.now();
   res.on('finish', () => {
-    if (!req.path.startsWith('/api')) return;
+    const requestPath = String(req.originalUrl || `${req.baseUrl || ''}${req.path || ''}`).split('?')[0];
+    if (!requestPath.startsWith('/api')) return;
     const statusCode = res.statusCode;
     const level = statusCode >= 500 ? 'error' : statusCode >= 400 ? 'warn' : 'info';
     log(level, 'api_request', {
@@ -618,7 +654,7 @@ function rateLimitApi(req, res, next) {
 }
 
 function apiRateLimitKey(req) {
-  const remoteAddress = String(req.ip || req.socket?.remoteAddress || 'unknown');
+  const remoteAddress = ipKeyGenerator(String(req.ip || req.socket?.remoteAddress || 'unknown'), 56);
   const clientDigest = crypto.createHmac('sha256', apiRateSigningKey)
     .update('contractor-ai-api-client\0')
     .update(remoteAddress)
@@ -1018,11 +1054,12 @@ async function verifyEvidenceStorage({ force = false } = {}) {
 }
 
 function logSafeRequestPath(req) {
-  const clientDeliveryPath = String(req.originalUrl || req.path || '').split('?')[0];
+  const requestPath = String(req.originalUrl || `${req.baseUrl || ''}${req.path || ''}`).split('?')[0];
+  const clientDeliveryPath = requestPath;
   if (/^\/api\/client-portal\/deliveries(?:\/[^/]+\/responses)?$/.test(clientDeliveryPath)) return clientDeliveryPath.replace(/\/deliveries\/[^/]+\/responses$/, '/deliveries/:offerId/responses');
-  if (String(req.originalUrl || req.path).split('?')[0].startsWith('/api/auth/identity/')) return String(req.originalUrl || req.path).split('?')[0];
-  if (String(req.originalUrl || req.path).split('?')[0] === '/api/integrations/whatsapp/webhook') return '/api/integrations/whatsapp/webhook';
-  const path = String(req.originalUrl || req.path || '');
+  if (requestPath.startsWith('/api/auth/identity/')) return requestPath;
+  if (requestPath === '/api/integrations/whatsapp/webhook') return '/api/integrations/whatsapp/webhook';
+  const path = requestPath;
   if (/^\/api\/client-portal(?:[?#]|$|\/(?:messages|feedback|preferences|selections\/|change-orders\/))/.test(path)) {
     return path;
   }
@@ -1042,8 +1079,7 @@ function extractClientPortalToken(req) {
   const explicitHeader = req.headers['x-client-portal-token'];
   if (Array.isArray(explicitHeader)) return String(explicitHeader[0] || '').trim();
   if (explicitHeader) return String(explicitHeader).trim();
-  const bearer = String(req.headers.authorization || '').match(/^Bearer\s+(.+)$/i);
-  return bearer ? bearer[1].trim() : '';
+  return authorizationPayload(req.headers.authorization || '', 'Bearer');
 }
 
 function requireClientPortalToken(req, res, next) {
@@ -1366,13 +1402,13 @@ function extractAuthToken(req) {
   if (headerToken) return String(headerToken);
 
   const authorization = req.headers.authorization || '';
-  const bearer = authorization.match(/^Bearer\s+(.+)$/i);
-  if (bearer) return bearer[1].trim();
+  const bearer = authorizationPayload(authorization, 'Bearer');
+  if (bearer) return bearer;
 
-  const basic = authorization.match(/^Basic\s+(.+)$/i);
+  const basic = authorizationPayload(authorization, 'Basic');
   if (basic) {
     try {
-      const decoded = Buffer.from(basic[1], 'base64').toString('utf8');
+      const decoded = Buffer.from(basic, 'base64').toString('utf8');
       const separator = decoded.indexOf(':');
       return separator >= 0 ? decoded.slice(separator + 1) : decoded;
     } catch {
@@ -2601,6 +2637,7 @@ app.use(cors({
     return callback(null, false);
   }
 }));
+app.use(apiRouteRateLimit);
 app.use('/api', (req, res, next) => {
   const company = operatingLedger.company;
   res.setHeader('X-Contractor-Company', company.id);
@@ -4211,9 +4248,10 @@ app.post('/api/ledger/jobs/:id/restore', (req, res) => {
 });
 
 app.get('/api/ledger/jobs/:id/playbook', (req, res) => {
+  const playbookKey = typeof req.query.playbookKey === 'string' ? req.query.playbookKey : '';
   return handleLedgerRequest(req, res, () => ({
     success: true,
-    ...operatingLedger.buildJobPlaybookPlan(req.params.id, req.query || {}),
+    ...operatingLedger.buildJobPlaybookPlan(req.params.id, { playbookKey }),
     dashboard: operatingLedger.dashboardSummary()
   }));
 });
@@ -4236,7 +4274,17 @@ app.post('/api/ledger/jobs/:id/playbook', (req, res) => {
 app.get('/api/ledger/jobs/:id/capability-plan', (req, res) => {
   return handleLedgerRequest(req, res, () => ({
     success: true,
-    ...operatingLedger.buildJobCapabilityPlan(req.params.id, req.query || {}),
+    ...operatingLedger.buildJobCapabilityPlan(req.params.id, {
+      capabilities: req.query.capabilities,
+      capabilityKeys: req.query.capabilityKeys,
+      capability_keys: req.query.capability_keys,
+      requirements: req.query.requirements,
+      requirementKeys: req.query.requirementKeys,
+      requirement_keys: req.query.requirement_keys,
+      includeOpen: req.query.includeOpen,
+      include_open: req.query.include_open,
+      limit: req.query.limit
+    }),
     dashboard: operatingLedger.dashboardSummary()
   }));
 });
@@ -10989,6 +11037,7 @@ app.use('/api', (req, res) => {
 });
 
 if (fs.existsSync(distDir)) {
+  app.use(publicFileRateLimit);
   app.use((req, res, next) => {
     if (!['GET', 'HEAD'].includes(req.method)
       || new Negotiator(req).encoding(['br', 'gzip', 'deflate', 'identity'], { preferred: ['br', 'gzip'] }) !== 'br') return next();
@@ -11032,7 +11081,7 @@ app.use((req, res, next) => {
     return sendError(req, res, 503, 'web_client_not_built', 'Run npm run build before starting the production web client.');
   }
   res.setHeader('Cache-Control', 'no-store');
-  return res.sendFile(path.join(distDir, 'index.html'));
+  return res.sendFile('index.html', { root: distDir });
 });
 
 app.use((error, req, res, next) => {
@@ -11079,6 +11128,13 @@ function attachPublicOrigin(publicUrl) {
 async function startDirectServer(options = {}) {
   const listenPort = options.port ?? port;
   const listenHost = String(options.host ?? configuredBindHost).trim() || undefined;
+  if (!maxUploadBytes) {
+    log('error', 'upload_limit_invalid', { minimumBytes: 1_024, maximumBytes: 100 * 1024 * 1024 });
+    await shutdownRuntime({ signal: 'invalid_upload_limit' });
+    const error = new Error('MAX_UPLOAD_BYTES must be a base-10 integer between 1024 and 104857600.');
+    error.code = 'upload_limit_invalid';
+    throw error;
+  }
   if (!dashboardAuthRequired && !isLoopbackHostname(listenHost)) {
     log('error', 'credential_free_loopback_required', { host: listenHost || 'system_default' });
     await shutdownRuntime({ signal: 'credential_free_non_loopback' });

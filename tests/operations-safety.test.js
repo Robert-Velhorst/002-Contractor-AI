@@ -6,6 +6,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const zlib = require('node:zlib');
 const { postgresTestDatabaseUrl } = require('./postgres-test-database');
+const { version: packageVersion } = require('../package.json');
 const postgresTestUrl = postgresTestDatabaseUrl();
 
 function stableJson(value) {
@@ -546,7 +547,7 @@ test('owner safety stop blocks autonomous drafting and support bundle excludes o
   const support = await request(baseUrl, '/api/operations/support-bundle');
   assert.equal(support.response.status, 200);
   assert.equal(support.body.format, 'contractor-ai-support-bundle/v1');
-  assert.equal(support.body.application.version, '1.1.0');
+  assert.equal(support.body.application.version, packageVersion);
   assert.equal(support.body.application.releaseSha, '0123456789abcdef');
   assert.equal(support.body.privacy.customerRecordsIncluded, false);
   assert.equal(support.body.privacy.credentialsIncluded, false);
@@ -766,10 +767,11 @@ test('manual scheduler requests use a persisted lease and do not immediately rep
 
 test('hosted readiness uses the PostgreSQL ledger adapter when durable services are configured', { skip: !postgresTestUrl }, async t => {
   const storageEndpoint = 'https://s3.eu-central-1.example.test';
+  const storageOrigin = new URL(storageEndpoint).origin;
   const originalFetch = global.fetch;
   global.fetch = async (input, options = {}) => {
-    if (String(input).startsWith(storageEndpoint)) {
-      const url = new URL(String(input));
+    const url = new URL(String(input));
+    if (url.origin === storageOrigin) {
       const body = url.searchParams.has('versions')
         ? '<ListVersionsResult><IsTruncated>false</IsTruncated></ListVersionsResult>'
         : options.method === 'GET' ? 'contractor-ai-storage-readiness/v1' : null;
@@ -877,9 +879,10 @@ test('hosted readiness uses the PostgreSQL ledger adapter when durable services 
 
 test('hosted readiness fails closed when object storage rejects the verification marker', { skip: !postgresTestUrl }, async t => {
   const storageEndpoint = 'https://s3-denied.eu-central-1.example.test';
+  const storageOrigin = new URL(storageEndpoint).origin;
   const originalFetch = global.fetch;
   global.fetch = async (input, options = {}) => {
-    if (String(input).startsWith(storageEndpoint)) return new Response(null, { status: 403 });
+    if (new URL(String(input)).origin === storageOrigin) return new Response(null, { status: 403 });
     return originalFetch(input, options);
   };
   t.after(() => { global.fetch = originalFetch; });
