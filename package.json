@@ -39,6 +39,7 @@
     "compression": "1.8.2",
     "cors": "^2.8.5",
     "express": "^5.1.0",
+    "express-rate-limit": "8.7.1",
     "lucide-react": "^0.510.0",
     "negotiator": "1.0.0",
     "oidc-provider": "9.12.2",
@@ -74,7 +75,7 @@
     "vitest": "^4.1.10"
   },
   "engines": {
-    "node": "22.x"
+    "node": "26.x"
   },
   "keywords": [
     "contractor",

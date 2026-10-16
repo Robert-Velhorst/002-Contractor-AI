@@ -80,7 +80,7 @@ jobs:
           ref: ${{ needs.verify-release-source.outputs.tag }}
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
-          node-version: 22
+          node-version: 26.12.0
           cache: npm
       - run: npm ci
       - run: npm run package:windows
@@ -118,6 +118,7 @@ jobs:
         env:
           IMAGE: ${{ needs.verify-release-source.outputs.image }}
           RELEASE_TAG: ${{ needs.verify-release-source.outputs.tag }}
+          SOURCE_SHA: ${{ needs.verify-release-source.outputs.source_sha }}
         run: |
           set -euo pipefail
           docker buildx build \
@@ -127,5 +128,5 @@ jobs:
             --label "org.opencontainers.image.revision=${{ needs.verify-release-source.outputs.source_sha }}" \
             --label "org.opencontainers.image.version=${RELEASE_TAG}" \
             --tag "${IMAGE}:${RELEASE_TAG}" \
-            --tag "${IMAGE}:sha-${GITHUB_SHA::12}" \
+            --tag "${IMAGE}:sha-${SOURCE_SHA::12}" \
             --push .

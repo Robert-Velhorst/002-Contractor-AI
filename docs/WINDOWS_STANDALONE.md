@@ -3,7 +3,7 @@
 ## Release artifact
 
 The `windows-standalone` GitHub Actions job builds
-`ContractorAI-windows-x64.zip` on Windows x64 with Node.js 22. The package
+`ContractorAI-windows-x64.zip` on Windows x64 with Node.js 26.12.0. The package
 contains its own `runtime\node.exe`, the production Vite output, the canonical
 Node ledger runtime, and production dependencies. It does not require a global
 Node.js or npm installation.
@@ -49,7 +49,7 @@ in-product verified backup workflow and retain copies away from the computer.
 
 ## Build locally
 
-The package command intentionally fails outside Windows x64 or Node.js 22:
+The package command intentionally fails outside Windows x64 or Node.js 26.12.0:
 
 ```powershell
 npm ci
@@ -76,7 +76,7 @@ npm run test:windows-package
 Remove-Item Env:\CONTRACTOR_AI_WINDOWS_PACKAGE_DIR
 ```
 
-Both commands must use Node.js 22. Paths outside the release directory, nested
+Both commands must use Node.js 26.12.0. Paths outside the release directory, nested
 paths, symbolic links and junctions are rejected. A build refuses recognized
 operator data and private configuration before rebuilding the web assets or
 removing generated package files. An existing clean generated candidate can be

@@ -767,10 +767,11 @@ test('manual scheduler requests use a persisted lease and do not immediately rep
 
 test('hosted readiness uses the PostgreSQL ledger adapter when durable services are configured', { skip: !postgresTestUrl }, async t => {
   const storageEndpoint = 'https://s3.eu-central-1.example.test';
+  const storageOrigin = new URL(storageEndpoint).origin;
   const originalFetch = global.fetch;
   global.fetch = async (input, options = {}) => {
-    if (String(input).startsWith(storageEndpoint)) {
-      const url = new URL(String(input));
+    const url = new URL(String(input));
+    if (url.origin === storageOrigin) {
       const body = url.searchParams.has('versions')
         ? '<ListVersionsResult><IsTruncated>false</IsTruncated></ListVersionsResult>'
         : options.method === 'GET' ? 'contractor-ai-storage-readiness/v1' : null;
@@ -878,9 +879,10 @@ test('hosted readiness uses the PostgreSQL ledger adapter when durable services 
 
 test('hosted readiness fails closed when object storage rejects the verification marker', { skip: !postgresTestUrl }, async t => {
   const storageEndpoint = 'https://s3-denied.eu-central-1.example.test';
+  const storageOrigin = new URL(storageEndpoint).origin;
   const originalFetch = global.fetch;
   global.fetch = async (input, options = {}) => {
-    if (String(input).startsWith(storageEndpoint)) return new Response(null, { status: 403 });
+    if (new URL(String(input)).origin === storageOrigin) return new Response(null, { status: 403 });
     return originalFetch(input, options);
   };
   t.after(() => { global.fetch = originalFetch; });
