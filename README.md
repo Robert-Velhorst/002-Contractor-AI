@@ -8,7 +8,7 @@ executing crew, and the client into one auditable workflow: from incoming work
 and estimating to field execution, evidence, change control, and handover.
 
 It is not a marketing demo or a collection of disconnected prototypes. The
-product runtime is a Node.js 22 application with an Express API, a React/Vite
+product runtime is a Node.js 26 application with an Express API, a React/Vite
 interface, a transactional SQLite or PostgreSQL ledger, and private evidence
 storage. SQLite and local files support local operation. Hosted mode requires
 configured PostgreSQL, private EU object storage, strong authentication, HTTPS
@@ -46,7 +46,7 @@ adapter is not proof that an external provider is live.
 
 ### Runtime At A Glance
 
-- **Local:** Node.js 22, Express, React/Vite, SQLite, and private local files.
+- **Local:** Node.js 26, Express, React/Vite, SQLite, and private local files.
 - **Hosted:** PostgreSQL and private S3-compatible EU storage, HTTPS, strong
   authentication, explicit proxy/CORS configuration, and retained recovery and
   provider evidence. Hosted startup fails closed when requirements are absent.
@@ -778,7 +778,7 @@ recovery responsibility off the local machine.
 
 ### Run locally
 
-Requirements: Node.js 22.x or 24.x and npm on Windows, macOS, or Linux. The portable Windows package is built with Node.js 22.x.
+Requirements: Node.js 26.x and npm on Windows, macOS, or Linux. The portable Windows package is built with Node.js 26.12.0.
 
 ```powershell
 git clone https://github.com/Robert-Velhorst/002-Contractor-AI.git
@@ -818,7 +818,7 @@ different, verified company environment.
 ### Windows standalone
 
 The GitHub release workflow creates and tests
-`ContractorAI-windows-x64.zip` with Node.js 22, the production build, and
+`ContractorAI-windows-x64.zip` with Node.js 26.12.0, the production build, and
 production dependencies. Extract it and run
 `ContractorAI.cmd`. The launcher creates a random owner key on first start,
 stores configuration and data under `%LOCALAPPDATA%\ContractorAI`, binds to
@@ -1327,7 +1327,7 @@ aliases and keeping namespace/non-icon imports on the package's public API.
 It does not relax download budgets or remove any product workflows.
 
 GitHub Actions runs on pushes to `main`, pull requests, and manual dispatch.
-The Linux job performs Node.js 22 installation, TLS PostgreSQL 16 setup, release
+The Linux job performs Node.js 26.12.0 installation, TLS PostgreSQL 16 setup, release
 and HAI contracts, lint, build, bundle budgets, frontend and Node tests,
 production-scale benchmark, container verification, and Playwright. The Windows
 job builds and smoke-tests `ContractorAI-windows-x64.zip`.

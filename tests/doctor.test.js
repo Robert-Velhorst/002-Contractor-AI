@@ -3,26 +3,26 @@ const assert = require('node:assert/strict');
 const { runDoctor } = require('../scripts/doctor');
 const { assessNodeCompatibility, nodeCompatibilityIssue } = require('../scripts/node-compatibility');
 
-test('checks the running app against all declared Node major versions', () => {
-  assert.deepEqual(assessNodeCompatibility('v22.18.0'), {
-    status: 'supported', supported: true, actual: 'v22.18.0', required: '22.x || 24.x'
+test('checks the running app against the declared Node 26 major', () => {
+  assert.deepEqual(assessNodeCompatibility('v26.12.0'), {
+    status: 'supported', supported: true, actual: 'v26.12.0', required: '26.x'
   });
-  assert.deepEqual(assessNodeCompatibility('v24.10.0'), {
-    status: 'supported', supported: true, actual: 'v24.10.0', required: '22.x || 24.x'
+  assert.deepEqual(assessNodeCompatibility('v24.22.0'), {
+    status: 'unsupported', supported: false, actual: 'v24.22.0', required: '26.x'
   });
-  assert.deepEqual(assessNodeCompatibility('v26.0.0'), {
-    status: 'unsupported', supported: false, actual: 'v26.0.0', required: '22.x || 24.x'
+  assert.deepEqual(assessNodeCompatibility('v22.23.3'), {
+    status: 'unsupported', supported: false, actual: 'v22.23.3', required: '26.x'
   });
   assert.equal(assessNodeCompatibility('unknown').status, 'unknown');
-  assert.equal(assessNodeCompatibility('v24.10.0', '22.x || latest').status, 'unknown');
+  assert.equal(assessNodeCompatibility('v26.12.0', '26.x || latest').status, 'unknown');
 });
 
 test('enforces the supported Node version in production and hosted modes only', () => {
-  const unsupported = assessNodeCompatibility('v26.0.0');
+  const unsupported = assessNodeCompatibility('v24.22.0');
   assert.equal(nodeCompatibilityIssue(unsupported, { isProduction: false, runtimeMode: 'local' }), null);
   assert.equal(nodeCompatibilityIssue(unsupported, { isProduction: true, runtimeMode: 'local' })?.code, 'unsupported_node_version');
   assert.equal(nodeCompatibilityIssue(unsupported, { isProduction: false, runtimeMode: 'hosted' })?.code, 'unsupported_node_version');
-  assert.equal(nodeCompatibilityIssue(assessNodeCompatibility('v22.18.0'), { isProduction: true, runtimeMode: 'hosted' }), null);
+  assert.equal(nodeCompatibilityIssue(assessNodeCompatibility('v26.12.0'), { isProduction: true, runtimeMode: 'hosted' }), null);
 });
 
 test('does not report readiness when the application runs on an unsupported Node version', async () => {
@@ -36,7 +36,7 @@ test('does not report readiness when the application runs on an unsupported Node
       status: 200,
       json: async () => ({
         format: 'contractor-ai-support-bundle/v1',
-        application: { node: 'v26.0.0', runtimeMode: 'hosted' },
+        application: { node: 'v24.22.0', runtimeMode: 'hosted' },
         database: { mode: 'postgres' },
         readiness: { runtimeReady: true }
       })
@@ -60,7 +60,7 @@ test('distinguishes a healthy local runtime from hosted runtime readiness', asyn
       status: 200,
       json: async () => ({
         format: 'contractor-ai-support-bundle/v1',
-        application: { node: 'v22.18.0', runtimeMode: 'local' },
+        application: { node: 'v26.12.0', runtimeMode: 'local' },
         database: { mode: 'sqlite' },
         readiness: { runtimeReady: true, storage: { mode: 'local' } }
       })
@@ -86,7 +86,7 @@ test('reports hosted runtime readiness only with supported Node and durable prov
       status: 200,
       json: async () => ({
         format: 'contractor-ai-support-bundle/v1',
-        application: { node: 'v24.10.0', runtimeMode: 'hosted' },
+        application: { node: 'v26.12.0', runtimeMode: 'hosted' },
         database: { mode: 'postgres' },
         readiness: { runtimeReady: true, storage: { mode: 's3' } }
       })
