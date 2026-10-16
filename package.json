@@ -75,7 +75,7 @@
     "vitest": "^4.1.10"
   },
   "engines": {
-    "node": "22.x || 24.x"
+    "node": "26.x"
   },
   "keywords": [
     "contractor",
@@ -84,5 +84,5 @@
     "business"
   ],
   "author": "Contractor AI Solutions",
-  "license": "MIT"
+  "license": "AGPL-3.0-only"
 }

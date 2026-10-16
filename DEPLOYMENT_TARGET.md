@@ -3,16 +3,17 @@
 Hetzner is the target for production. This guide describes the release path; it
 does not certify a provider, DPA, region, database, storage bucket, backup
 policy, or live deployment. The current General-Server is a CPX12 in
-Falkenstein (`159.69.55.178`). The last confirmed normal-OS inspection found
-a deploy account without Docker or sudo privileges and no `/opt/contractor-ai`
-installation. On 2026-10-15 the server was rebooted into Hetzner Rescue Mode;
-the Hetzner web console now shows Debian 12 Rescue System at a `rescue login:`
-prompt. SSH from this workstation is intentionally blocked because the server
-host key no longer matches the saved key. Do not replace the saved key until
-the rescue host key is verified independently. Root password reset and
-authenticated rescue-shell access have not been completed. The prior
-deploy-account SSH check does not establish current access while Rescue Mode
-is active. Do not grant the deploy account the `docker` group: Docker access
+Falkenstein (`159.69.55.178`). The current Hetzner console shows Ubuntu
+24.04.4 LTS at the `013-hire-ai` login prompt. This is an existing host for
+another service; do not reinstall, reset, or overwrite it. The operating
+system has not been authenticated during this deployment attempt. Strict
+SSH host-key validation succeeded against the key already stored on this
+workstation, but public-key authentication was rejected for both `deploy` and
+`root`; password authentication was not attempted. The last authenticated
+normal-OS inspection found no Docker or sudo privileges for `deploy` and no
+`/opt/contractor-ai` installation. No current inspection of existing services,
+resource usage, or free disk space is possible until an operator opens an
+authenticated shell. Do not grant `deploy` the `docker` group: Docker access
 is effectively root access.
 
 ## Required architecture
@@ -133,10 +134,12 @@ the prior image digest. A rollback is not complete until those checks pass.
 
 ## Current blockers
 
-The server is currently in Rescue Mode; root password recovery and return to
-the normal OS remain outstanding. No application, environment file, database,
-object store, proxy route, Contractor.AI TLS certificate, migration, or
-production backup is installed or verified.
+The Ubuntu server is at an OS login prompt and no authenticated shell is
+available to inspect existing workloads or capacity. Contractor.AI's
+installation, environment file, database, object store, proxy route, TLS
+certificate, migration, and production backup are not installed or verified.
+The host already serves another application, so co-residency and capacity must
+be assessed before provisioning; do not reset or reinstall the VM.
 Domain DNS still points elsewhere and a request to the current destination
 timed out during inspection. The current server's capacity has not been load
 tested. The existing `v1.1.0-rc.1` release points to commit

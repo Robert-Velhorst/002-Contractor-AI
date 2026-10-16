@@ -14,6 +14,7 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 import java.io.*;
 import java.net.*;
+import java.util.UUID;
 import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyStore;
@@ -42,6 +43,17 @@ final class FieldStore {
         if ((!"https".equals(uri.getScheme()) && !localDebug) || uri.getHost() == null || uri.getUserInfo() != null || uri.getQuery() != null
             || uri.getFragment() != null || (!uri.getPath().isEmpty() && !"/".equals(uri.getPath()))) throw new IOException("Gebruik een HTTPS-serveradres zonder pad, login of parameters.");
         return uri.getScheme() + "://" + uri.getRawAuthority();
+    }
+    static boolean requiresLocalNetworkPermission(String host) throws UnknownHostException {
+        if (host == null) return false;
+        String normalized = host.toLowerCase(java.util.Locale.ROOT);
+        if ("localhost".equals(normalized) || normalized.endsWith(".localhost") || normalized.endsWith(".local")) return true;
+        for (InetAddress address : InetAddress.getAllByName(host)) {
+            if (address.isLoopbackAddress() || address.isLinkLocalAddress() || address.isSiteLocalAddress()) return true;
+            byte[] bytes = address.getAddress();
+            if (bytes.length == 16 && (bytes[0] & 0xfe) == 0xfc) return true;
+        }
+        return false;
     }
     byte[] request(String path, JSONObject body, int maximum, String requiredType) throws Exception {
         if (token.isEmpty()) throw new IOException("Meld je opnieuw aan met je uitvoerdersaccount.");
