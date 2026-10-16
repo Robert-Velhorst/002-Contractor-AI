@@ -8,7 +8,7 @@ executing crew, and the client into one auditable workflow: from incoming work
 and estimating to field execution, evidence, change control, and handover.
 
 It is not a marketing demo or a collection of disconnected prototypes. The
-product runtime is a Node.js 22 or 24 application with an Express API, a React/Vite
+product runtime is a Node.js 26.x application with an Express API, a React/Vite
 interface, a transactional SQLite or PostgreSQL ledger, and private evidence
 storage. SQLite and local files support local operation. Hosted mode requires
 configured PostgreSQL, private EU object storage, strong authentication, HTTPS
