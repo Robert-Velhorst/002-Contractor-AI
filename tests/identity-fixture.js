@@ -7,10 +7,18 @@ const { ContractorOperatingLedger } = require('../operating-ledger');
 const { IdentityRegistry } = require('../identity-registry');
 const { createIdentityApp } = require('../identity-server');
 
-async function freePort() {
-  const server = net.createServer(); server.listen(0, '127.0.0.1');
-  await new Promise(resolve => server.once('listening', resolve));
-  const port = server.address().port; await new Promise(resolve => server.close(resolve)); return port;
+async function freePort(excluded = new Set()) {
+  for (let attempt = 0; attempt < 20; attempt++) {
+    const server = net.createServer(); server.listen(0, '127.0.0.1');
+    await new Promise((resolve, reject) => {
+      server.once('listening', resolve);
+      server.once('error', reject);
+    });
+    const port = server.address().port;
+    await new Promise(resolve => server.close(resolve));
+    if (!excluded.has(port)) return port;
+  }
+  throw new Error('Could not allocate a unique loopback port for the identity fixture.');
 }
 class Agent {
   constructor() { this.cookies = new Map(); }
@@ -33,7 +41,9 @@ class Agent {
 
 async function identityFixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'contractor-identity-api-')), previousEnv = { ...process.env }, runtimes = [];
-  const registryPort = await freePort(), issuer = `http://127.0.0.1:${registryPort}`;
+  const allocatedPorts = new Set();
+  const registryPort = await freePort(allocatedPorts); allocatedPorts.add(registryPort);
+  const issuer = `http://127.0.0.1:${registryPort}`;
   const registryOptions = { dbFile: path.join(root, 'registry.sqlite'), issuer, allowLoopback: true, encryptionKey: crypto.randomBytes(32) };
   const registry = new IdentityRegistry(registryOptions);
   let identityServer;
@@ -46,7 +56,8 @@ async function identityFixture(t) {
     fs.rmSync(root, { recursive: true, force: true });
   });
   for (const id of ['alpha', 'bravo']) {
-    const port = await freePort(), origin = `http://127.0.0.1:${port}`, dataDir = path.join(root, id), dbFile = path.join(dataDir, 'ledger.sqlite');
+    const port = await freePort(allocatedPorts); allocatedPorts.add(port);
+    const origin = `http://127.0.0.1:${port}`, dataDir = path.join(root, id), dbFile = path.join(dataDir, 'ledger.sqlite');
     const ledger = new ContractorOperatingLedger({ companyId: id, dbFile });
     const worker = ledger.upsertWorker({ name: `Worker ${id}`, email: `${id}@test.invalid`, skills: ['timmerman'], status: 'available' }, { actor: 'fixture' });
     const company = ledger.company;
