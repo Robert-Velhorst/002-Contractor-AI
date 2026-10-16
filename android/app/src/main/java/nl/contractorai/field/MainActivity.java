@@ -11,6 +11,8 @@ import android.graphics.pdf.PdfRenderer;
 import android.os.Bundle;
 import android.os.Build;
 import android.os.ParcelFileDescriptor;
+import android.window.OnBackInvokedCallback;
+import android.window.OnBackInvokedDispatcher;
 import android.net.Uri;
 import android.net.ConnectivityManager;
 import android.net.Network;
@@ -67,6 +69,7 @@ public final class MainActivity extends Activity {
     private Bitmap bitmap;
     private int pdfPage;
     private float pdfScale = 1;
+    private OnBackInvokedCallback backInvokedCallback;
     private File pendingPhotoFile;
     private String pendingPhotoJobId = "", pendingPhotoSetId = "", pendingPhotoNotes = "";
 
@@ -74,6 +77,10 @@ public final class MainActivity extends Activity {
         super.onCreate(state);
         getWindow().setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE);
         store = new FieldStore(this);
+        if (Build.VERSION.SDK_INT >= 33) {
+            backInvokedCallback = this::handleBack;
+            getOnBackInvokedDispatcher().registerOnBackInvokedCallback(OnBackInvokedDispatcher.PRIORITY_DEFAULT, backInvokedCallback);
+        }
         if (state != null) {
             pendingLocalNetworkOrigin = state.getString("pendingLocalNetworkOrigin", "");
             String filePath = state.getString("pendingPhotoFile", "");
@@ -1324,8 +1331,16 @@ public final class MainActivity extends Activity {
     }
     private void closePdf() { if (pdf!=null) { pdf.close(); pdf=null; } try { if (pdfDescriptor!=null) pdfDescriptor.close(); } catch(IOException ignored) {} pdfDescriptor=null; if(pdfFile!=null) pdfFile.delete(); pdfFile=null; if(bitmap!=null) bitmap.recycle(); bitmap=null; }
     private void confirmErase() { new AlertDialog.Builder(this).setTitle("Werkmap verwijderen?").setMessage("Ook niet-verzonden reacties en tekeningen op deze telefoon worden verwijderd. Kantoorgegevens blijven behouden.").setNegativeButton("Annuleren",null).setPositiveButton("Verwijderen",(d,w) -> { store.erase(); data=null; currentScope=""; showLogin(); }).show(); }
-    @Override public void onBackPressed() { if (busy) return; if (pdf!=null) showPack(); else if (data!=null) showJobs(); else super.onBackPressed(); }
+    private void handleBack() {
+        if (busy) return;
+        if (pdf != null) showPack(); else if (data != null) showJobs(); else finish();
+    }
+    @SuppressWarnings("deprecation")
+    @Override public void onBackPressed() { if (Build.VERSION.SDK_INT < 33) handleBack(); }
     @Override protected void onResume() { super.onResume(); activityVisible = true; scheduleReplyRefresh(); }
     @Override protected void onPause() { activityVisible = false; replyHandler.removeCallbacks(refreshReplies); super.onPause(); }
-    @Override protected void onDestroy() { super.onDestroy(); expiryHandler.removeCallbacks(checkExpiry); replyHandler.removeCallbacks(refreshReplies); store.token=""; executor.shutdownNow(); closePdf(); }
+    @Override protected void onDestroy() {
+        if (Build.VERSION.SDK_INT >= 33 && backInvokedCallback != null) getOnBackInvokedDispatcher().unregisterOnBackInvokedCallback(backInvokedCallback);
+        super.onDestroy(); expiryHandler.removeCallbacks(checkExpiry); replyHandler.removeCallbacks(refreshReplies); store.token=""; executor.shutdownNow(); closePdf();
+    }
 }
