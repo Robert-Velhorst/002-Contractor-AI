@@ -78,8 +78,11 @@ test('concurrent SQLite upload processes cannot reserve more than the shared quo
   `;
   const children = ['process-reservation-a', 'process-reservation-b'].map(reservationId => spawn(process.execPath,
     ['-e', source, dbFile, reservationId], { cwd: path.resolve(__dirname, '..'), env: process.env }));
+  const outputs = children.map(() => '');
+  const closed = children.map((child, index) => new Promise(resolve => {
+    child.once('close', code => resolve({ code, output: () => outputs[index] }));
+  }));
   try {
-    let outputs = children.map(() => '');
     const ready = children.map((child, index) => new Promise((resolve, reject) => {
       child.stdout.setEncoding('utf8');
       child.stderr.setEncoding('utf8');
@@ -95,18 +98,16 @@ test('concurrent SQLite upload processes cannot reserve more than the shared quo
     }));
     await Promise.all(ready);
     for (const child of children) child.stdin.end('go');
-    const exits = await Promise.all(children.map((child, index) => new Promise((resolve, reject) => {
-      child.once('error', reject);
-      child.once('exit', code => resolve({ code, output: outputs[index] }));
-    })));
+    const exits = await Promise.all(closed);
     assert.deepEqual(exits.map(exit => exit.code), [0, 0]);
-    assert.equal(exits.filter(exit => exit.output.includes('RESULT:accepted')).length, 1);
-    assert.equal(exits.filter(exit => exit.output.includes('RESULT:evidence_storage_quota_exceeded')).length, 1);
+    assert.equal(exits.filter(exit => exit.output().includes('RESULT:accepted')).length, 1);
+    assert.equal(exits.filter(exit => exit.output().includes('RESULT:evidence_storage_quota_exceeded')).length, 1);
     const verify = store.open();
     try { assert.deepEqual(verify.evidenceStorageReservationsUsage(), { bytes: 6, reservations: 1 }); }
     finally { verify.close(); }
   } finally {
     for (const child of children) if (child.exitCode === null) child.kill();
+    await Promise.all(closed);
     store.cleanup();
   }
 });

@@ -44,6 +44,8 @@ test('review API retains internal analysis and durable coverage with validated p
   const rejectedUpdate = await request(`${takeoffItemsRoute}/${validItem.body.item.id}`, { count: [3] }, 'PUT');
   assert.equal(rejectedUpdate.status, 400);
   assert.equal(rejectedUpdate.body.error.code, 'takeoff_measurement_invalid');
+  assert.equal((await request(takeoffItemsRoute, [{ description: 'Unexpected array body' }])).status, 400);
+  assert.equal((await request(takeoffItemsRoute, { description: 'Array dimension', measurementType: 'linear', length: [1], unitPrice: 1 })).status, 400);
   const material = await request(`/api/ledger/jobs/${job.id}/materials`, { name: 'Cement bags', quantity: 8, unit: 'bags', status: 'needed' });
   assert.equal(material.status, 201);
   const selection = await request(`/api/ledger/jobs/${job.id}/client-selections`, { title: 'Cement finish', options: ['Smooth', 'Brushed'] });

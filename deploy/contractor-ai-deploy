@@ -1,0 +1,190 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly SAFE_PATH=/usr/sbin:/usr/bin:/sbin:/bin
+PATH=$SAFE_PATH
+export PATH
+
+readonly APP_DIR=/opt/contractor-ai
+readonly ENV_FILE="$APP_DIR/.env.hosted"
+readonly COMPOSE_FILE_PATH="$APP_DIR/docker-compose.hosted.yml"
+readonly DOCKER=/usr/bin/docker
+readonly ENV_BIN=/usr/bin/env
+
+fail() {
+  printf 'contractor-ai-deploy: %s\n' "$1" >&2
+  exit 1
+}
+
+usage() {
+  printf 'Usage: contractor-ai-deploy {validate|pull|start|stop|status}\n' >&2
+  exit 64
+}
+
+[[ $# -eq 1 ]] || usage
+case "$1" in
+  validate|pull|start|stop|status) action=$1 ;;
+  *) usage ;;
+esac
+
+[[ "$(id -u)" -eq 0 ]] || fail 'must be invoked through the root-owned sudo wrapper.'
+[[ -d /opt && ! -L /opt && "$(stat -c '%u' /opt)" == 0 ]] || fail '/opt must be a root-owned real directory.'
+opt_mode=$(stat -c '%a' /opt)
+(( (8#$opt_mode & 0022) == 0 )) || fail '/opt must not be group- or world-writable.'
+[[ -d "$APP_DIR" && ! -L "$APP_DIR" ]] || fail 'deployment directory is missing or is a symlink.'
+[[ "$(stat -c '%u' "$APP_DIR")" == 0 ]] || fail 'deployment directory must be owned by root.'
+directory_mode=$(stat -c '%a' "$APP_DIR")
+(( (8#$directory_mode & 0022) == 0 )) || fail 'deployment directory must not be group- or world-writable.'
+
+check_file() {
+  local file=$1 expected_mode=${2:-}
+  [[ -f "$file" && ! -L "$file" ]] || fail "required regular file is missing or is a symlink: $file"
+  [[ "$(stat -c '%u' "$file")" == 0 ]] || fail "file must be owned by root: $file"
+  local mode
+  mode=$(stat -c '%a' "$file")
+  if [[ -n "$expected_mode" ]]; then
+    [[ "$mode" == "$expected_mode" ]] || fail "file permissions must be $expected_mode: $file"
+  else
+    (( (8#$mode & 0022) == 0 )) || fail "file must not be group- or world-writable: $file"
+  fi
+}
+
+check_file "$ENV_FILE" 600
+check_file "$COMPOSE_FILE_PATH"
+[[ -x "$DOCKER" && -x "$ENV_BIN" ]] || fail 'Docker or env CLI is missing from its fixed system path.'
+
+check_environment_keys() {
+  local invalid
+  invalid=$(awk '
+    /^[[:space:]]*#/ || /^[[:space:]]*$/ { next }
+    {
+      line = $0
+      sub(/^[[:space:]]*/, "", line)
+      if (line !~ /^[A-Za-z_][A-Za-z0-9_]*=/) {
+        print "invalid"
+        exit
+      }
+      key = line
+      sub(/[[:space:]]*=.*/, "", key)
+      sub(/[[:space:]]*$/, "", key)
+      if (seen[key]++) {
+        print key
+        exit
+      }
+    }
+  ' "$ENV_FILE")
+  [[ -z "$invalid" ]] || fail "hosted environment file contains a duplicate or invalid assignment: $invalid"
+}
+
+check_environment_keys
+
+run_compose() {
+  "$ENV_BIN" -i "PATH=$SAFE_PATH" HOME=/root "$DOCKER" compose \
+    --env-file "$ENV_FILE" -f "$COMPOSE_FILE_PATH" "$@"
+}
+
+env_value() {
+  local key=$1 value
+  value=$(awk -v key="$key" '
+    /^[[:space:]]*#/ { next }
+    {
+      line = $0
+      sub(/\r$/, "", line)
+      if (line ~ "^[[:space:]]*" key "=") {
+        sub("^[[:space:]]*" key "=", "", line)
+        sub(/[[:space:]]+#.*$/, "", line)
+        if (line ~ /^".*"$/ || line ~ /^\047.*\047$/) line = substr(line, 2, length(line) - 2)
+        print line
+        exit
+      }
+    }
+  ' "$ENV_FILE")
+  printf '%s' "$value"
+}
+
+require_value() {
+  local key=$1 value
+  local count
+  count=$(awk -v key="$key" '
+    /^[[:space:]]*#/ { next }
+    {
+      line = $0
+      sub(/\r$/, "", line)
+      if (line ~ "^[[:space:]]*" key "=") count++
+    }
+    END { print count + 0 }
+  ' "$ENV_FILE")
+  [[ "$count" == 1 ]] || fail "setting must appear exactly once: $key"
+  value=$(env_value "$key")
+  [[ -n "$value" ]] || fail "required setting is missing: $key"
+  case "$value" in
+    *replace-with*|*example-provider*|*contractor.example.eu*) fail "placeholder value is not allowed: $key" ;;
+  esac
+}
+
+validate_configuration() {
+  local image database public_url release_sha token proxy company cors prefix quota backup_mode
+  [[ "$(env_value CONTRACTOR_AI_RUNTIME_MODE)" == hosted ]] || fail 'CONTRACTOR_AI_RUNTIME_MODE must be hosted.'
+  image=$(env_value CONTRACTOR_AI_IMAGE)
+  [[ "$image" =~ ^[A-Za-z0-9._/-]+@sha256:[a-f0-9]{64}$ ]] || fail 'CONTRACTOR_AI_IMAGE must be pinned to an immutable lowercase SHA-256 digest.'
+  for key in CONTRACTOR_AI_COMPANY_ID CONTRACTOR_AI_HOSTING_PROVIDER CONTRACTOR_AI_HOSTING_REGION CONTRACTOR_AI_DATA_RESIDENCY CONTRACTOR_AI_DPA_REFERENCE CONTRACTOR_AI_BACKUP_POLICY_REFERENCE CONTRACTOR_AI_RETENTION_POLICY_REFERENCE CONTRACTOR_AI_DATABASE_URL CONTRACTOR_AI_S3_ENDPOINT CONTRACTOR_AI_S3_BUCKET CONTRACTOR_AI_S3_REGION CONTRACTOR_AI_S3_ACCESS_KEY_ID CONTRACTOR_AI_S3_SECRET_ACCESS_KEY CONTRACTOR_AI_PUBLIC_URL CONTRACTOR_AI_RELEASE_SHA CONTRACTOR_AI_AUTH_TOKEN CONTRACTOR_AI_TRUST_PROXY CONTRACTOR_AI_POSTGRES_BACKUP_MODE CONTRACTOR_AI_OBJECT_VERSIONING_ENABLED CONTRACTOR_AI_REQUIRE_AUTH CONTRACTOR_AI_EVIDENCE_STORAGE_MAX_BYTES CORS_ORIGINS; do
+    require_value "$key"
+  done
+  company=$(env_value CONTRACTOR_AI_COMPANY_ID)
+  [[ "$company" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || fail 'CONTRACTOR_AI_COMPANY_ID must be a safe identifier.'
+  [[ "$(env_value CONTRACTOR_AI_DATA_RESIDENCY)" == EU ]] || fail 'CONTRACTOR_AI_DATA_RESIDENCY must be EU.'
+
+  database=$(env_value CONTRACTOR_AI_DATABASE_URL)
+  [[ "$database" == postgresql://* && "$database" == *sslmode=verify-full* && "$database" != *replace-with* && "$database" != *example-provider* ]] || fail 'CONTRACTOR_AI_DATABASE_URL must use PostgreSQL with sslmode=verify-full and no placeholders.'
+  local storage_endpoint
+  storage_endpoint=$(env_value CONTRACTOR_AI_S3_ENDPOINT)
+  [[ "$storage_endpoint" =~ ^https://[^/[:space:]]+(/[^[:space:]]*)?$ ]] || fail 'CONTRACTOR_AI_S3_ENDPOINT must use HTTPS.'
+  public_url=$(env_value CONTRACTOR_AI_PUBLIC_URL)
+  [[ "$public_url" =~ ^https://[^/@?#:[:space:]]+(:[0-9]{1,5})?$ ]] || fail 'CONTRACTOR_AI_PUBLIC_URL must be an HTTPS origin without credentials, path, query or fragment.'
+  cors=$(env_value CORS_ORIGINS)
+  [[ ",$cors," == *",$public_url,"* ]] || fail 'CORS_ORIGINS must include the exact CONTRACTOR_AI_PUBLIC_URL origin.'
+  release_sha=$(env_value CONTRACTOR_AI_RELEASE_SHA)
+  [[ "$release_sha" =~ ^([a-fA-F0-9]{40}|[a-fA-F0-9]{64})$ ]] || fail 'CONTRACTOR_AI_RELEASE_SHA must be a full 40- or 64-character hexadecimal commit id.'
+  token=$(env_value CONTRACTOR_AI_AUTH_TOKEN)
+  [[ ${#token} -ge 32 && "$token" != *replace-with* ]] || fail 'CONTRACTOR_AI_AUTH_TOKEN must be a non-placeholder secret of at least 32 characters.'
+  [[ "$token" != *[[:space:]]* ]] || fail 'CONTRACTOR_AI_AUTH_TOKEN must not contain whitespace.'
+  proxy=$(env_value CONTRACTOR_AI_TRUST_PROXY)
+  [[ -n "$proxy" && "$proxy" != *replace-with* ]] || fail 'CONTRACTOR_AI_TRUST_PROXY must name the exact trusted ingress address or CIDR.'
+  [[ ! "$proxy" =~ ^(true|false|[0-9]+|\*)$ && ! "$proxy" =~ /0+([,[:space:]]|$) ]] || fail 'CONTRACTOR_AI_TRUST_PROXY cannot use an unrestricted or hop-count rule.'
+  prefix=$(env_value CONTRACTOR_AI_S3_PREFIX)
+  [[ -z "$prefix" || "$prefix" == "companies/$company/"* ]] || fail 'CONTRACTOR_AI_S3_PREFIX must stay within companies/<company-id>/.'
+  quota=$(env_value CONTRACTOR_AI_EVIDENCE_STORAGE_MAX_BYTES)
+  [[ "$quota" =~ ^[1-9][0-9]*$ ]] || fail 'CONTRACTOR_AI_EVIDENCE_STORAGE_MAX_BYTES must be a positive integer.'
+  backup_mode=$(env_value CONTRACTOR_AI_POSTGRES_BACKUP_MODE)
+  [[ "$backup_mode" == pitr ]] || fail 'CONTRACTOR_AI_POSTGRES_BACKUP_MODE must be pitr.'
+  [[ "$(env_value CONTRACTOR_AI_OBJECT_VERSIONING_ENABLED)" == true ]] || fail 'CONTRACTOR_AI_OBJECT_VERSIONING_ENABLED must be true.'
+  [[ "$(env_value CONTRACTOR_AI_REQUIRE_AUTH)" == true ]] || fail 'CONTRACTOR_AI_REQUIRE_AUTH must be true.'
+  [[ "$(env_value CONTRACTOR_AI_WORK_BOARD_REGISTRATION_ENABLED)" != true ]] || fail 'public worker registration must remain disabled until separately accepted.'
+
+  run_compose config --quiet
+  local configured_images
+  configured_images=$(run_compose config --images)
+  [[ "$configured_images" == "$image" ]] || fail 'resolved Compose image does not exactly match the validated immutable image.'
+}
+
+case "$action" in
+  validate)
+    validate_configuration
+    printf 'Hosted deployment configuration is valid.\n'
+    ;;
+  pull)
+    validate_configuration
+    run_compose pull contractor-ai
+    ;;
+  start)
+    validate_configuration
+    run_compose pull contractor-ai
+    run_compose up --detach --no-build contractor-ai
+    ;;
+  stop)
+    run_compose stop contractor-ai
+    ;;
+  status)
+    run_compose ps contractor-ai
+    ;;
+esac

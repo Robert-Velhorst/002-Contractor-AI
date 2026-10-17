@@ -9,7 +9,16 @@ const { startIdentityServer, createIdentityApp, identityRateLimitKeyFor } = requ
 const { IdentityRegistry } = require('../identity-registry');
 const { healthcheckUrl, runtimeHealthcheck } = require('../scripts/runtime-healthcheck');
 const { ContractorOperatingLedger } = require('../operating-ledger');
+const { parseTrustedProxyConfiguration } = require('../trusted-proxy');
 const { verifySqliteBackupDatabase } = require('../scripts/restore-local-backup');
+
+test('trusted proxy configuration rejects unrestricted and hop-count rules', () => {
+  for (const value of ['true', '1', '*', '0.0.0.0/0', '::/0', '10.0.0.0/0', '2001:db8::/0', '127.0.0.1/00']) {
+    assert.throws(() => parseTrustedProxyConfiguration(value), { code: 'invalid_trusted_proxy' });
+  }
+  assert.equal(parseTrustedProxyConfiguration('10.10.0.5, 2001:db8::/48'), '10.10.0.5, 2001:db8::/48');
+  assert.equal(parseTrustedProxyConfiguration(''), false);
+});
 
 test('optional shared identity fails closed on partial settings, unauthenticated companies and unsafe hosted transport', async () => {
   const options = { local: true, authenticationRequired: true };
