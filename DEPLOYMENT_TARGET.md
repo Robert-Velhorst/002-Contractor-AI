@@ -129,17 +129,40 @@ the prior image digest. A rollback is not complete until those checks pass.
 
 ## Current blockers
 
-Contractor.AI's installation, environment file, database, object store, proxy
-route, TLS certificate, migration, and production backup are not installed or
-verified. The console inventory confirmed that the host already serves other
-production workloads and has limited spare capacity; do not reset or reinstall
-it. DNS ownership, target records, ingress configuration and cutover are not
-verified. The host's Contractor.AI capacity has not been load tested. The
-existing `v1.1.0-rc.1` release points to commit
-`62d0872cd7a44d123a4e4535936702f21cb8ec1b`, but its release workflow's container
-job failed because attestations were requested from the default Docker driver.
-The tag's GHCR manifest is present, but that failed run does not establish a
-successful release package or verified provenance. The current workflow now
-configures a dedicated Buildx container driver; publish and verify a fresh
-release package before selecting an image for production. Therefore no
-deployment or cutover is ready based on the current release alone.
+Contractor.AI's app and hosted environment are not installed. No DPA-verified
+EU PostgreSQL or evidence bucket, production backup, or migration receipt is
+configured or verified. Hetzner Object Storage has no default at-rest
+encryption; the hosted adapter now requires SSE-C, but a provider bucket,
+versioning policy, independent key backup, and live encrypted read/write test
+are still absent. This is a shared host with
+limited spare capacity; do not reset or reinstall it. A read-only console
+review confirmed the maintained host OS and container runtime are available,
+but the server already carries other production workloads and has a
+pre-existing service health issue that must be resolved with its owner before
+adding load. Contractor.AI is not installed. Keep exact host identifiers,
+addresses, resource measurements, service inventory, and proxy configuration
+in private operator records, not this public repository.
+
+The Hetzner DNS A record `002contractor-ai.noodzakelijkonline.de` resolves to
+the intended server. A fresh external check on 2026-10-17 received the host
+proxy's HTTP-to-HTTPS redirect, but Node's TLS client received
+`ERR_SSL_TLSV1_ALERT_INTERNAL_ERROR`. The subdomain has no verified proxy route,
+certificate, or Contractor.AI backend. No live configuration was changed. The
+host's Contractor.AI capacity has not been load tested; resolve the existing
+service health issue with its owner before cutover.
+
+GitHub `main` is `65f12eb5221f7e76ce26c7bc75a6a1264f36f09d`. Its `verify` run
+and six dependency-coverage runs completed successfully on 2026-10-17. These
+are CI results, not production acceptance. The only published release remains
+the `v1.1.0-rc.1` pre-release, whose tag points to
+`62d0872cd7a44d123a4e4535936702f21cb8ec1b`. A workflow-dispatch retry from
+`9dbb4ae9bb06d3dd1ccea9b074fbc80192947cb1` completed both package jobs and
+published a Windows archive plus a GHCR image index at
+`sha256:a8a1cae1000662b5c629892ec32f6844a2a51009dba39d978f704b0045add621`.
+The image contains an OCI BuildKit SLSA provenance manifest, but GitHub's
+attestation verification endpoint returned 404; the run also tagged the image
+with the dispatch commit's `sha-*` alias although the release tag points to an
+older commit. Do not treat that pre-release image as a verified production
+artifact. Current `main` now binds the `sha-*` alias to the validated release
+source, but no package has been rebuilt from the current workflow and no stable
+release from current `main` exists. No deployment or cutover is ready.

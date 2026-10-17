@@ -12,7 +12,7 @@ const {
   verifyAuditChainRows,
   builtInInspectionTemplateRows
 } = require('../operating-ledger');
-const { createEvidenceStorage } = require('../evidence-storage');
+const { createEvidenceStorage, isValidSseCustomerKey } = require('../evidence-storage');
 const { PostgresSyncDatabase, resolvePostgresConnectionOptions } = require('../postgres-sync-database');
 const { BACKUP_MANIFEST_V3, verifyBackupManifestAuthenticity } = require('../backup-manifest');
 const { assertSameCompany, normalizeCompanyId, readCompanyRuntime } = require('../company-runtime');
@@ -602,14 +602,18 @@ function assertHostedCompanyStorage(companyId, storage) {
 }
 
 function createHostedEvidenceStorageFromEnvironment(companyId) {
+  if (!isValidSseCustomerKey(process.env.CONTRACTOR_AI_S3_SSE_C_KEY)) {
+    throw Object.assign(new Error('Hosted evidence migration requires a base64-encoded 32-byte SSE-C key.'), { code: 'hosted_object_storage_encryption_required' });
+  }
   const storage = createEvidenceStorage({
     mode: 's3',
     s3: {
       endpoint: process.env.CONTRACTOR_AI_S3_ENDPOINT,
       bucket: process.env.CONTRACTOR_AI_S3_BUCKET,
-      region: process.env.CONTRACTOR_AI_S3_REGION || 'eu-central-1',
+      region: process.env.CONTRACTOR_AI_S3_REGION || '',
       accessKeyId: process.env.CONTRACTOR_AI_S3_ACCESS_KEY_ID,
       secretAccessKey: process.env.CONTRACTOR_AI_S3_SECRET_ACCESS_KEY,
+      sseCustomerKey: process.env.CONTRACTOR_AI_S3_SSE_C_KEY,
       prefix: process.env.CONTRACTOR_AI_S3_PREFIX || `companies/${companyId}/evidence`,
       timeoutMs: process.env.CONTRACTOR_AI_STORAGE_TIMEOUT_MS
     }

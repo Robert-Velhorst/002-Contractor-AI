@@ -2,7 +2,7 @@
 
 ## Local startup
 
-Requirements: Node.js 26.x and npm. Use the exact Node version declared by
+Requirements: Node.js 24.x LTS and npm. Use the exact Node version declared by
 `package.json` and the CI workflow; production readiness rejects unsupported
 Node majors.
 

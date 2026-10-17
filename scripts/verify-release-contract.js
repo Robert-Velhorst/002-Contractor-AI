@@ -150,6 +150,7 @@ const REQUIRED_HOSTED_ENV_KEYS = [
   'CONTRACTOR_AI_DATABASE_URL',
   'CONTRACTOR_AI_S3_ENDPOINT',
   'CONTRACTOR_AI_S3_BUCKET',
+  'CONTRACTOR_AI_S3_SSE_C_KEY',
   'CONTRACTOR_AI_POSTGRES_BACKUP_MODE',
   'CONTRACTOR_AI_OBJECT_VERSIONING_ENABLED',
   'CONTRACTOR_AI_BACKUP_POLICY_REFERENCE',
@@ -212,6 +213,13 @@ function findOperationalPrincipalPriorityViolations(source = '') {
   }));
 }
 
+function hasExactLockedDependency(packageJson, packageLock, dependencyName) {
+  const declaredVersion = packageJson.devDependencies?.[dependencyName];
+  const lockedVersion = packageLock.packages?.[`node_modules/${dependencyName}`]?.version;
+  return /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(declaredVersion || '')
+    && lockedVersion === declaredVersion;
+}
+
 function verifyReleaseContract(root = path.resolve(__dirname, '..')) {
   const failures = [];
   try {
@@ -245,8 +253,10 @@ function verifyReleaseContract(root = path.resolve(__dirname, '..')) {
     if (!packageJson.scripts?.[script]) failures.push(`package.json is missing required script: ${script}`);
   }
   if (packageJson.scripts?.pretest) failures.push('package.json must not duplicate the full Node suite through an automatic pretest hook.');
-  if (packageJson.devDependencies?.['@axe-core/playwright'] !== '4.12.1') {
-    failures.push('The browser accessibility gate must use the pinned @axe-core/playwright 4.12.1 engine.');
+  const packageLockFile = path.join(root, 'package-lock.json');
+  const packageLock = JSON.parse(fs.readFileSync(packageLockFile, 'utf8'));
+  if (!hasExactLockedDependency(packageJson, packageLock, '@axe-core/playwright')) {
+    failures.push('The browser accessibility gate must use an exact @axe-core/playwright version matching package-lock.json.');
   }
   if (!packageJson.scripts?.test?.startsWith('node scripts/run-node-tests.js ')) {
     failures.push('package.json test must isolate and clean temporary Node test state.');
@@ -816,6 +826,26 @@ function verifyReleaseContract(root = path.resolve(__dirname, '..')) {
   for (const key of REQUIRED_HOSTED_ENV_KEYS) {
     if (!new RegExp(`^${key}=`, 'm').test(hostedEnvironment)) failures.push(`Hosted environment contract is missing: ${key}`);
   }
+  const hostedOrigin = 'https://002contractor-ai.noodzakelijkonline.de';
+  const hostedValues = new Map(hostedEnvironment.split(/\r?\n/).map(line => {
+    const separator = line.indexOf('=');
+    return separator < 0 ? null : [line.slice(0, separator), line.slice(separator + 1)];
+  }).filter(Boolean));
+  if (hostedValues.get('CONTRACTOR_AI_PUBLIC_URL') !== hostedOrigin) {
+    failures.push('Hosted public URL must use the configured Contractor.AI subdomain.');
+  }
+  if (!hostedValues.get('CORS_ORIGINS')?.split(',').includes(hostedOrigin)) {
+    failures.push('Hosted CORS origins must include the configured Contractor.AI subdomain.');
+  }
+  if (hostedValues.get('CONTRACTOR_AI_HOSTING_PROVIDER') !== 'Hetzner Cloud'
+    || hostedValues.get('CONTRACTOR_AI_HOSTING_REGION') !== 'fsn1'
+    || hostedValues.get('CONTRACTOR_AI_S3_ENDPOINT') !== 'https://fsn1.your-objectstorage.com'
+    || hostedValues.get('CONTRACTOR_AI_S3_REGION') !== 'fsn1') {
+    failures.push('Hosted infrastructure defaults must match the selected Hetzner Falkenstein target.');
+  }
+  if (!/^CONTRACTOR_AI_S3_SSE_C_KEY=replace-with-base64-encoded-32-byte-key$/m.test(hostedEnvironment)) {
+    failures.push('Hosted environment must require a private SSE-C key for Hetzner Object Storage.');
+  }
 
   const dockerfile = fs.readFileSync(path.join(root, 'Dockerfile'), 'utf8');
   if (!/^USER node$/m.test(dockerfile)) failures.push('Docker runtime must run as the node user.');
@@ -961,6 +991,7 @@ module.exports = {
   findApprovalPrincipalPriorityViolations,
   findOperationalPrincipalPriorityViolations,
   findRequestDerivedActorExpressions,
+  hasExactLockedDependency,
   verifyReleaseContract,
   walkFiles
 };

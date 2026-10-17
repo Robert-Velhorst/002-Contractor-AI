@@ -9,6 +9,7 @@ const {
   findApprovalPrincipalPriorityViolations,
   findOperationalPrincipalPriorityViolations,
   findRequestDerivedActorExpressions,
+  hasExactLockedDependency,
   verifyReleaseContract,
   walkFiles
 } = require('../scripts/verify-release-contract');
@@ -19,6 +20,15 @@ test('release contract retains only the canonical runtime and mandatory delivery
   assert.deepEqual(result.failures, []);
   assert.ok(result.checks.canonicalPaths >= 10);
   assert.ok(result.checks.hostedEnvironmentKeys >= 11);
+});
+
+test('release contract permits dependency upgrades only when the exact lockfile version matches', () => {
+  const dependency = '@axe-core/playwright';
+  const packageJson = { devDependencies: { [dependency]: '4.13.0' } };
+  const packageLock = { packages: { [`node_modules/${dependency}`]: { version: '4.13.0' } } };
+  assert.equal(hasExactLockedDependency(packageJson, packageLock, dependency), true);
+  assert.equal(hasExactLockedDependency(packageJson, { packages: { [`node_modules/${dependency}`]: { version: '4.12.1' } } }, dependency), false);
+  assert.equal(hasExactLockedDependency({ devDependencies: { [dependency]: '^4.13.0' } }, packageLock, dependency), false);
 });
 
 test('release packages use the exact commit SHA that passed source verification', () => {

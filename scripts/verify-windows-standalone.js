@@ -244,7 +244,7 @@ async function verifyWindowsStandalone() {
   assert.ok(fs.existsSync(runtimeExecutable), 'Build the Windows standalone package before running its smoke test.');
   const build = JSON.parse(fs.readFileSync(path.join(packageRoot, 'BUILD.json'), 'utf8'));
   assert.equal(build.format, 'contractor-ai-windows-package/v1');
-  assert.match(String(build.node || ''), /^26\.12\.0$/, 'The packaged runtime must use Node.js 26.12.0.');
+  assert.match(String(build.node || ''), /^24\.22\.0$/, 'The packaged runtime must use Node.js 24.22.0.');
   verifyPackagedBundle(packageRoot, build);
 
   const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'contractor-ai-windows-package-'));

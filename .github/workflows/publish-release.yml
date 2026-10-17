@@ -85,7 +85,7 @@ jobs:
         run: if ((git rev-parse HEAD).Trim() -ne $env:SOURCE_SHA) { throw 'Checked out source does not match the verified release commit.' }
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 26.12.0
+          node-version: 24.22.0
           cache: npm
       - run: npm ci
       - run: npm run package:windows

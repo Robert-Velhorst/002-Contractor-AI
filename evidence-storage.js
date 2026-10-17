@@ -89,6 +89,24 @@ function parseS3VersionPage(xml) {
   };
 }
 
+function decodeSseCustomerKey(value) {
+  if (value === undefined || value === null || value === '') return null;
+  const encoded = String(value).trim();
+  const key = Buffer.from(encoded, 'base64');
+  if (key.length !== 32 || key.toString('base64') !== encoded) {
+    throw new EvidenceStorageError('invalid_s3_sse_c_key', 'S3 SSE-C requires a canonical base64-encoded 32-byte key.');
+  }
+  return key;
+}
+
+function isValidSseCustomerKey(value) {
+  try {
+    return Boolean(decodeSseCustomerKey(value));
+  } catch {
+    return false;
+  }
+}
+
 function hasUnsafeS3Characters(value) {
   return [...String(value || '')].some(character => {
     const code = character.charCodeAt(0);
@@ -226,7 +244,7 @@ class LocalEvidenceStorage {
 
 class S3EvidenceStorage {
   constructor({ endpoint, bucket, region, accessKeyId, secretAccessKey, prefix = 'contractor-ai/evidence', timeoutMs = 5000,
-    maxReadBytes = 10 * 1024 * 1024, fetchFn = global.fetch }) {
+    maxReadBytes = 10 * 1024 * 1024, sseCustomerKey = null, fetchFn = global.fetch }) {
     if (!endpoint || !bucket || !region || !accessKeyId || !secretAccessKey) {
       throw new EvidenceStorageError('s3_configuration_required', 'S3 evidence storage requires endpoint, bucket, region, access key, and secret key.');
     }
@@ -241,6 +259,7 @@ class S3EvidenceStorage {
     this.region = region;
     this.accessKeyId = accessKeyId;
     this.secretAccessKey = secretAccessKey;
+    this.sseCustomerKey = decodeSseCustomerKey(sseCustomerKey);
     this.prefix = normalizeS3Prefix(prefix);
     this.timeoutMs = Math.max(500, Number(timeoutMs) || 5000);
     this.maxReadBytes = Number(maxReadBytes);
@@ -277,6 +296,11 @@ class S3EvidenceStorage {
       'x-amz-content-sha256': payloadHash,
       'x-amz-date': timestamp
     };
+    if (this.sseCustomerKey && !allowBucketRequest && ['GET', 'PUT'].includes(method)) {
+      headers['x-amz-server-side-encryption-customer-algorithm'] = 'AES256';
+      headers['x-amz-server-side-encryption-customer-key'] = this.sseCustomerKey.toString('base64');
+      headers['x-amz-server-side-encryption-customer-key-md5'] = crypto.createHash('md5').update(this.sseCustomerKey).digest('base64');
+    }
     if (contentType) headers['content-type'] = contentType;
     const signedHeaderNames = Object.keys(headers).sort();
     const canonicalHeaders = signedHeaderNames.map(name => `${name}:${headers[name]}\n`).join('');
@@ -543,6 +567,7 @@ module.exports = {
   LocalEvidenceStorage,
   S3EvidenceStorage,
   createEvidenceStorage,
+  isValidSseCustomerKey,
   normalizeS3ObjectKey,
   normalizeS3Prefix,
   parseS3Endpoint

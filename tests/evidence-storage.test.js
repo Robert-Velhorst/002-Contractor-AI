@@ -4,18 +4,18 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { EvidenceStorageError, LocalEvidenceStorage, S3EvidenceStorage } = require('../evidence-storage');
+const { EvidenceStorageError, LocalEvidenceStorage, S3EvidenceStorage, isValidSseCustomerKey } = require('../evidence-storage');
 
-function expectedS3Authorization(url, headers, { accessKeyId, secretAccessKey }) {
+function expectedS3Authorization(url, headers, { accessKeyId, secretAccessKey, method = 'GET', region = 'eu-central-1' }) {
   const dateStamp = headers['x-amz-date'].slice(0, 8);
   const signedHeaderNames = Object.keys(headers).filter(name => name !== 'authorization').sort();
   const canonicalHeaders = signedHeaderNames.map(name => `${name}:${headers[name]}\n`).join('');
   const signedHeaders = signedHeaderNames.join(';');
-  const canonicalRequest = ['GET', url.pathname, url.search.slice(1), canonicalHeaders, signedHeaders,
+  const canonicalRequest = [method, url.pathname, url.search.slice(1), canonicalHeaders, signedHeaders,
     headers['x-amz-content-sha256']].join('\n');
-  const scope = `${dateStamp}/eu-central-1/s3/aws4_request`;
+  const scope = `${dateStamp}/${region}/s3/aws4_request`;
   const hmac = (key, value) => crypto.createHmac('sha256', key).update(value, 'utf8').digest();
-  const signingKey = hmac(hmac(hmac(hmac(`AWS4${secretAccessKey}`, dateStamp), 'eu-central-1'), 's3'), 'aws4_request');
+  const signingKey = hmac(hmac(hmac(hmac(`AWS4${secretAccessKey}`, dateStamp), region), 's3'), 'aws4_request');
   const stringToSign = ['AWS4-HMAC-SHA256', headers['x-amz-date'], scope,
     crypto.createHash('sha256').update(canonicalRequest).digest('hex')].join('\n');
   const signature = crypto.createHmac('sha256', signingKey).update(stringToSign, 'utf8').digest('hex');
@@ -63,14 +63,19 @@ test('local evidence rejects growth beyond its retained ledger size before readi
 
 test('S3 evidence storage signs private object requests and requires full configuration', async () => {
   assert.throws(() => new S3EvidenceStorage({}), error => error instanceof EvidenceStorageError && error.code === 's3_configuration_required');
+  assert.equal(isValidSseCustomerKey(Buffer.alloc(32, 0x42).toString('base64')), true);
+  assert.equal(isValidSseCustomerKey(Buffer.alloc(31, 0x42).toString('base64')), false);
+  assert.equal(isValidSseCustomerKey('not-a-key'), false);
   const requests = [];
   const retainedBodies = new Map();
+  const sseCustomerKey = Buffer.alloc(32, 0x42);
   const storage = new S3EvidenceStorage({
     endpoint: 'https://s3.eu-central-1.example.test',
     bucket: 'contractor-private',
     region: 'eu-central-1',
     accessKeyId: 'test-access',
     secretAccessKey: 'test-secret',
+    sseCustomerKey: sseCustomerKey.toString('base64'),
     fetchFn: async (url, options) => {
       requests.push({ url: String(url), options });
       const target = String(url);
@@ -91,6 +96,14 @@ test('S3 evidence storage signs private object requests and requires full config
   assert.equal(stored.sha256, crypto.createHash('sha256').update(Buffer.from([0xff, 0xd8, 0xff, 0xe0])).digest('hex'));
   assert.match(requests[0].url, /contractor-private\/contractor-ai\/evidence\//);
   assert.match(requests[0].options.headers.authorization, /^AWS4-HMAC-SHA256 Credential=test-access\//);
+  for (const request of requests.filter(item => item.options.method === 'PUT' || (item.options.method === 'GET' && !new URL(item.url).searchParams.has('versions')))) {
+    assert.equal(request.options.headers['x-amz-server-side-encryption-customer-algorithm'], 'AES256');
+    assert.equal(request.options.headers['x-amz-server-side-encryption-customer-key'], sseCustomerKey.toString('base64'));
+    assert.equal(request.options.headers['x-amz-server-side-encryption-customer-key-md5'], crypto.createHash('md5').update(sseCustomerKey).digest('base64'));
+    assert.equal(request.options.headers.authorization, expectedS3Authorization(new URL(request.url), request.options.headers, {
+      accessKeyId: 'test-access', secretAccessKey: 'test-secret', method: request.options.method
+    }));
+  }
   assert.deepEqual(await storage.read(stored.storageRef), Buffer.from([0xff, 0xd8, 0xff, 0xe0]));
 
   const verification = await storage.verify();
@@ -101,6 +114,8 @@ test('S3 evidence storage signs private object requests and requires full config
   assert.equal(retainedBodies.has(requests.at(-1).url), false);
   assert.equal(await storage.remove(stored.storageRef), true);
   assert.equal(requests.at(-1).options.method, 'DELETE');
+  const versionListing = requests.find(item => new URL(item.url).searchParams.has('versions'));
+  assert.equal(versionListing.options.headers['x-amz-server-side-encryption-customer-key'], undefined);
 });
 
 test('S3 cleanup deletes every exact-key version and delete marker across listing pages', async () => {

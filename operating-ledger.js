@@ -6569,6 +6569,7 @@ class ContractorOperatingLedger {
     } else {
       fs.mkdirSync(path.dirname(this.dbFile), { recursive: true });
       this.db = new DatabaseSync(this.dbFile);
+      this.db.exec('PRAGMA busy_timeout = 5000;');
     }
     const initializeLedger = () => {
       if (require('./identity-registry').tableExists(this.db, 'registry_identities')) {

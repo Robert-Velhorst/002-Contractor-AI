@@ -33,7 +33,7 @@ const { ResourcePlanner } = require('./resource-planner');
 const { registerConversationRoutes } = require('./conversation-routes');
 const { analysisConfig, registerAnalysisRoutes, runDurableConversationAnalysisBatch } = require('./conversation-analysis');
 const { registerWhatsAppWebhook, registerWhatsAppOfficeRoutes } = require('./whatsapp-channel');
-const { EvidenceStorageError, createEvidenceStorage } = require('./evidence-storage');
+const { EvidenceStorageError, createEvidenceStorage, isValidSseCustomerKey } = require('./evidence-storage');
 const { createImageProcessor } = require('./image-processor');
 const imageProcessor = createImageProcessor();
 const publicFileRateLimit = rateLimit({
@@ -159,9 +159,10 @@ const effectiveMaxUploadBytes = maxUploadBytes ?? defaultMaxUploadBytes;
 const evidenceStorageOptions = {
   endpoint: process.env.CONTRACTOR_AI_S3_ENDPOINT,
   bucket: process.env.CONTRACTOR_AI_S3_BUCKET,
-  region: process.env.CONTRACTOR_AI_S3_REGION || 'eu-central-1',
+  region: process.env.CONTRACTOR_AI_S3_REGION || (runtimeMode === 'hosted' ? '' : 'fsn1'),
   accessKeyId: process.env.CONTRACTOR_AI_S3_ACCESS_KEY_ID,
   secretAccessKey: process.env.CONTRACTOR_AI_S3_SECRET_ACCESS_KEY,
+  sseCustomerKey: process.env.CONTRACTOR_AI_S3_SSE_C_KEY,
   prefix: process.env.CONTRACTOR_AI_S3_PREFIX || (configuredCompanyId ? `companies/${configuredCompanyId}/evidence` : 'contractor-ai/evidence'),
   timeoutMs: process.env.CONTRACTOR_AI_STORAGE_TIMEOUT_MS,
   maxReadBytes: effectiveMaxUploadBytes
@@ -300,6 +301,9 @@ function hostedExternalInitializationProblems() {
   } else if (evidenceStorageEndpointProtocol !== 'https:') {
     problems.push('hosted_object_storage_tls_required');
   }
+  if (storageMode === 's3' && !isValidSseCustomerKey(evidenceStorageOptions.sseCustomerKey)) {
+    problems.push('hosted_object_storage_encryption_required');
+  }
   if (evidenceStorageInitError) {
     problems.push(evidenceStorageInitError.code || 'storage_initialization_failed');
   }
@@ -367,7 +371,8 @@ function runtimeConfiguration(options = {}) {
     ['object_storage_endpoint', evidenceStorageOptions.endpoint],
     ['object_storage_bucket', evidenceStorageOptions.bucket],
     ['object_storage_access_key', evidenceStorageOptions.accessKeyId],
-    ['object_storage_secret', evidenceStorageOptions.secretAccessKey]
+    ['object_storage_secret', evidenceStorageOptions.secretAccessKey],
+    ['object_storage_encryption_key', evidenceStorageOptions.sseCustomerKey]
   ].filter(([, value]) => isTemplatePlaceholder(value)).map(([key]) => key);
   if (!['local', 'hosted'].includes(runtimeMode)) {
     issues.push({ code: 'invalid_runtime_mode', message: 'CONTRACTOR_AI_RUNTIME_MODE must be local or hosted.' });
@@ -462,6 +467,9 @@ function runtimeConfiguration(options = {}) {
   }
   if (hosted && storageMode === 's3' && evidenceStorageEndpointProtocol !== 'https:') {
     issues.push({ code: 'hosted_object_storage_tls_required', message: 'Hosted mode requires an HTTPS S3-compatible object storage endpoint.' });
+  }
+  if (hosted && storageMode === 's3' && !isValidSseCustomerKey(evidenceStorageOptions.sseCustomerKey)) {
+    issues.push({ code: 'hosted_object_storage_encryption_required', message: 'Hosted mode requires CONTRACTOR_AI_S3_SSE_C_KEY with a base64-encoded 32-byte key.' });
   }
   if (evidenceStorageInitError) {
     issues.push({ code: evidenceStorageInitError.code || 'storage_initialization_failed', message: evidenceStorageInitError.message });

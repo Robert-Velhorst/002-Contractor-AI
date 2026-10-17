@@ -107,7 +107,8 @@ test('Node test runner discovers every test exactly once and npm has no duplicat
   assert.equal(new Set(files).size, files.length);
   assert.deepEqual(serialStressFiles, [
     'tests/evidence-storage-reservations.test.js',
-    'tests/ledger-performance-benchmark.test.js'
+    'tests/ledger-performance-benchmark.test.js',
+    'tests/resource-planner.test.js'
   ]);
   assert.equal(new Set([...concurrentFiles, ...serialStressFiles]).size, files.length);
   assert.deepEqual([...concurrentFiles, ...serialStressFiles].sort((left, right) => left.localeCompare(right)), files);

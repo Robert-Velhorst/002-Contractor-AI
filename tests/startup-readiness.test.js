@@ -157,8 +157,12 @@ test('hosted startup rejects missing company and unscoped object paths before ne
     CONTRACTOR_AI_S3_ENDPOINT: 'https://s3.eu-central-1.example.test',
     CONTRACTOR_AI_S3_BUCKET: 'contractor-private',
     CONTRACTOR_AI_S3_ACCESS_KEY_ID: 'test-access',
-    CONTRACTOR_AI_S3_SECRET_ACCESS_KEY: 'test-secret'
+    CONTRACTOR_AI_S3_SECRET_ACCESS_KEY: 'test-secret',
+    CONTRACTOR_AI_S3_SSE_C_KEY: Buffer.alloc(32, 0x42).toString('base64')
   });
+  const unencrypted = await spawnServer({ ...environment, CONTRACTOR_AI_S3_SSE_C_KEY: '' });
+  assert.equal(unencrypted.status, 1, unencrypted.stderr);
+  assert.match(unencrypted.stderr, /hosted_object_storage_encryption_required/);
   const missing = await spawnServer({ ...environment, CONTRACTOR_AI_COMPANY_ID: '' });
   assert.equal(missing.status, 1, missing.stderr);
   assert.match(missing.stderr, /hosted_company_id_required/);
@@ -236,7 +240,8 @@ test('hosted startup rejects HTTP object storage before sending signed requests'
     CONTRACTOR_AI_S3_BUCKET: 'contractor-private',
     CONTRACTOR_AI_S3_REGION: 'eu-central-1',
     CONTRACTOR_AI_S3_ACCESS_KEY_ID: 'static-boundary-access',
-    CONTRACTOR_AI_S3_SECRET_ACCESS_KEY: 'static-boundary-secret'
+    CONTRACTOR_AI_S3_SECRET_ACCESS_KEY: 'static-boundary-secret',
+    CONTRACTOR_AI_S3_SSE_C_KEY: Buffer.alloc(32, 0x42).toString('base64')
   }));
 
   assert.equal(result.status, 1, result.stderr);

@@ -35,7 +35,8 @@ function postgresTestFiles(testFiles = allTestFiles()) {
 function serialStressTestFiles(testFiles = allTestFiles()) {
   const serialFiles = new Set([
     'ledger-performance-benchmark.test.js',
-    'evidence-storage-reservations.test.js'
+    'evidence-storage-reservations.test.js',
+    'resource-planner.test.js'
   ]);
   return testFiles.filter(file => serialFiles.has(path.posix.basename(file)));
 }
