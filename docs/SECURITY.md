@@ -37,6 +37,14 @@ Protection. Provider validity checks remain disabled because they can send
 detected credentials to issuers for validation. Do not infer either capability
 from provider-pattern scanning or push protection.
 
+On 2026-10-17, the GitHub settings page showed CodeQL default setup, Copilot
+Autofix, and push protection enabled; AI Scan for pull requests and agentic
+autofix were disabled. Agentic autofix consumes AI credits, so keep it disabled
+until its budget and human-review policy are explicitly set. The live Security
+overview showed zero open Dependabot, malware, code-scanning, and secret-scanning
+alerts at that inspection time; this is a point-in-time repository result, not a
+continuous guarantee or a scan of deployed infrastructure.
+
 GitHub security alerts remain review items until a finding is fixed and a new
 scan confirms the result, or its applicability is documented with evidence.
 Enabling a scanner does not mean that the alert queue is empty. Repository
