@@ -802,6 +802,7 @@ test('hosted readiness uses the PostgreSQL ledger adapter when durable services 
     CORS_ORIGINS: 'https://contractor-ai.test',
     CONTRACTOR_AI_S3_ENDPOINT: storageEndpoint,
     CONTRACTOR_AI_S3_BUCKET: 'contractor-private',
+    CONTRACTOR_AI_S3_REGION: 'eu-central-1',
     CONTRACTOR_AI_S3_ACCESS_KEY_ID: 'test-access',
     CONTRACTOR_AI_S3_SECRET_ACCESS_KEY: 'test-secret',
     CONTRACTOR_AI_S3_SSE_C_KEY: Buffer.alloc(32, 0x42).toString('base64')
@@ -909,6 +910,7 @@ test('hosted readiness fails closed when object storage rejects the verification
     CORS_ORIGINS: 'https://contractor-ai.test',
     CONTRACTOR_AI_S3_ENDPOINT: storageEndpoint,
     CONTRACTOR_AI_S3_BUCKET: 'contractor-private',
+    CONTRACTOR_AI_S3_REGION: 'eu-central-1',
     CONTRACTOR_AI_S3_ACCESS_KEY_ID: 'test-access',
     CONTRACTOR_AI_S3_SECRET_ACCESS_KEY: 'test-secret',
     CONTRACTOR_AI_S3_SSE_C_KEY: Buffer.alloc(32, 0x42).toString('base64')
