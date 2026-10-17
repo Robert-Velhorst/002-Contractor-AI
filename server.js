@@ -65,6 +65,7 @@ const {
 const { parseMultipartFormData } = require('./multipart-parser');
 const packageMetadata = require('./package.json');
 const { authorizationPayload } = require('./authorization-header');
+const { parseTrustedProxyConfiguration } = require('./trusted-proxy');
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -87,20 +88,15 @@ const runtimeProcessLockRequired = runtimeMode === 'local'
 let runtimeProcessLock = null;
 const haiFeedOutputPath = String(process.env.CONTRACTOR_AI_HAI_FEED_PATH || '').trim();
 const trustedProxyRaw = String(process.env.CONTRACTOR_AI_TRUST_PROXY || '').trim();
-const trustedProxyEntries = trustedProxyRaw.split(',').map(value => value.trim()).filter(Boolean);
+let trustedProxyEntries = [];
 let trustedProxyError = null;
-if (trustedProxyRaw) {
-  const unsafeShortcut = trustedProxyEntries.some(value => /^(?:true|false|\d+|\*|0\.0\.0\.0\/0|::\/0)$/i.test(value));
-  try {
-    if (unsafeShortcut || trustedProxyEntries.length === 0) {
-      throw new Error('Use explicit proxy IP addresses, CIDR ranges, or Express subnet names instead of a universal or hop-count trust rule.');
-    }
-    app.set('trust proxy', trustedProxyEntries.join(', '));
-  } catch (error) {
-    trustedProxyError = error;
-    app.set('trust proxy', false);
-  }
-} else {
+try {
+  const trustedProxyConfiguration = parseTrustedProxyConfiguration(trustedProxyRaw);
+  trustedProxyEntries = trustedProxyConfiguration ? trustedProxyConfiguration.split(', ') : [];
+  app.set('trust proxy', trustedProxyConfiguration || false);
+  if (trustedProxyConfiguration) app.get('trust proxy fn');
+} catch (error) {
+  trustedProxyError = error;
   app.set('trust proxy', false);
 }
 const hostedDatabaseUrl = runtimeMode === 'hosted' ? String(process.env.CONTRACTOR_AI_DATABASE_URL || '').trim() : '';
@@ -2576,7 +2572,7 @@ function requireSessionMutationOrigin(req, res, next) {
   } catch {
     requestOrigin = '';
   }
-  if (origin !== requestOrigin && !allowedOrigins.includes(origin)) {
+  if (origin !== requestOrigin) {
     return sendError(req, res, 403, 'session_origin_forbidden', 'The browser origin is not allowed to change Contractor.AI records.');
   }
   return next();
