@@ -21,6 +21,13 @@ test('release contract retains only the canonical runtime and mandatory delivery
   assert.ok(result.checks.hostedEnvironmentKeys >= 11);
 });
 
+test('release packages use the exact commit SHA that passed source verification', () => {
+  const workflow = fs.readFileSync(path.join(__dirname, '..', '.github/workflows/publish-release.yml'), 'utf8');
+  assert.equal((workflow.match(/^\s+ref: \$\{\{ needs\.verify-release-source\.outputs\.source_sha \}\}$/gm) || []).length, 2);
+  assert.equal((workflow.match(/Verify immutable release source/g) || []).length, 2);
+  assert.doesNotMatch(workflow, /^\s+ref: \$\{\{ needs\.verify-release-source\.outputs\.tag \}\}$/m);
+});
+
 test('production image includes the current work allocation and work-board runtime modules', () => {
   const dockerfile = fs.readFileSync(path.join(__dirname, '..', 'Dockerfile'), 'utf8');
   const buildStage = dockerfile.split('AS runtime')[0];
@@ -144,9 +151,10 @@ test('native Android build uses a checksum-pinned Gradle wrapper without accepti
   const properties = fs.readFileSync(path.join(root, 'android/gradle/wrapper/gradle-wrapper.properties'), 'utf8');
   const build = fs.readFileSync(path.join(root, 'scripts/build-android.ps1'), 'utf8');
   const readme = fs.readFileSync(path.join(root, 'android/README.md'), 'utf8');
-  assert.equal(crypto.createHash('sha256').update(wrapperJar).digest('hex'), '2db75c40782f5e8ba1fc278a5574bab070adccb2d21ca5a6e5ed840888448046');
-  assert.match(properties, /gradle-8\.11\.1-bin\.zip/);
-  assert.match(properties, /distributionSha256Sum=f397b287023acdba1e9f6fc5ea72d22dd63669d59ed4a289a29b1a76eee151c6/);
+  assert.equal(crypto.createHash('sha256').update(wrapperJar).digest('hex'), '3b8a25775a69158b5ad2b1d17a80a88dc7b40a352a73eb27d06c612a7ce68e98');
+  assert.match(properties, /gradle-9\.8\.1-bin\.zip/);
+  assert.match(properties, /distributionSha256Sum=dce76f55f8e251a3a1f130eb120f30b3d271de2b76c9b0729d316b5a1b6dc01f/);
+  assert.match(fs.readFileSync(path.join(root, 'android/build.gradle'), 'utf8'), /com\.android\.application' version '9\.4\.1'/);
   assert.match(build, /gradlew\.bat/);
   assert.match(build, /No licenses are accepted by this script/);
   assert.doesNotMatch(build, /sdkmanager.*--licenses/i);

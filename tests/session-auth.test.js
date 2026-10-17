@@ -16,6 +16,7 @@ function loadServerWithAuth(options = {}) {
     CONTRACTOR_AI_LOGIN_RATE_LIMIT: String(options.loginRateLimit || 10),
     CONTRACTOR_AI_LOGIN_RATE_WINDOW_MS: '900000',
     CONTRACTOR_AI_SESSION_TTL_SECONDS: '3600',
+    CORS_ORIGINS: options.corsOrigins || 'http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,http://127.0.0.1:5173,http://localhost:34123,http://127.0.0.1:34123',
     STATE_FILE: path.join(stateDirectory, 'state.json'),
     LEDGER_DB_FILE: path.join(stateDirectory, 'ledger.sqlite'),
     UPLOAD_DIR: path.join(stateDirectory, 'uploads')
@@ -57,7 +58,7 @@ test('browser operator session preserves role authorization without storing the 
       jobIds: ['job_session_scope']
     }
   };
-  const app = loadServerWithAuth({ roleTokens });
+  const app = loadServerWithAuth({ roleTokens, corsOrigins: 'https://field.example.test' });
 
   await withServer(app, async baseUrl => {
     const crossSiteLogin = await request(baseUrl, '/api/auth/login', {
@@ -175,6 +176,14 @@ test('browser operator session preserves role authorization without storing the 
     });
     assert.equal(foreignOrigin.response.status, 403);
     assert.equal(foreignOrigin.body.error.code, 'session_origin_forbidden');
+
+    const allowlistedSiblingForm = await request(baseUrl, '/api/ledger/intake', {
+      method: 'POST',
+      headers: { Cookie: issued.cookie, Origin: 'https://field.example.test', 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: 'title=Blocked+sibling+form+intake&client%5Bname%5D=Blocked'
+    });
+    assert.equal(allowlistedSiblingForm.response.status, 403);
+    assert.equal(allowlistedSiblingForm.body.error.code, 'session_origin_forbidden');
 
     const sameOriginMutation = await request(baseUrl, '/api/ledger/intake', {
       method: 'POST',

@@ -8,7 +8,7 @@ executing crew, and the client into one auditable workflow: from incoming work
 and estimating to field execution, evidence, change control, and handover.
 
 It is not a marketing demo or a collection of disconnected prototypes. The
-product runtime is a Node.js 26 application with an Express API, a React/Vite
+product runtime is a Node.js 26.x application with an Express API, a React/Vite
 interface, a transactional SQLite or PostgreSQL ledger, and private evidence
 storage. SQLite and local files support local operation. Hosted mode requires
 configured PostgreSQL, private EU object storage, strong authentication, HTTPS
@@ -853,8 +853,8 @@ ghcr.io/robert-velhorst/002-contractor-ai:v1.1.0-rc.1
 ghcr.io/robert-velhorst/002-contractor-ai:sha-<release-source-commit>
 ```
 
-The first published release is [Contractor.AI 1.1.0-rc.1](https://github.com/Robert-Velhorst/002-Contractor-AI/releases/tag/v1.1.0-rc.1), a pre-release for evaluation. It has a [tested Windows archive](https://github.com/Robert-Velhorst/002-Contractor-AI/releases/download/v1.1.0-rc.1/ContractorAI-windows-x64.zip) and a versioned [GHCR package](https://github.com/Robert-Velhorst/002-Contractor-AI/pkgs/container/002-contractor-ai). Its packaging workflow completed successfully, including BuildKit SBOM and provenance generation. The existing RC1 image also carries `sha-9dbb4ae9bb06`, an alias named from the workflow-dispatch revision rather than the release source; use the versioned tag shown above. The workflow now in this repository corrects that alias for future recovery runs.
 
+The first published release is [Contractor.AI 1.1.0-rc.1](https://github.com/Robert-Velhorst/002-Contractor-AI/releases/tag/v1.1.0-rc.1), a pre-release for evaluation. It has a [tested Windows archive](https://github.com/Robert-Velhorst/002-Contractor-AI/releases/download/v1.1.0-rc.1/ContractorAI-windows-x64.zip) and a versioned [GHCR package](https://github.com/Robert-Velhorst/002-Contractor-AI/pkgs/container/002-contractor-ai). Its packaging workflow completed successfully, including BuildKit SBOM and provenance generation. The existing RC1 image also carries `sha-9dbb4ae9bb06`, an alias named from the workflow-dispatch revision rather than the release source; use the versioned tag shown above. The workflow now in this repository corrects that alias for future recovery runs.
 The release is a pre-release for evaluation, not a production-readiness or
 regulatory-compliance claim. For a local container, prepare `.env` from
 `.env.example`, set `CONTRACTOR_AI_REQUIRE_AUTH=true`, and replace the example
@@ -1254,7 +1254,9 @@ docker compose --env-file .env.hosted -f docker-compose.hosted.yml up --build
 Hosted Compose does not provision PostgreSQL or object storage. It runs as a
 non-root user with a read-only filesystem, dropped capabilities, disabled
 privilege escalation, and a loopback-published port. Use a restricted EU-hosted
-HTTPS ingress in front of it.
+HTTPS ingress in front of it. That `--build` command is for controlled staging;
+production must use the published GHCR release image pinned by digest, pull it,
+and start Compose with `--no-build`. Follow the [Hetzner deployment runbook](DEPLOYMENT_TARGET.md).
 
 ### Local-to-hosted migration
 
@@ -1408,6 +1410,7 @@ benchmark artifacts, and packaged releases should not be committed.
 | --- | --- |
 | [Operator runbook](docs/OPERATOR_RUNBOOK.md) | Startup, daily checks, diagnostics, safety stop, recovery, and incidents |
 | [Windows standalone](docs/WINDOWS_STANDALONE.md) | Portable Windows installation and retained data |
+| [Hetzner deployment](DEPLOYMENT_TARGET.md) | Production architecture, release-image deployment, migration, cutover, and rollback |
 | [ngrok operation](docs/NGROK.md) | Verified temporary remote-access lifecycle |
 | [EU hosting](docs/EU_HOSTING.md) | Hosted requirements, migration, recovery, and acceptance |
 | [Company environments](docs/COMPANY_ENVIRONMENTS.md) | Company, storage, session, migration and offline boundaries |
@@ -1454,6 +1457,4 @@ commitments.
 
 ## License
 
-`package.json` declares MIT. A repository-level `LICENSE` file is not currently
-present, so add and review one before relying on that metadata for distribution
-or third-party use.
+This repository is licensed under the GNU Affero General Public License v3.0 only (`AGPL-3.0-only`). See [`LICENSE`](LICENSE) for the complete terms.
