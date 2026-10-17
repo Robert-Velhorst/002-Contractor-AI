@@ -9,6 +9,7 @@ const {
   findApprovalPrincipalPriorityViolations,
   findOperationalPrincipalPriorityViolations,
   findRequestDerivedActorExpressions,
+  hasExactOriginListEntry,
   hasExactLockedDependency,
   verifyReleaseContract,
   walkFiles
@@ -29,6 +30,15 @@ test('release contract permits dependency upgrades only when the exact lockfile 
   assert.equal(hasExactLockedDependency(packageJson, packageLock, dependency), true);
   assert.equal(hasExactLockedDependency(packageJson, { packages: { [`node_modules/${dependency}`]: { version: '4.12.1' } } }, dependency), false);
   assert.equal(hasExactLockedDependency({ devDependencies: { [dependency]: '^4.13.0' } }, packageLock, dependency), false);
+});
+
+test('hosted CORS origin checks require an exact allowlist entry', () => {
+  const expected = 'https://002contractor-ai.noodzakelijkonline.de';
+  assert.equal(hasExactOriginListEntry(expected, expected), true);
+  assert.equal(hasExactOriginListEntry(`https://evil.example, ${expected}`, expected), true);
+  assert.equal(hasExactOriginListEntry('https://evil.example/https://002contractor-ai.noodzakelijkonline.de', expected), false);
+  assert.equal(hasExactOriginListEntry(`${expected}.evil.example`, expected), false);
+  assert.equal(hasExactOriginListEntry(`${expected}/extra-path`, expected), false);
 });
 
 test('release packages use the exact commit SHA that passed source verification', () => {

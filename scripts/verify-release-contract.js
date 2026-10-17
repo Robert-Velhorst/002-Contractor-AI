@@ -220,6 +220,10 @@ function hasExactLockedDependency(packageJson, packageLock, dependencyName) {
     && lockedVersion === declaredVersion;
 }
 
+function hasExactOriginListEntry(value, expectedOrigin) {
+  return typeof value === 'string' && value.split(',').some(origin => origin.trim() === expectedOrigin);
+}
+
 function verifyReleaseContract(root = path.resolve(__dirname, '..')) {
   const failures = [];
   try {
@@ -834,7 +838,7 @@ function verifyReleaseContract(root = path.resolve(__dirname, '..')) {
   if (hostedValues.get('CONTRACTOR_AI_PUBLIC_URL') !== hostedOrigin) {
     failures.push('Hosted public URL must use the configured Contractor.AI subdomain.');
   }
-  if (!hostedValues.get('CORS_ORIGINS')?.split(',').includes(hostedOrigin)) {
+  if (!hasExactOriginListEntry(hostedValues.get('CORS_ORIGINS'), hostedOrigin)) {
     failures.push('Hosted CORS origins must include the configured Contractor.AI subdomain.');
   }
   if (hostedValues.get('CONTRACTOR_AI_HOSTING_PROVIDER') !== 'Hetzner Cloud'
@@ -991,6 +995,7 @@ module.exports = {
   findApprovalPrincipalPriorityViolations,
   findOperationalPrincipalPriorityViolations,
   findRequestDerivedActorExpressions,
+  hasExactOriginListEntry,
   hasExactLockedDependency,
   verifyReleaseContract,
   walkFiles
