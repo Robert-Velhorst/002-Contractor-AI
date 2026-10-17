@@ -1,5 +1,6 @@
 services:
   contractor-ai:
+    image: ${CONTRACTOR_AI_IMAGE:-contractor-ai:local}
     build: .
     ports:
       - "127.0.0.1:${CONTRACTOR_AI_BIND_PORT:-3000}:3000"
