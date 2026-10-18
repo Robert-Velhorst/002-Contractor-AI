@@ -244,8 +244,8 @@ function verifyReleaseContract(root = path.resolve(__dirname, '..')) {
     if (!packageJson.scripts?.[script]) failures.push(`package.json is missing required script: ${script}`);
   }
   if (packageJson.scripts?.pretest) failures.push('package.json must not duplicate the full Node suite through an automatic pretest hook.');
-  if (packageJson.devDependencies?.['@axe-core/playwright'] !== '4.12.1') {
-    failures.push('The browser accessibility gate must use the pinned @axe-core/playwright 4.12.1 engine.');
+  if (packageJson.devDependencies?.['@axe-core/playwright'] !== '4.14.0') {
+    failures.push('The browser accessibility gate must use the pinned @axe-core/playwright 4.14.0 engine.');
   }
   if (!packageJson.scripts?.test?.startsWith('node scripts/run-node-tests.js ')) {
     failures.push('package.json test must isolate and clean temporary Node test state.');
