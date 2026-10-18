@@ -18,7 +18,7 @@ not currently promise a response-time SLA or a supported-version window.
 
 The policy covers this repository's application code, deployment templates,
 documentation, and GitHub automation. It does not establish authority to test
-GitHub, Vercel, Meta/WhatsApp, Hetzner, or any other separately operated service.
+GitHub, Meta/WhatsApp, Hetzner, or any other separately operated service.
 
 ## Repository safeguards
 
