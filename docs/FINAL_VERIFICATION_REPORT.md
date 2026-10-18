@@ -1,25 +1,22 @@
 # Final Verification Report
 
-## Current Production-Readiness Checkpoint - 2026-10-18 00:47 UTC
+## Current Production-Readiness Checkpoint - 2026-10-18 02:59 UTC
 
 The default branch is `main` at
 `65f12eb5221f7e76ce26c7bc75a6a1264f36f09d`. Draft PR
 [#129](https://github.com/Robert-Velhorst/002-Contractor-AI/pull/129) is open
 from `codex/production-readiness-followup-20261017` at
-`83336745ed8867a94048444ffc5ee78e81c3d48a`. It carries the hosted-release,
+`cc1ecaad9169eb7633cd9147abb6fd494fdde4fc`. It carries the hosted-release,
 PostgreSQL/S3 readiness, deployment-wrapper, storage, and release-contract
 changes; it is not merged or deployed.
 
 Exact-head workflow run
-[39082876461](https://github.com/Robert-Velhorst/002-Contractor-AI/actions/runs/39082876461)
-is still running. Release and HAI contract checks, lint, production build,
-bundle budget, frontend tests, Node tests, production-scale ledger benchmark,
-container acceptance, and Windows standalone packaging all passed. The
-Playwright browser suite is the remaining step. All three CodeQL analyses passed
-in run
-[39082874289](https://github.com/Robert-Velhorst/002-Contractor-AI/actions/runs/39082874289).
-An earlier run on the prior PR head also passed browser E2E, but is not a
-substitute for this exact-head run.
+[39090081024](https://github.com/Robert-Velhorst/002-Contractor-AI/actions/runs/39090081024)
+passed `verify` (including the complete Chromium browser suite) and
+`windows-standalone`. CodeQL and all language analyses passed for this PR head.
+The local release-contract suite passed 18/18; release verification, YAML
+parsing, lint, production build, and `git diff --check` also passed. These
+checks validate the repository and build artifacts, not hosted infrastructure.
 
 The live GitHub repository currently has no open Dependabot, code-scanning, or
 secret-scanning alerts. Dependabot updates, private vulnerability reporting,
@@ -32,21 +29,24 @@ validity checks also remain disabled.
 
 The intended application origin is
 `https://002contractor-ai.noodzakelijkonline.de` under `noodzakelijkonline.de`.
-DNS resolves, and HTTP redirects to HTTPS, but a Node TLS request to the health
-endpoint still fails with `ERR_SSL_TLSV1_ALERT_INTERNAL_ERROR`. SSH port 22 is
-reachable, but the server presented a host key that differs from the locally
-trusted key. The Hetzner console is logged out, so the new identity cannot yet
-be verified. No host key was accepted and no server configuration was changed.
+DNS resolves and HTTP redirects to HTTPS, but a fresh Node TLS handshake still
+fails with `ERR_SSL_TLSV1_ALERT_INTERNAL_ERROR`. SSH port 22 is reachable and
+the presented key matched the existing local `known_hosts` entry. Batch SSH
+authentication as `deploy` using the local Contractor.AI deployment key was
+rejected (`Permission denied (publickey,password)`). This confirms neither
+operator ownership of the pinned host key nor valid deploy access. The Hetzner
+console is currently logged out. No host configuration was changed from this
+session.
 
-An isolated local smoke test using Node `v24.19.0` passed `/api/health/ready`
+The only published GitHub Release remains the `v1.1.0-rc.1` pre-release. An
+isolated local smoke test using Node `v24.19.0` passed `/api/health/ready`
 with SQLite and local evidence storage. This is local-mode evidence only. The
 hosted runtime remains unaccepted: the app is not installed, the production
 TLS route is failing, and EU provider/DPA, PostgreSQL, encrypted/versioned
 object storage, hosted secrets, independent encrypted backups, witnessed
-restore, capacity and monitoring still require operator verification. The only
-published GitHub Release remains the `v1.1.0-rc.1` pre-release. Do not promote
-or describe this system as live production until those gates and independent
-office/field acceptance are verified. Follow [Hetzner Production Deployment](../DEPLOYMENT_TARGET.md),
+restore, capacity and monitoring still require operator verification. Do not
+promote or describe this system as live production until those gates and
+independent office/field acceptance are verified. Follow [Hetzner Production Deployment](../DEPLOYMENT_TARGET.md),
 [EU Hosting](EU_HOSTING.md), and [Company Handover](COMPANY_HANDOVER.md).
 
 ## Historical Checkpoint - 2026-10-14 (post-merge)

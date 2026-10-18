@@ -152,15 +152,21 @@ On 2026-10-18, the Hetzner DNS A record for
 `002contractor-ai.noodzakelijkonline.de` resolved. HTTP returned `308` to
 HTTPS, while an independent Node TLS client received
 `ERR_SSL_TLSV1_ALERT_INTERNAL_ERROR`. The public IP is intentionally omitted.
-The subdomain has no verified proxy route, certificate, or Contractor.AI
-backend. No live configuration was changed. Do not cut over until TLS, private
-capacity, service health, and end-to-end readiness have been verified.
+On 2026-10-18 at 02:59 UTC, the TLS failure was reproduced. The SSH host key
+matched the existing local `known_hosts` entry, but authentication as `deploy`
+using the local deployment key was rejected. This does not verify operator
+ownership of the pinned host key or grant deploy access. The Hetzner console
+was logged out. The subdomain has no verified proxy route, certificate, or
+Contractor.AI backend. No live configuration was changed from this session.
+Do not cut over until TLS, private capacity, service health, and end-to-end
+readiness have been verified.
 
 The current release-readiness PR is #129 at
-`14198ae53a4e10714bce6eaec11ca05e424d7b26`. Its exact-head `verify`,
-`windows-standalone`, and CodeQL checks passed on 2026-10-18. The PR remains
-open as a draft. These checks validate the repository and build artifacts,
-not the live host, provider configuration, or production acceptance.
+`cc1ecaad9169eb7633cd9147abb6fd494fdde4fc`. Its exact-head browser-inclusive
+`verify`, `windows-standalone`, CodeQL, and language-analysis checks passed on
+2026-10-18. The PR remains open as a draft. These checks validate the
+repository and build artifacts, not the live host, provider configuration, or
+production acceptance.
 
 GitHub `main` is `65f12eb5221f7e76ce26c7bc75a6a1264f36f09d`. Its `verify` run
 and six dependency-coverage runs completed successfully on 2026-10-17. These
