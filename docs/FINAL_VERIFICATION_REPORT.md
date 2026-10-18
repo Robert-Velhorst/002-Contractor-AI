@@ -129,11 +129,11 @@ GitHub run [38345180211](https://github.com/Robert-Velhorst/002-Contractor-AI/ac
 completed successfully at 2026-10-13 04:43 UTC. Release and HAI contracts, lint,
 production build, bundle budgets, frontend and Node tests, production-scale
 ledger performance, container runtime, all 46 browser batches, and Windows
-standalone packaging passed. The Vercel deployment and preview-comment checks
+standalone packaging passed. The deployment and preview-comment checks
 also passed. This verifies the PR candidate, not a live Hetzner/EU deployment,
 provider residency, DPA, production recovery point, or restore exercise. The
-current Vercel preview was not independently tested for anonymous access; a
-direct request to an earlier PR preview redirected to Vercel SSO.
+the current preview was not independently tested for anonymous access; a
+direct request to an earlier PR preview redirected to the hosting provider's sign-in.
 
 The mobile work-plan correction constrains form controls to their grid width.
 Its full browser spec passed locally on Windows (11 tests). A subsequent local

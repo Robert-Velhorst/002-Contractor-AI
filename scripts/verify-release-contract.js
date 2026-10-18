@@ -129,8 +129,7 @@ const RETIRED_PATHS = [
   'fn.indexOf(name)!',
   'pnpm-lock.yaml',
   'public/client-portal.html',
-  'public/index.html',
-  'vercel.json'
+  'public/index.html'
 ];
 
 const REQUIRED_HOSTED_ENV_KEYS = [
