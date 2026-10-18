@@ -11,6 +11,11 @@ in private operator records. Do not reset or reinstall the host, or grant a
 deployment identity the `docker` group: Docker access is effectively root
 access.
 
+Do not create new production deployments on Vercel or ngrok. Inventory any
+remaining hosted deployment and migrate it to the verified Hetzner target before
+retiring the old service. Local development and test tooling may remain where
+the project needs it.
+
 ## Required architecture
 
 - Hetzner VM in the approved EU region, with host firewall allowing SSH only
