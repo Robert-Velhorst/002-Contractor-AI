@@ -5,11 +5,20 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { IdentityRuntime, identityRuntimeConfiguration } = require('../identity-runtime');
-const { startIdentityServer, createIdentityApp } = require('../identity-server');
+const { startIdentityServer, createIdentityApp, identityRateLimitKeyFor } = require('../identity-server');
 const { IdentityRegistry } = require('../identity-registry');
 const { healthcheckUrl, runtimeHealthcheck } = require('../scripts/runtime-healthcheck');
 const { ContractorOperatingLedger } = require('../operating-ledger');
+const { parseTrustedProxyConfiguration } = require('../trusted-proxy');
 const { verifySqliteBackupDatabase } = require('../scripts/restore-local-backup');
+
+test('trusted proxy configuration rejects unrestricted and hop-count rules', () => {
+  for (const value of ['true', '1', '*', '0.0.0.0/0', '::/0', '10.0.0.0/0', '2001:db8::/0', '127.0.0.1/00']) {
+    assert.throws(() => parseTrustedProxyConfiguration(value), { code: 'invalid_trusted_proxy' });
+  }
+  assert.equal(parseTrustedProxyConfiguration('10.10.0.5, 2001:db8::/48'), '10.10.0.5, 2001:db8::/48');
+  assert.equal(parseTrustedProxyConfiguration(''), false);
+});
 
 test('optional shared identity fails closed on partial settings, unauthenticated companies and unsafe hosted transport', async () => {
   const options = { local: true, authenticationRequired: true };
@@ -23,6 +32,16 @@ test('optional shared identity fails closed on partial settings, unauthenticated
   await assert.rejects(startIdentityServer({ CONTRACTOR_IDENTITY_MODE: 'hosted' }), { code: 'identity_hosted_requirements' });
   await assert.rejects(startIdentityServer({ CONTRACTOR_IDENTITY_MODE: 'local', CONTRACTOR_IDENTITY_HOST: '0.0.0.0' }), { code: 'identity_local_binding_invalid' });
   await assert.rejects(startIdentityServer({ CONTRACTOR_IDENTITY_MODE: 'hosted', CONTRACTOR_IDENTITY_DATABASE_URL: 'postgres://localhost/test?sslmode=disable', CONTRACTOR_IDENTITY_DPA_REFERENCE: 'review', CONTRACTOR_IDENTITY_EU_REGION_CONFIRMED: 'true' }), { code: 'identity_database_tls_required' });
+});
+
+test('identity process rate-limit keys are bounded, HMACed and IPv6-prefix normalized', () => {
+  const keys = [
+    { ip: '2001:db8:abcd:1201::1' },
+    { ip: '2001:db8:abcd:12ff::99' }
+  ].map(identityRateLimitKeyFor);
+  assert.equal(keys[0], keys[1]);
+  assert.match(keys[0], /^[a-f0-9]{64}$/);
+  assert.equal(JSON.stringify(keys).includes('2001:db8'), false);
 });
 
 test('company session encryption is bound to company/issuer; login state is one-use and schema verification detects damage', t => {

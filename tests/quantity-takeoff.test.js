@@ -85,6 +85,12 @@ test('draft takeoff measurements can be corrected and removed while invalid form
   const job = createJob(ledger);
   const takeoff = ledger.createTakeoff(job.id, { title: 'Correction register', taxRate: 9 });
 
+  for (const payload of ['bad payload', [], null]) {
+    assert.throws(
+      () => ledger.addTakeoffItem(job.id, takeoff.id, payload),
+      error => error.code === 'takeoff_item_invalid' && error.statusCode === 400
+    );
+  }
   assert.throws(
     () => ledger.addTakeoffItem(job.id, takeoff.id, { description: 'Invalid area', measurementType: 'area', length: 4, width: 0, unitPrice: 10 }),
     error => error.code === 'takeoff_area_dimensions_required' && error.statusCode === 400
@@ -97,6 +103,12 @@ test('draft takeoff measurements can be corrected and removed while invalid form
     () => ledger.addTakeoffItem(job.id, takeoff.id, { description: 'Array count', measurementType: 'count', count: [1], unitPrice: 1 }),
     error => error.code === 'takeoff_measurement_invalid' && error.statusCode === 400
   );
+  for (const length of [[1], {}, true]) {
+    assert.throws(
+      () => ledger.addTakeoffItem(job.id, takeoff.id, { description: 'Invalid length', measurementType: 'linear', length, unitPrice: 1 }),
+      error => error.code === 'takeoff_measurement_invalid' && error.statusCode === 400
+    );
+  }
   assert.throws(
     () => ledger.addTakeoffItem(job.id, takeoff.id, { description: 'Array type', measurementType: ['count'], count: 1, unitPrice: 1 }),
     error => error.code === 'takeoff_measurement_type_invalid' && error.statusCode === 400
@@ -105,6 +117,16 @@ test('draft takeoff measurements can be corrected and removed while invalid form
     () => ledger.addTakeoffItem(job.id, takeoff.id, { description: 'Object type', measurementType: { value: 'count' }, count: 1, unitPrice: 1 }),
     error => error.code === 'takeoff_measurement_type_invalid' && error.statusCode === 400
   );
+  assert.throws(
+    () => ledger.addTakeoffItem(job.id, takeoff.id, { description: ['Array description'], measurementType: 'count', count: 1, unitPrice: 1 }),
+    error => error.code === 'takeoff_item_description_invalid' && error.statusCode === 400
+  );
+  for (const category of [['material'], { value: 'material' }]) {
+    assert.throws(
+      () => ledger.addTakeoffItem(job.id, takeoff.id, { description: 'Invalid category', category, measurementType: 'count', count: 1, unitPrice: 1 }),
+      error => error.code === 'takeoff_category_invalid' && error.statusCode === 400
+    );
+  }
   assert.throws(
     () => ledger.addTakeoffItem(job.id, takeoff.id, { description: 'Invalid WBS', measurementType: 'count', count: 1, unitPrice: 1, wbsCode: '01..20' }),
     error => error.code === 'takeoff_wbs_code_invalid' && error.statusCode === 400
@@ -127,6 +149,12 @@ test('draft takeoff measurements can be corrected and removed while invalid form
   assert.equal(added.item.wbsCode, '03.10');
   assert.equal(added.takeoff.workBreakdown.nodes[0].name, 'Wall finishes');
   assert.equal(added.takeoff.subtotal, 352.8);
+  for (const length of [[1], {}, true]) {
+    assert.throws(
+      () => ledger.updateTakeoffItem(job.id, takeoff.id, added.item.id, { length }),
+      error => error.code === 'takeoff_measurement_invalid' && error.statusCode === 400
+    );
+  }
 
   assert.throws(
     () => ledger.addTakeoffItem(job.id, takeoff.id, {

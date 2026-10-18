@@ -46,7 +46,7 @@ manual evidence is recorded in `FINAL_VERIFICATION_REPORT.md`.
 | 029 | Security headers and web security | Implemented | CSP/headers, CORS/origin, body limits, proxy validation and tests |
 | 030 | Secrets management and credential rotation | Implemented | no fallback secrets, env validation, role-key rotation/revocation guidance |
 | 031 | Local development one-command experience | Implemented | `npm ci`, build/start plus split API/Vite development commands and isolated browser runner |
-| 032 | Docker and deployment readiness | Partial | multi-stage non-root image, read-only container gate, hosted Compose, local production build, and current aggregate bundle-budget gate pass; no provider-provisioned production image/deployment or live ingress acceptance is recorded |
+| 032 | Docker and deployment readiness | Partial | PR #120 exact-head CI run `38623187739` passed production build, container acceptance, bundle gate, Windows standalone packaging and full verify; post-merge CodeQL is clean. No provider-provisioned Hetzner/EU deployment, production ingress, managed database/object store or restore acceptance is recorded |
 | 033 | Database migrations and rollback safety | Implemented | append-only migrations, locks, backup/restore and environment migration validation |
 | 034 | CLI and doctor/self-diagnostic command | Implemented | privacy-minimized `npm run doctor` |
 | 035 | Observability, health, and readiness endpoints | Implemented | minimal public health plus authenticated detailed readiness/capabilities |
@@ -54,10 +54,10 @@ manual evidence is recorded in `FINAL_VERIFICATION_REPORT.md`.
 | 037 | Demo mode with explicit labelling | Implemented | QA/demo records are labelled; owner maintenance previews the complete set, rejects stale plans, verifies recovery, and archives atomically |
 | 038 | Fake provider lab for tests only | Implemented | test doubles remain under tests; production requires verified allowlisted provider |
 | 039 | Test-data factories and fixtures | Implemented | isolated temp data, per-test server/ledger fixtures, QA records; canonical Node children allowlist inherited platform settings, discard operator/provider paths and secrets, use unique default storage despite reused process IDs, preserve native worker fixture storage and retain only guarded test PostgreSQL configuration with verified TLS; not a security sandbox |
-| 040 | Backend test suite | Partial | Current PR head `c03c801` aligns current-schema assertions with migration `097_durable_evidence_storage_reservations`; focused local migration, hosted-transfer, audit-history, and evidence-reservation checks passed (16 passed, 37 provider/PostgreSQL skips). Exact-head GitHub run `38358057851` is in progress; full PostgreSQL parity and hosted acceptance remain pending |
+| 040 | Backend test suite | Partial | PR #120 exact-head GitHub run `38623187739` passed the Node test groups (1,111 and 128 tests; zero failures or skips in both groups), including the configured CI database test group. Managed-provider parity, production data and hosted acceptance remain external |
 | 041 | Frontend and component test suite | Implemented | Phase 243 fresh full suite 528/528 over 85 files, two workers, 159.00 seconds, terminal exit 0. Existing bounded qualification/client paging, exact search/index/row reuse, fallback/fresh records, callbacks/rights/locale/busy states, cancellation, private media, drafts and exact retry controls pass. React/style sources are unchanged; current build behavior is separately checked by Node/compiler and selected browser tests |
 | 042 | Worker/job test suite | Implemented | scheduler lease, idempotency, failure and suspension tests |
-| 043 | End-to-end workflow tests | Partial | A fresh production build passes locally; the current PR CI run includes the full Playwright browser gate and is pending. Phase 244 selected-browser evidence is historical. Independent device, cross-browser, live-provider and operator acceptance remain open |
+| 043 | End-to-end workflow tests | Partial | PR #120 exact-head run `38623187739` executed all 46 Playwright batches with no failed batches. Independent device, cross-browser, live-provider and operator acceptance remain open |
 | 044 | Acceptance test matrix | Implemented | `ACCEPTANCE_TESTS.md` maps 56 release outcomes |
 | 045 | Adversarial break-the-app tests | Implemented | source drift, replay, auth, rate, tamper, malformed evidence and conflict tests |
 | 046 | Cross-user isolation tests | Implemented | roles, assignment/resource ownership and portal token boundaries |
@@ -65,7 +65,7 @@ manual evidence is recorded in `FINAL_VERIFICATION_REPORT.md`.
 | 048 | Provider failure simulation | Implemented | unavailable/unverified/ambiguous provider states fail closed in tests |
 | 049 | Accessibility review | Partial | pinned axe gate reports zero selected WCAG A/AA violations across sign-in, all primary workspaces, representative dialogs, mobile navigation, and the mobile/desktop client portal; independent assistive-technology and user audit remains external |
 | 050 | Responsive and browser compatibility | Partial | Phase 244 selected 15 Chromium cases pass. Current 1280x720/390x844 dashboard captures inspected without overlap; relevant console, scoped axe and containment checks pass. Previous frontend build/CSS reused unchanged, not rebuilt. Independent devices/cross-browser/assistive technology and full current browser acceptance remain open |
-| 051 | Performance baseline and indexing | Partial | The current bundle-budget gate passes across 118 assets: 700,795 gzip / 599,564 Brotli bytes, with no size failures; largest JS is 370,088 bytes. Synthetic ledger measurements and their scope remain documented in the verification report; they do not establish hosted-load, whole-device RAM, or independent device performance. Full production-like hosted load and operator/device acceptance remain open |
+| 051 | Performance baseline and indexing | Partial | PR #120's exact-head bundle gate passed across 117 assets: 700,044 gzip / 598,959 Brotli bytes; largest JS is 370,044 bytes, with no budget failures. Synthetic ledger measurements do not establish hosted-load, whole-device RAM or independent device performance; production-like hosted load and operator/device acceptance remain open |
 | 052 | Large dataset and pagination testing | Implemented | 5,000 jobs, 20,000 tasks, 2,500 opportunities, 5,000 approvals and 25,000 chained audit events verify bounded lists, historical search and untruncated aggregates |
 | 053 | Backup and restore procedures | Implemented | signed v3 DB/evidence manifests, atomic publication, authenticated checksums, validation, rollback, session revocation, runbook |
 | 054 | Data reconciliation and repair commands | Partial | integrity/reconciliation/restore/migration tools exist; no generic mutation repair CLI |
@@ -477,8 +477,62 @@ coercing them into accepted scalar modes. The focused takeoff suite passes 9/9,
 targeted ESLint and `git diff --check` pass, and the release-contract check is
 valid (111 canonical paths, 12 retired paths, 19 hosted environment keys, 811
 source files). The fix is published to PR #117 at `c21f4cde`; its refreshed
-GitHub checks are pending. This does not close the main-branch CodeQL alert
-until the change is merged and a subsequent main scan confirms it.
+GitHub checks passed, and the security-hardening PR was merged into `main` at
+`8947fe7e18b04bd9bffdb2d59b61f45862c2c0ca`. The exact-head `verify`, Windows
+standalone and CodeQL checks passed before merge. A post-merge main-branch scan
+is still required to confirm the main-branch alert state.
+
+## Phase 213 post-merge security and release verification
+
+On 2026-10-14, PR #120 merged to `main` at `895cc093099ead12e46304339c89244ca0f77ed9`.
+Its exact-head run `38623187739` passed `verify` and `windows-standalone`;
+verify included 1,111 and 128 passing tests in separate Node groups, 46/46
+browser batches, the production build, container acceptance and bundle budget.
+The post-merge CodeQL run `38627734542` passed and the repository API reported
+zero open code-scanning alerts. The post-merge main verify run `38627736106`
+was still running when recorded, although its Windows package job had passed.
+
+GitHub About metadata, README, security policy, prerelease, vulnerability
+alerts, Dependabot updates, private vulnerability reporting, secret scanning,
+push protection and protected-main required checks were verified live. Generic
+secret-pattern scanning remains disabled/unavailable for the configured account;
+validity checks remain disabled. Neither setting is reported as active.
+
+Production deployment is still not accepted. No hosted environment file, SSH
+configuration, Hetzner CLI context or deployment secrets were present in the
+checked environment. The live EU provider, DPA, HTTPS ingress, PostgreSQL/S3
+durability, encrypted recovery, witnessed restore, monitoring and independent
+operator/field-device acceptance remain unverified. See the current
+`FINAL_VERIFICATION_REPORT.md` checkpoint and `EU_HOSTING.md` before promotion.
+
+## Historical Phase 212 checkpoint (superseded by Phase 213)
+
+On 2026-10-14, the current `main` tree is `8947fe7e18b04bd9bffdb2d59b61f45862c2c0ca`.
+The production-bundle verifier was run against a fresh Vite production build
+from the current-main-derived documentation branch. It passed with 117 assets,
+zero failures, largest JavaScript 370,044/600,000 bytes, largest CSS
+245,894/300,000 bytes, complete-product gzip 700,057/725,000 bytes and Brotli
+598,930/620,000 bytes. The release-contract verifier passed with 111 canonical
+paths, 12 retired paths, 19 hosted environment keys and 812 source files.
+These checks correct the older bundle measurements below; those values remain
+historical evidence and are not the current bundle gate result.
+
+PR #117's exact-head CI passed release verification, lint, production build,
+bundle verification, frontend and Node tests, performance, container smoke,
+browser workflows, Windows standalone packaging and CodeQL before its merge.
+The local Docker daemon did not respond to `docker version` in a later local
+smoke attempt, so no local image/container was created by that attempt. The
+successful CI container run is the available container evidence; it is not a
+live EU deployment or provider acceptance.
+
+EU-hosted production is still not accepted: an operator must provision and
+verify the EU region, DPA, HTTPS ingress, durable PostgreSQL and object storage,
+secrets, encrypted backups, restore/recovery objectives, monitoring and
+independent operator/device acceptance. Real messaging, accounting, mapping,
+calendar, banking, Peppol and remote AI providers remain unconfigured. The
+remaining dependency and documentation branches require exact-head CI after
+their update to current `main`; local checks or earlier branch runs do not
+replace those checks.
 
 ## Release interpretation
 
@@ -492,15 +546,16 @@ unavailability have real PostgreSQL evidence. Live object storage, production
 hosting, managed recovery and independent acceptance remain unverified. The
 active user objective is now production readiness, not partial feature growth.
 
-September 30 Phase 198: the separate bundle-budget gate fails despite a
+Historical September 30 Phase 198: the separate bundle-budget gate failed despite a
 successful functional build and source contract. Largest JS is 610,125/600,000
 bytes, aggregate gzip 674,681/578,500 and Brotli 583,409/540,000; five surface
-limits also fail. These unchanged limits block a release-readiness claim.
+limits also failed. These historical thresholds and measurements are superseded
+by the current verifier result recorded in Phase 212.
 
-Phase 199 fixes only the largest-JS limit (591,140 bytes). Its measured
-aggregate figures were gzip 676,627/578,500 and Brotli 585,512/540,000, with
-the same five surface failures. Full component/browser/container validation
-does not clear these remaining release gates.
+Historical Phase 199 fixes only the largest-JS limit (591,140 bytes). Its
+measured aggregate figures were gzip 676,627/578,500 and Brotli 585,512/540,000,
+with the same five surface failures. Those historical measurements are
+superseded by Phase 212 and do not describe the current release gate.
 
 The local-first product may be released only when the final automated and browser
 gates pass. EU-hosted production must remain blocked until phases 069 and 100 and

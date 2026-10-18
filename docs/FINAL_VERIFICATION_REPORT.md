@@ -1,6 +1,58 @@
 # Final Verification Report
 
-## Current Published PR Checkpoint - 2026-10-13
+## Current Production-Readiness Checkpoint - 2026-10-14 (post-merge)
+
+The current `main` commit is `895cc093099ead12e46304339c89244ca0f77ed9`.
+PR [#120](https://github.com/Robert-Velhorst/002-Contractor-AI/pull/120)
+merged the security hardening and mounted-route request logging correction.
+Its exact-head run
+[38623187739](https://github.com/Robert-Velhorst/002-Contractor-AI/actions/runs/38623187739)
+passed both required jobs: `verify` (32 minutes) and `windows-standalone`.
+The verify job recorded 1,111/1,111 passing Node tests and a separate
+128/128-test group, zero skipped/failing tests in either group, all 46 browser
+batches executed with no failed batches, plus the production build, release and
+HAI contracts, lint, bundle budget, performance and container acceptance.
+The Windows standalone package/smoke gate also passed. PR CodeQL checks passed
+for Java/Kotlin, JavaScript/TypeScript and Actions.
+
+Post-merge CodeQL run
+[38627734542](https://github.com/Robert-Velhorst/002-Contractor-AI/actions/runs/38627734542)
+passed on `main`; the live code-scanning API now reports zero open alerts.
+The post-merge main verification run
+[38627736106](https://github.com/Robert-Velhorst/002-Contractor-AI/actions/runs/38627736106)
+was still in progress when this checkpoint was written; its Windows package job
+had passed. PR exact-head success is verified independently of that still-running
+main workflow.
+
+The repository's GitHub About description/topics, README, security policy,
+`v1.1.0-rc.1` prerelease, Windows package and GHCR image tagged
+`v1.1.0-rc.1` are published. Security settings
+verified enabled include vulnerability alerts, Dependabot updates, private
+vulnerability reporting, secret scanning and push protection. `main` requires
+the current verify, Windows and CodeQL checks, resolved review threads, and
+squash-only merges. Generic secret-pattern scanning and secret validity checks
+remain unavailable/disabled for this repository/account configuration; see the
+GitHub Security tab and the official GitHub documentation before treating those
+capabilities as enabled.
+
+This is not live production acceptance. The current machine has no `.env.hosted`,
+SSH configuration or Hetzner CLI context, and the repository has no deployment
+secrets configured. `npm run doctor` could not reach a local app on port 3000;
+its hosted-runtime checks therefore remain unverified. The machine's installed
+Node is 25.2.1 while this project requires Node 22.x. No live Hetzner deployment
+or managed EU provider, database, bucket, ingress, DPA, recovery point, restore
+exercise, monitoring route or independent operator/field-device acceptance was
+verified. Continue to follow [EU_HOSTING.md](EU_HOSTING.md) and
+[COMPANY_HANDOVER.md](COMPANY_HANDOVER.md); do not promote the RC based on CI
+alone. Real external communication/accounting/mapping/calendar/banking/Peppol/
+remote-AI providers remain unconfigured.
+
+The current CI bundle gate passed with 117 assets: largest JavaScript 370,044
+bytes, largest CSS 245,894 bytes, aggregate gzip 700,044 bytes and Brotli
+598,959 bytes. The separate release contract and CI gates passed. Historical
+measurements below do not describe this exact PR head.
+
+## Historical PR #97 Checkpoint - 2026-10-13
 
 Open draft PR [#97](https://github.com/Robert-Velhorst/002-Contractor-AI/pull/97)
 is currently at `c03c801d4616f93aca0be7eecf2c703c5799ada9`. This follow-up adds
@@ -28,11 +80,11 @@ GitHub run [38345180211](https://github.com/Robert-Velhorst/002-Contractor-AI/ac
 completed successfully at 2026-10-13 04:43 UTC. Release and HAI contracts, lint,
 production build, bundle budgets, frontend and Node tests, production-scale
 ledger performance, container runtime, all 46 browser batches, and Windows
-standalone packaging passed. The Vercel deployment and preview-comment checks
+standalone packaging passed. The deployment and preview-comment checks
 also passed. This verifies the PR candidate, not a live Hetzner/EU deployment,
 provider residency, DPA, production recovery point, or restore exercise. The
-current Vercel preview was not independently tested for anonymous access; a
-direct request to an earlier PR preview redirected to Vercel SSO.
+the current preview was not independently tested for anonymous access; a
+direct request to an earlier PR preview redirected to the hosting provider's sign-in.
 
 The mobile work-plan correction constrains form controls to their grid width.
 Its full browser spec passed locally on Windows (11 tests). A subsequent local

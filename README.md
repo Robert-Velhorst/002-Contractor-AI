@@ -2,13 +2,13 @@
 
 [![Verify Contractor.AI](https://github.com/Robert-Velhorst/002-Contractor-AI/actions/workflows/verify.yml/badge.svg)](https://github.com/Robert-Velhorst/002-Contractor-AI/actions/workflows/verify.yml)
 
-Contractor.AI is a local-first operations platform for building contractors in
-the Netherlands and wider Europe. It connects office, site, and client workflows
-so teams can trace job scope, decisions, work, evidence, costs, and handover in
-one auditable system instead of coordinating them across disconnected tools.
+Contractor.AI is a local-first construction operations platform for contractors
+in the Netherlands and wider Europe. It brings the contractor's office, the
+executing crew, and the client into one auditable workflow: from incoming work
+and estimating to field execution, evidence, change control, and handover.
 
 It is not a marketing demo or a collection of disconnected prototypes. The
-product runtime is a Node.js 22 application with an Express API, a React/Vite
+product runtime is a Node.js 26.x application with an Express API, a React/Vite
 interface, a transactional SQLite or PostgreSQL ledger, and private evidence
 storage. SQLite and local files support local operation. Hosted mode requires
 configured PostgreSQL, private EU object storage, strong authentication, HTTPS
@@ -27,7 +27,7 @@ Contractor.AI serves three groups through connected experiences:
 | Experience | Typical work |
 | --- | --- |
 | Contractor / office | Intake, estimating, project control, approvals, workforce and resource planning, procurement, finance evidence, client updates, and closeout. |
-| Executing worker | Approved positions, assignment requirements, shared instructions, online/offline work packs, safety and quality records, progress, time, materials, and evidence. |
+| Executing worker / subcontractor | Approved positions, assignment requirements, shared instructions, online/offline work packs, safety and quality records, progress, time, materials, and evidence. |
 | Client | Scoped project conversations, shared photos and details, questions, approval-gated delivery reviews, and recorded replies or reservations. |
 
 The product links those activities to retained jobs, tasks, work packages,
@@ -46,7 +46,7 @@ adapter is not proof that an external provider is live.
 
 ### Runtime At A Glance
 
-- **Local:** Node.js 22, Express, React/Vite, SQLite, and private local files.
+- **Local:** Node.js 26, Express, React/Vite, SQLite, and private local files.
 - **Hosted:** PostgreSQL and private S3-compatible EU storage, HTTPS, strong
   authentication, explicit proxy/CORS configuration, and retained recovery and
   provider evidence. Hosted startup fails closed when requirements are absent.
@@ -57,13 +57,32 @@ adapter is not proof that an external provider is live.
 
 Contractor.AI is under active development. Local and CI verification do not by
 themselves establish hosted production readiness, regulatory compliance,
-professional certification, or customer/operator acceptance. See
-[Current Boundaries](#current-boundaries) and the
+professional certification, or customer/operator acceptance. The currently
+published version is a **release candidate**, not a stable or production-ready
+release. See [Release status](#release-status),
+[Current Boundaries](#current-boundaries), and the
 [delivery register](docs/TOTAL_SOLUTION_DELIVERY.md).
+
+## Release Status
+
+The first public package is published as **Contractor.AI 1.1.0-rc.1**. It is
+intended for evaluation and local installation; it is not a claim that an EU
+hosted service, WhatsApp integration, or production operation has been accepted.
+
+- [Release notes and downloads](https://github.com/Robert-Velhorst/002-Contractor-AI/releases/tag/v1.1.0-rc.1)
+- [Windows x64 standalone package](https://github.com/Robert-Velhorst/002-Contractor-AI/releases/download/v1.1.0-rc.1/ContractorAI-windows-x64.zip)
+- Container image: `ghcr.io/robert-velhorst/002-contractor-ai:v1.1.0-rc.1`
+- The Windows archive passed the release workflow's package smoke test; the
+  container build and registry publication also completed successfully.
+
+The release is a prerelease. No stable `v1.1.0` release is being represented
+here. Review the release notes and this README before installing, and keep
+production data out of evaluation deployments.
 
 ## Contents
 
 - [Product overview](#product-overview)
+- [Release status](#release-status)
 - [Current product examples](#current-product-examples)
 - [The short version](#the-short-version)
 - [Who it is for](#who-it-is-for)
@@ -87,7 +106,14 @@ professional certification, or customer/operator acceptance. See
 - [Documentation index](#documentation-index)
 - [Current boundaries](#current-boundaries)
 
+<details>
+<summary>Revision-specific implementation examples</summary>
+
 ## Current Product Examples
+
+The following notes describe implementation changes and measured test fixtures,
+not broad performance guarantees or live production acceptance. Their evidence
+is revision-bound; consult the linked acceptance and verification records.
 
 **Lighter qualification and availability interaction:** qualification workers now
 use the existing 10/25/50-row pagination, rather than rendering every loaded
@@ -234,6 +260,8 @@ Field workers see a limited remaining-scope projection, not private source or
 customer data. This does not auto-schedule crews or make date commitments. See
 [Work Balance](docs/WORK_BALANCE.md).
 
+</details>
+
 ## The short version
 
 For an owner or project team, Contractor.AI provides one place to answer:
@@ -287,6 +315,9 @@ Schedule, Approvals, Dispatch, Disruptions, Resources, Finance, Performance,
 Clients, Field, Operations,** and **Help**. Access is filtered by role.
 
 ### Interactive performance
+
+<details>
+<summary>Implementation and benchmark details</summary>
 
 - Loading-list recommendations count tools and materials independently instead
   of multiplying their joined rows. Job-scoped covering indexes are installed
@@ -504,6 +535,11 @@ that all performance bottlenecks have been removed: aggregate bundle budgets
 still fail, and broader backend, large-dataset and hosted-load profiling remains
 necessary. Cancelling a browser read does not guarantee cancellation of database
 work that has already started on the server.
+
+See the [performance benchmark](docs/PERFORMANCE_BENCHMARK.md),
+[acceptance tests](docs/ACCEPTANCE_TESTS.md), and
+[revision-specific verification report](docs/FINAL_VERIFICATION_REPORT.md).
+</details>
 
 ### Business setup and governance
 
@@ -742,7 +778,7 @@ recovery responsibility off the local machine.
 
 ### Run locally
 
-Requirements: Node.js 22.x and npm on Windows, macOS, or Linux.
+Requirements: Node.js 26.x and npm on Windows, macOS, or Linux. The portable Windows package is built with Node.js 26.12.0.
 
 ```powershell
 git clone https://github.com/Robert-Velhorst/002-Contractor-AI.git
@@ -782,7 +818,7 @@ different, verified company environment.
 ### Windows standalone
 
 The GitHub release workflow creates and tests
-`ContractorAI-windows-x64.zip` with Node.js 22, the production build, and
+`ContractorAI-windows-x64.zip` with Node.js 26.12.0, the production build, and
 production dependencies. Extract it and run
 `ContractorAI.cmd`. The launcher creates a random owner key on first start,
 stores configuration and data under `%LOCALAPPDATA%\ContractorAI`, binds to
@@ -809,14 +845,17 @@ Data is retained in the `contractor-ai-data` named volume.
 Published GitHub releases attach a tested Windows standalone archive and publish
 a Docker image to GitHub Container Registry (GHCR). Container releases include
 an SPDX software bill of materials and build provenance generated by BuildKit.
-Tags use the release version and the source commit, for example:
+Tags use the release version and, for future publications, the validated release
+source commit:
 
 ```text
 ghcr.io/robert-velhorst/002-contractor-ai:v1.1.0-rc.1
-ghcr.io/robert-velhorst/002-contractor-ai:sha-<commit>
+ghcr.io/robert-velhorst/002-contractor-ai:sha-<release-source-commit>
 ```
 
-The first release is a pre-release for evaluation, not a production-readiness or
+
+The first published release is [Contractor.AI 1.1.0-rc.1](https://github.com/Robert-Velhorst/002-Contractor-AI/releases/tag/v1.1.0-rc.1), a pre-release for evaluation. It has a [tested Windows archive](https://github.com/Robert-Velhorst/002-Contractor-AI/releases/download/v1.1.0-rc.1/ContractorAI-windows-x64.zip) and a versioned [GHCR package](https://github.com/Robert-Velhorst/002-Contractor-AI/pkgs/container/002-contractor-ai). Its packaging workflow completed successfully, including BuildKit SBOM and provenance generation. The existing RC1 image also carries `sha-9dbb4ae9bb06`, an alias named from the workflow-dispatch revision rather than the release source; use the versioned tag shown above. The workflow now in this repository corrects that alias for future recovery runs.
+The release is a pre-release for evaluation, not a production-readiness or
 regulatory-compliance claim. For a local container, prepare `.env` from
 `.env.example`, set `CONTRACTOR_AI_REQUIRE_AUTH=true`, and replace the example
 owner credential with a private random secret before starting the image:
@@ -1008,6 +1047,10 @@ Owner diagnostic:
 npm run doctor -- --url http://127.0.0.1:3000 --token <owner-key>
 ```
 
+The doctor checks an already-running service; it does not start the API. Set the
+URL to the active local API port or hosted HTTPS origin. Unreachable or timed-out
+endpoints are reported separately without returning raw network errors or tokens.
+
 The support bundle contains runtime version, readiness, migrations, aggregate
 counts, audit integrity, and automation state. It excludes customer records,
 evidence bodies, logs, environment values, tokens, cookies, connection strings,
@@ -1150,6 +1193,8 @@ See [API usage audit](docs/API_USAGE_AUDIT.md).
 - Exact CORS and explicit ingress proxy trust.
 - Durable, bounded, HMAC-bucketed API and login rate limits without retaining
   source addresses.
+- Standard per-process rate limits on public file delivery and identity-provider
+  requests, in addition to the durable identity-service request quota.
 - Request, multipart, field, file, and evidence-storage quotas.
 - CSP, HSTS in production, frame denial, MIME-sniffing prevention, and no inline
   event handlers.
@@ -1160,12 +1205,26 @@ See [API usage audit](docs/API_USAGE_AUDIT.md).
 - Minimized owner support bundles.
 - No public evidence serving or bearer secrets in request paths.
 
+The GitHub repository also has CodeQL default setup, dependency graph and
+automatic dependency submission, Dependabot alerts and security updates,
+provider-pattern secret scanning with push protection, private vulnerability
+reporting, and an active `main` ruleset. The ruleset requires PRs, passing
+verification/CodeQL checks and resolved review conversations, and blocks
+force-pushes and deletion. It does not require an approving review because this
+repository currently has one maintainer. Generic non-provider secret patterns
+are unavailable for this user-owned repository under the current GitHub plan;
+GitHub documents the feature for organization-owned repositories with GitHub
+Team and Secret Protection. Provider validity checks remain disabled because
+they send detected credentials to issuers for validation. These repository
+controls do not replace application or production controls.
+
 Likely personal data includes client details, worker assignment/attendance,
 portal activity, evidence metadata, and uploaded files. The software provides
 controls; it does not by itself establish a lawful basis, retention schedule,
 DPA, DPIA, works-council approval, or GDPR/AVG compliance.
 
-Read [Security and privacy](docs/SECURITY.md),
+Read the [GitHub security policy](.github/SECURITY.md),
+[Security and privacy](docs/SECURITY.md),
 [Privacy rights operations](docs/PRIVACY_OPERATIONS.md), and
 [Accessibility](docs/ACCESSIBILITY.md).
 
@@ -1195,7 +1254,9 @@ docker compose --env-file .env.hosted -f docker-compose.hosted.yml up --build
 Hosted Compose does not provision PostgreSQL or object storage. It runs as a
 non-root user with a read-only filesystem, dropped capabilities, disabled
 privilege escalation, and a loopback-published port. Use a restricted EU-hosted
-HTTPS ingress in front of it.
+HTTPS ingress in front of it. That `--build` command is for controlled staging;
+production must use the published GHCR release image pinned by digest, pull it,
+and start Compose with `--no-build`. Follow the [Hetzner deployment runbook](DEPLOYMENT_TARGET.md).
 
 ### Local-to-hosted migration
 
@@ -1268,7 +1329,7 @@ aliases and keeping namespace/non-icon imports on the package's public API.
 It does not relax download budgets or remove any product workflows.
 
 GitHub Actions runs on pushes to `main`, pull requests, and manual dispatch.
-The Linux job performs Node.js 22 installation, TLS PostgreSQL 16 setup, release
+The Linux job performs Node.js 26.12.0 installation, TLS PostgreSQL 16 setup, release
 and HAI contracts, lint, build, bundle budgets, frontend and Node tests,
 production-scale benchmark, container verification, and Playwright. The Windows
 job builds and smoke-tests `ContractorAI-windows-x64.zip`.
@@ -1349,6 +1410,7 @@ benchmark artifacts, and packaged releases should not be committed.
 | --- | --- |
 | [Operator runbook](docs/OPERATOR_RUNBOOK.md) | Startup, daily checks, diagnostics, safety stop, recovery, and incidents |
 | [Windows standalone](docs/WINDOWS_STANDALONE.md) | Portable Windows installation and retained data |
+| [Hetzner deployment](DEPLOYMENT_TARGET.md) | Production architecture, release-image deployment, migration, cutover, and rollback |
 | [ngrok operation](docs/NGROK.md) | Verified temporary remote-access lifecycle |
 | [EU hosting](docs/EU_HOSTING.md) | Hosted requirements, migration, recovery, and acceptance |
 | [Company environments](docs/COMPANY_ENVIRONMENTS.md) | Company, storage, session, migration and offline boundaries |
@@ -1395,6 +1457,4 @@ commitments.
 
 ## License
 
-`package.json` declares MIT. A repository-level `LICENSE` file is not currently
-present, so add and review one before relying on that metadata for distribution
-or third-party use.
+This repository is licensed under the GNU Affero General Public License v3.0 only (`AGPL-3.0-only`). See [`LICENSE`](LICENSE) for the complete terms.

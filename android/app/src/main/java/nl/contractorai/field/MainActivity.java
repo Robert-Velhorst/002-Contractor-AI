@@ -1,5 +1,7 @@
 package nl.contractorai.field;
 
+import android.Manifest;
+import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.ClipData;
@@ -8,7 +10,10 @@ import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.pdf.PdfRenderer;
 import android.os.Bundle;
+import android.os.Build;
 import android.os.ParcelFileDescriptor;
+import android.window.OnBackInvokedCallback;
+import android.window.OnBackInvokedDispatcher;
 import android.net.Uri;
 import android.net.ConnectivityManager;
 import android.net.Network;
@@ -18,6 +23,7 @@ import android.text.InputType;
 import android.view.View;
 import android.view.WindowManager;
 import android.widget.*;
+import android.content.pm.PackageManager;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import java.io.*;
@@ -26,6 +32,7 @@ import java.util.Calendar;
 import java.text.DateFormat;
 import java.util.Date;
 import java.util.List;
+import java.util.Iterator;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -33,9 +40,11 @@ import androidx.core.content.FileProvider;
 
 public final class MainActivity extends Activity {
     private static final int CAMERA_REQUEST = 4101;
+    private static final int LOCAL_NETWORK_PERMISSION_REQUEST = 4102;
     private FieldStore store;
     private JSONObject data;
     private String currentScope = "", selectedJob = "", message = "";
+    private String pendingLocalNetworkOrigin = "";
     private LinearLayout content;
     private boolean busy;
     private boolean activityVisible, packVisible, replyPollBusy, replyPollingStopped;
@@ -61,6 +70,7 @@ public final class MainActivity extends Activity {
     private Bitmap bitmap;
     private int pdfPage;
     private float pdfScale = 1;
+    private OnBackInvokedCallback backInvokedCallback;
     private File pendingPhotoFile;
     private String pendingPhotoJobId = "", pendingPhotoSetId = "", pendingPhotoNotes = "";
 
@@ -68,7 +78,12 @@ public final class MainActivity extends Activity {
         super.onCreate(state);
         getWindow().setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE);
         store = new FieldStore(this);
+        if (Build.VERSION.SDK_INT >= 33) {
+            backInvokedCallback = this::handleBack;
+            getOnBackInvokedDispatcher().registerOnBackInvokedCallback(OnBackInvokedDispatcher.PRIORITY_DEFAULT, backInvokedCallback);
+        }
         if (state != null) {
+            pendingLocalNetworkOrigin = state.getString("pendingLocalNetworkOrigin", "");
             String filePath = state.getString("pendingPhotoFile", "");
             if (!filePath.isEmpty()) pendingPhotoFile = new File(filePath);
             pendingPhotoJobId = state.getString("pendingPhotoJobId", ""); pendingPhotoSetId = state.getString("pendingPhotoSetId", "");
@@ -79,6 +94,7 @@ public final class MainActivity extends Activity {
     }
     @Override protected void onSaveInstanceState(Bundle state) {
         super.onSaveInstanceState(state);
+        if (!pendingLocalNetworkOrigin.isEmpty()) state.putString("pendingLocalNetworkOrigin", pendingLocalNetworkOrigin);
         if (pendingPhotoFile != null) state.putString("pendingPhotoFile", pendingPhotoFile.getAbsolutePath());
         state.putString("pendingPhotoJobId", pendingPhotoJobId); state.putString("pendingPhotoSetId", pendingPhotoSetId);
         state.putString("pendingPhotoNotes", pendingPhotoNotes);
@@ -121,25 +137,7 @@ public final class MainActivity extends Activity {
         EditText server = input("Serveradres (HTTPS)", false); server.setSingleLine(true); server.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI); server.setText(store.origin);
         EditText key = input("Persoonlijke uitvoerderssleutel", true);
         button("Aanmelden", () -> {
-            final String serverInput = server.getText().toString(), secret = key.getText().toString(); key.setText("");
-            work(() -> {
-                store.origin = FieldStore.origin(serverInput); store.token = secret;
-                try {
-                    JSONObject operator = store.json("/api/session", null).getJSONObject("operator");
-                    currentScope = FieldStore.scope(operator);
-                    store.companyId = operator.getString("companyId");
-                    store.ledgerId = operator.getString("ledgerId");
-                }
-                catch (Exception error) { store.token = ""; throw error; }
-                JSONObject retained = store.load();
-                if (retained != null && (!retained.getString("origin").equals(store.origin) || !retained.getString("scope").equals(currentScope)
-                    || !retained.optString("companyId").equals(store.companyId) || !retained.optString("ledgerId").equals(store.ledgerId))) {
-                    store.token = ""; throw new IOException("Deze werkmap hoort bij een ander account of een andere server. Verwijder deze alleen na herstel van de wachtrij.");
-                }
-                data = retained != null ? retained : new JSONObject().put("origin", store.origin).put("scope", currentScope)
-                    .put("companyId", store.companyId).put("ledgerId", store.ledgerId)
-                    .put("expiresAt", System.currentTimeMillis() + FieldStore.TTL).put("packs", new JSONArray()).put("queue", new JSONArray());
-            }, this::showJobs);
+            beginLogin(server.getText().toString(), key);
         });
         button("Offline werkmap openen", () -> work(() -> {
             JSONObject retained = store.load();
@@ -149,6 +147,70 @@ public final class MainActivity extends Activity {
             store.ledgerId = retained.optString("ledgerId"); store.token = ""; currentScope = "";
         }, this::showJobs));
         button("Lokale gegevens verwijderen", this::confirmErase);
+    }
+    private void beginLogin(String serverInput, EditText key) {
+        final String origin;
+        try { origin = FieldStore.origin(serverInput); }
+        catch (Exception error) { message = error.getMessage() == null ? "Ongeldig serveradres." : error.getMessage(); showLogin(); return; }
+        if (Build.VERSION.SDK_INT < 37 || checkSelfPermission(Manifest.permission.ACCESS_LOCAL_NETWORK) == PackageManager.PERMISSION_GRANTED) {
+            performLogin(origin, key.getText().toString(), key); return;
+        }
+        if (busy) return;
+        busy = true; enable(content, false);
+        String host = Uri.parse(origin).getHost();
+        executor.execute(() -> {
+            boolean local;
+            try { local = FieldStore.requiresLocalNetworkPermission(host); }
+            catch (Exception ignored) { local = false; }
+            final boolean requiresPermission = local;
+            runOnUiThread(() -> {
+                if (isDestroyed()) return;
+                busy = false; enable(content, true);
+                if (!requiresPermission) { performLogin(origin, key.getText().toString(), key); return; }
+                key.setText("");
+                store.origin = origin;
+                new AlertDialog.Builder(this).setTitle("Lokale netwerktoegang")
+                    .setMessage("Deze server staat op een lokaal netwerk. Android vraagt toestemming voordat de app daar verbinding mee maakt. Je uitvoerderssleutel wordt pas na die keuze gebruikt.")
+                    .setNegativeButton("Annuleren", (dialog, which) -> { message = "Lokale netwerktoegang is niet verleend."; showLogin(); })
+                    .setPositiveButton("Doorgaan", (dialog, which) -> {
+                        pendingLocalNetworkOrigin = origin;
+                        requestPermissions(new String[]{Manifest.permission.ACCESS_LOCAL_NETWORK}, LOCAL_NETWORK_PERMISSION_REQUEST);
+                    }).show();
+            });
+        });
+    }
+    private void performLogin(String origin, String secret, EditText key) {
+        key.setText("");
+        work(() -> {
+            store.origin = origin; store.token = secret;
+            try {
+                JSONObject operator = store.json("/api/session", null).getJSONObject("operator");
+                currentScope = FieldStore.scope(operator);
+                store.companyId = operator.getString("companyId");
+                store.ledgerId = operator.getString("ledgerId");
+            }
+            catch (Exception error) { store.token = ""; throw error; }
+            JSONObject retained = store.load();
+            if (retained != null && (!retained.getString("origin").equals(store.origin) || !retained.getString("scope").equals(currentScope)
+                || !retained.optString("companyId").equals(store.companyId) || !retained.optString("ledgerId").equals(store.ledgerId))) {
+                store.token = ""; throw new IOException("Deze werkmap hoort bij een ander account of een andere server. Verwijder deze alleen na herstel van de wachtrij.");
+            }
+            data = retained != null ? retained : new JSONObject().put("origin", store.origin).put("scope", currentScope)
+                .put("companyId", store.companyId).put("ledgerId", store.ledgerId)
+                .put("expiresAt", System.currentTimeMillis() + FieldStore.TTL).put("packs", new JSONArray()).put("queue", new JSONArray());
+        }, this::showJobs);
+    }
+    @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode != LOCAL_NETWORK_PERMISSION_REQUEST) return;
+        String origin = pendingLocalNetworkOrigin; pendingLocalNetworkOrigin = "";
+        store.origin = origin;
+        if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+            message = "Toestemming verleend. Voer je uitvoerderssleutel opnieuw in om aan te melden.";
+        } else {
+            message = "Lokale netwerktoegang is niet verleend. Geef de app toestemming in Android-instellingen om deze server te gebruiken.";
+        }
+        showLogin();
     }
     private void showJobs() {
         expiryHandler.removeCallbacks(checkExpiry);
@@ -667,7 +729,13 @@ public final class MainActivity extends Activity {
             text("Bron actueel: " + (item.optBoolean("sourceCurrent") ? "ja" : "nee") + " | Integriteit: " + (item.optBoolean("integrityValid") ? "geverifieerd" : "controleren") + " | " + (item.optBoolean("isLatestForWorkerPlan") ? "Meest recent" : "Vervangen door nieuwere beoordeling") + (item.optBoolean("expired") ? " | Verlopen" : "") + " | Geldig tot: " + item.optString("validUntil"), 15);
             text(item.optString("stopWorkReason"), 15); textRows(item.optJSONArray("observedHazards"), "Waargenomen gevaar: "); textRows(item.optJSONArray("blockers"), "Controlepunt: ");
             JSONObject checks = item.optJSONObject("checks");
-            if (checks != null) for (String key : checks.keySet()) text(key + ": " + (checks.optBoolean(key) ? "bevestigd" : "niet bevestigd"), 15);
+            if (checks != null) {
+                Iterator<String> keys = checks.keys();
+                while (keys.hasNext()) {
+                    String key = keys.next();
+                    text(key + ": " + (checks.optBoolean(key) ? "bevestigd" : "niet bevestigd"), 15);
+                }
+            }
         }
     }
     private void safetyBriefingControls(JSONObject workPack) {
@@ -1264,8 +1332,17 @@ public final class MainActivity extends Activity {
     }
     private void closePdf() { if (pdf!=null) { pdf.close(); pdf=null; } try { if (pdfDescriptor!=null) pdfDescriptor.close(); } catch(IOException ignored) {} pdfDescriptor=null; if(pdfFile!=null) pdfFile.delete(); pdfFile=null; if(bitmap!=null) bitmap.recycle(); bitmap=null; }
     private void confirmErase() { new AlertDialog.Builder(this).setTitle("Werkmap verwijderen?").setMessage("Ook niet-verzonden reacties en tekeningen op deze telefoon worden verwijderd. Kantoorgegevens blijven behouden.").setNegativeButton("Annuleren",null).setPositiveButton("Verwijderen",(d,w) -> { store.erase(); data=null; currentScope=""; showLogin(); }).show(); }
-    @Override public void onBackPressed() { if (busy) return; if (pdf!=null) showPack(); else if (data!=null) showJobs(); else super.onBackPressed(); }
+    private void handleBack() {
+        if (busy) return;
+        if (pdf != null) showPack(); else if (data != null) showJobs(); else finish();
+    }
+    @SuppressWarnings("deprecation")
+    @SuppressLint("GestureBackNavigation")
+    @Override public void onBackPressed() { if (Build.VERSION.SDK_INT < 33) handleBack(); }
     @Override protected void onResume() { super.onResume(); activityVisible = true; scheduleReplyRefresh(); }
     @Override protected void onPause() { activityVisible = false; replyHandler.removeCallbacks(refreshReplies); super.onPause(); }
-    @Override protected void onDestroy() { super.onDestroy(); expiryHandler.removeCallbacks(checkExpiry); replyHandler.removeCallbacks(refreshReplies); store.token=""; executor.shutdownNow(); closePdf(); }
+    @Override protected void onDestroy() {
+        if (Build.VERSION.SDK_INT >= 33 && backInvokedCallback != null) getOnBackInvokedDispatcher().unregisterOnBackInvokedCallback(backInvokedCallback);
+        super.onDestroy(); expiryHandler.removeCallbacks(checkExpiry); replyHandler.removeCallbacks(refreshReplies); store.token=""; executor.shutdownNow(); closePdf();
+    }
 }

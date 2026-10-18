@@ -1,4 +1,5 @@
 const express = require('express');
+const { ipKeyGenerator, rateLimit } = require('express-rate-limit');
 const cors = require('cors');
 const compression = require('compression');
 const Negotiator = require('negotiator');
@@ -35,6 +36,14 @@ const { registerWhatsAppWebhook, registerWhatsAppOfficeRoutes } = require('./wha
 const { EvidenceStorageError, createEvidenceStorage } = require('./evidence-storage');
 const { createImageProcessor } = require('./image-processor');
 const imageProcessor = createImageProcessor();
+const publicFileRateLimit = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  limit: 1200,
+  keyGenerator: req => apiRateLimitKey(req),
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  handler: (_req, res) => res.status(429).json({ error: { code: 'rate_limited', message: 'Too many web asset requests.' } })
+});
 const { verifySqliteBackupDatabase } = require('./scripts/restore-local-backup');
 const {
   BACKUP_MANIFEST_V3,
@@ -56,6 +65,7 @@ const {
 const { parseMultipartFormData } = require('./multipart-parser');
 const packageMetadata = require('./package.json');
 const { authorizationPayload } = require('./authorization-header');
+const { parseTrustedProxyConfiguration } = require('./trusted-proxy');
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -78,20 +88,15 @@ const runtimeProcessLockRequired = runtimeMode === 'local'
 let runtimeProcessLock = null;
 const haiFeedOutputPath = String(process.env.CONTRACTOR_AI_HAI_FEED_PATH || '').trim();
 const trustedProxyRaw = String(process.env.CONTRACTOR_AI_TRUST_PROXY || '').trim();
-const trustedProxyEntries = trustedProxyRaw.split(',').map(value => value.trim()).filter(Boolean);
+let trustedProxyEntries = [];
 let trustedProxyError = null;
-if (trustedProxyRaw) {
-  const unsafeShortcut = trustedProxyEntries.some(value => /^(?:true|false|\d+|\*|0\.0\.0\.0\/0|::\/0)$/i.test(value));
-  try {
-    if (unsafeShortcut || trustedProxyEntries.length === 0) {
-      throw new Error('Use explicit proxy IP addresses, CIDR ranges, or Express subnet names instead of a universal or hop-count trust rule.');
-    }
-    app.set('trust proxy', trustedProxyEntries.join(', '));
-  } catch (error) {
-    trustedProxyError = error;
-    app.set('trust proxy', false);
-  }
-} else {
+try {
+  const trustedProxyConfiguration = parseTrustedProxyConfiguration(trustedProxyRaw);
+  trustedProxyEntries = trustedProxyConfiguration ? trustedProxyConfiguration.split(', ') : [];
+  app.set('trust proxy', trustedProxyConfiguration || false);
+  if (trustedProxyConfiguration) app.get('trust proxy fn');
+} catch (error) {
+  trustedProxyError = error;
   app.set('trust proxy', false);
 }
 const hostedDatabaseUrl = runtimeMode === 'hosted' ? String(process.env.CONTRACTOR_AI_DATABASE_URL || '').trim() : '';
@@ -236,6 +241,22 @@ const AUTONOMOUS_SCHEDULER_KEY = 'ledger_autonomous_cycle';
 const apiRateWindowMs = boundedInteger(process.env.CONTRACTOR_AI_RATE_WINDOW_MS, 60_000, 1_000, 86_400_000);
 const apiRateLimit = boundedInteger(process.env.CONTRACTOR_AI_RATE_LIMIT, 1_000, 50, 1_000_000);
 const apiRateBucketLimit = boundedInteger(process.env.CONTRACTOR_AI_RATE_BUCKET_LIMIT, 5_000, 100, 100_000);
+const apiRouteRateLimit = rateLimit({
+  windowMs: apiRateWindowMs,
+  limit: apiRateLimit,
+  keyGenerator: req => apiRateLimitKey(req),
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: req => req.method === 'OPTIONS' || !req.path.startsWith('/api/') || req.path === '/api/health/ready',
+  handler: (req, res) => {
+    const resetAt = req.rateLimit?.resetTime;
+    const retryAfter = resetAt instanceof Date
+      ? Math.max(1, Math.ceil((resetAt.getTime() - Date.now()) / 1_000))
+      : Math.ceil(apiRateWindowMs / 1_000);
+    res.setHeader('Retry-After', String(retryAfter));
+    return sendError(req, res, 429, 'rate_limited', 'Too many requests. Try again shortly.');
+  }
+});
 const apiRateSigningKey = configuredOperatorTokens().length
   ? operatorSessionSigningKey
   : crypto.createHash('sha256').update('contractor-ai-local-api-rate\0').update(path.resolve(ledgerFile)).digest();
@@ -593,7 +614,8 @@ function attachRequestContext(req, res, next) {
 
   const startedAt = Date.now();
   res.on('finish', () => {
-    if (!req.path.startsWith('/api')) return;
+    const requestPath = String(req.originalUrl || `${req.baseUrl || ''}${req.path || ''}`).split('?')[0];
+    if (!requestPath.startsWith('/api')) return;
     const statusCode = res.statusCode;
     const level = statusCode >= 500 ? 'error' : statusCode >= 400 ? 'warn' : 'info';
     log(level, 'api_request', {
@@ -628,7 +650,7 @@ function rateLimitApi(req, res, next) {
 }
 
 function apiRateLimitKey(req) {
-  const remoteAddress = String(req.ip || req.socket?.remoteAddress || 'unknown');
+  const remoteAddress = ipKeyGenerator(String(req.ip || req.socket?.remoteAddress || 'unknown'), 56);
   const clientDigest = crypto.createHmac('sha256', apiRateSigningKey)
     .update('contractor-ai-api-client\0')
     .update(remoteAddress)
@@ -1028,11 +1050,12 @@ async function verifyEvidenceStorage({ force = false } = {}) {
 }
 
 function logSafeRequestPath(req) {
-  const clientDeliveryPath = String(req.originalUrl || req.path || '').split('?')[0];
+  const requestPath = String(req.originalUrl || `${req.baseUrl || ''}${req.path || ''}`).split('?')[0];
+  const clientDeliveryPath = requestPath;
   if (/^\/api\/client-portal\/deliveries(?:\/[^/]+\/responses)?$/.test(clientDeliveryPath)) return clientDeliveryPath.replace(/\/deliveries\/[^/]+\/responses$/, '/deliveries/:offerId/responses');
-  if (String(req.originalUrl || req.path).split('?')[0].startsWith('/api/auth/identity/')) return String(req.originalUrl || req.path).split('?')[0];
-  if (String(req.originalUrl || req.path).split('?')[0] === '/api/integrations/whatsapp/webhook') return '/api/integrations/whatsapp/webhook';
-  const path = String(req.originalUrl || req.path || '');
+  if (requestPath.startsWith('/api/auth/identity/')) return requestPath;
+  if (requestPath === '/api/integrations/whatsapp/webhook') return '/api/integrations/whatsapp/webhook';
+  const path = requestPath;
   if (/^\/api\/client-portal(?:[?#]|$|\/(?:messages|feedback|preferences|selections\/|change-orders\/))/.test(path)) {
     return path;
   }
@@ -2549,7 +2572,7 @@ function requireSessionMutationOrigin(req, res, next) {
   } catch {
     requestOrigin = '';
   }
-  if (origin !== requestOrigin && !allowedOrigins.includes(origin)) {
+  if (origin !== requestOrigin) {
     return sendError(req, res, 403, 'session_origin_forbidden', 'The browser origin is not allowed to change Contractor.AI records.');
   }
   return next();
@@ -2610,6 +2633,7 @@ app.use(cors({
     return callback(null, false);
   }
 }));
+app.use(apiRouteRateLimit);
 app.use('/api', (req, res, next) => {
   const company = operatingLedger.company;
   res.setHeader('X-Contractor-Company', company.id);
@@ -4220,9 +4244,10 @@ app.post('/api/ledger/jobs/:id/restore', (req, res) => {
 });
 
 app.get('/api/ledger/jobs/:id/playbook', (req, res) => {
+  const playbookKey = typeof req.query.playbookKey === 'string' ? req.query.playbookKey : '';
   return handleLedgerRequest(req, res, () => ({
     success: true,
-    ...operatingLedger.buildJobPlaybookPlan(req.params.id, req.query || {}),
+    ...operatingLedger.buildJobPlaybookPlan(req.params.id, { playbookKey }),
     dashboard: operatingLedger.dashboardSummary()
   }));
 });
@@ -4245,7 +4270,17 @@ app.post('/api/ledger/jobs/:id/playbook', (req, res) => {
 app.get('/api/ledger/jobs/:id/capability-plan', (req, res) => {
   return handleLedgerRequest(req, res, () => ({
     success: true,
-    ...operatingLedger.buildJobCapabilityPlan(req.params.id, req.query || {}),
+    ...operatingLedger.buildJobCapabilityPlan(req.params.id, {
+      capabilities: req.query.capabilities,
+      capabilityKeys: req.query.capabilityKeys,
+      capability_keys: req.query.capability_keys,
+      requirements: req.query.requirements,
+      requirementKeys: req.query.requirementKeys,
+      requirement_keys: req.query.requirement_keys,
+      includeOpen: req.query.includeOpen,
+      include_open: req.query.include_open,
+      limit: req.query.limit
+    }),
     dashboard: operatingLedger.dashboardSummary()
   }));
 });
@@ -10998,6 +11033,7 @@ app.use('/api', (req, res) => {
 });
 
 if (fs.existsSync(distDir)) {
+  app.use(publicFileRateLimit);
   app.use((req, res, next) => {
     if (!['GET', 'HEAD'].includes(req.method)
       || new Negotiator(req).encoding(['br', 'gzip', 'deflate', 'identity'], { preferred: ['br', 'gzip'] }) !== 'br') return next();
@@ -11041,7 +11077,7 @@ app.use((req, res, next) => {
     return sendError(req, res, 503, 'web_client_not_built', 'Run npm run build before starting the production web client.');
   }
   res.setHeader('Cache-Control', 'no-store');
-  return res.sendFile(path.join(distDir, 'index.html'));
+  return res.sendFile('index.html', { root: distDir });
 });
 
 app.use((error, req, res, next) => {

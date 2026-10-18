@@ -29,6 +29,8 @@ const REQUIRED_PATHS = [
   'contractor-framework-catalog.json',
   'CHANGELOG.md',
   'Dockerfile',
+  'deploy/contractor-ai-deploy',
+  'deploy/contractor-ai-deploy.sudoers',
   'docs/ACCESSIBILITY.md',
   'docs/ACCEPTANCE_TESTS.md',
   'docs/API_USAGE_AUDIT.md',
@@ -83,6 +85,7 @@ const REQUIRED_PATHS = [
   'hai-connector.js',
   'operating-ledger.js',
   'authorization-header.js',
+  'trusted-proxy.js',
   'email-validation.js',
   'postgres-sync-database.js',
   'postgres-sync-worker.js',
@@ -126,11 +129,11 @@ const RETIRED_PATHS = [
   'fn.indexOf(name)!',
   'pnpm-lock.yaml',
   'public/client-portal.html',
-  'public/index.html',
-  'vercel.json'
+  'public/index.html'
 ];
 
 const REQUIRED_HOSTED_ENV_KEYS = [
+  'CONTRACTOR_AI_IMAGE',
   'CONTRACTOR_AI_COMPANY_ID',
   'CONTRACTOR_AI_PUBLIC_URL',
   'CONTRACTOR_AI_HOSTING_PROVIDER',
@@ -249,7 +252,20 @@ function verifyReleaseContract(root = path.resolve(__dirname, '..')) {
   }
 
   const nodeTestRunner = fs.readFileSync(path.join(root, 'scripts', 'run-node-tests.js'), 'utf8');
-  for (const cleanupRequirement of ['fs.mkdtempSync', 'allTestFiles()', 'postgresTestFiles(discovered)', 'withTestConcurrency(args, 1)', 'TEMP: runtimeDirectory', 'TMP: runtimeDirectory', 'TMPDIR: runtimeDirectory', 'cleanupRuntimeDirectory(runtimeDirectory)']) {
+  for (const cleanupRequirement of [
+    'fs.mkdtempSync',
+    'allTestFiles()',
+    "'evidence-storage-reservations.test.js'",
+    'serialStressTestFiles(discovered)',
+    'postgresTestFiles(concurrentCandidates)',
+    'concurrentResult.status === 0',
+    'serialStressFiles.length',
+    'withTestConcurrency(args, 1)',
+    'TEMP: runtimeDirectory',
+    'TMP: runtimeDirectory',
+    'TMPDIR: runtimeDirectory',
+    'cleanupRuntimeDirectory(runtimeDirectory)'
+  ]) {
     if (!nodeTestRunner.includes(cleanupRequirement)) failures.push(`Node test runner is missing required isolation control: ${cleanupRequirement}`);
   }
 
@@ -825,12 +841,44 @@ function verifyReleaseContract(root = path.resolve(__dirname, '..')) {
 
   const hostedCompose = fs.readFileSync(path.join(root, 'docker-compose.hosted.yml'), 'utf8');
   for (const requirement of [
+    /image:\s*\$\{CONTRACTOR_AI_IMAGE:-contractor-ai:local\}/,
     /127\.0\.0\.1:/,
     /read_only:\s*true/,
     /cap_drop:\s*\n\s*- ALL/,
     /no-new-privileges:true/
   ]) {
     if (!requirement.test(hostedCompose)) failures.push(`Hosted Compose is missing release hardening: ${requirement}`);
+  }
+
+  const deploymentTarget = fs.readFileSync(path.join(root, 'DEPLOYMENT_TARGET.md'), 'utf8');
+  for (const requirement of [
+    /GHCR/i,
+    /--no-build/,
+    /rollback/i,
+    /Hetzner/i,
+    /CONTRACTOR_AI_IMAGE/
+  ]) {
+    if (!requirement.test(deploymentTarget)) failures.push(`Hetzner deployment guide is missing a required release step: ${requirement}`);
+  }
+
+  const deployWrapper = fs.readFileSync(path.join(root, 'deploy', 'contractor-ai-deploy'), 'utf8');
+  for (const requirement of [
+    'id -u',
+    'readonly APP_DIR=/opt/contractor-ai',
+    'readonly ENV_FILE="$APP_DIR/.env.hosted"',
+    'readonly COMPOSE_FILE_PATH="$APP_DIR/docker-compose.hosted.yml"',
+    'CONTRACTOR_AI_IMAGE',
+    '@sha256:',
+    'sslmode=verify-full',
+    '--env-file "$ENV_FILE"',
+    '--no-build'
+  ]) {
+    if (!deployWrapper.includes(requirement)) failures.push(`Root deployment wrapper is missing a required guard or operation: ${requirement}`);
+  }
+  if (/\b(?:source|eval)\b/.test(deployWrapper)) failures.push('Root deployment wrapper must not source or evaluate the hosted environment file.');
+  const deploySudoers = fs.readFileSync(path.join(root, 'deploy', 'contractor-ai-deploy.sudoers'), 'utf8');
+  if (!/^deploy ALL=\(root\) NOPASSWD: \/usr\/local\/sbin\/contractor-ai-deploy$/m.test(deploySudoers)) {
+    failures.push('Sudoers policy must grant only the fixed root deployment wrapper to deploy.');
   }
 
   const workflow = fs.readFileSync(path.join(root, '.github', 'workflows', 'verify.yml'), 'utf8');
@@ -859,20 +907,31 @@ function verifyReleaseContract(root = path.resolve(__dirname, '..')) {
     'workflow_dispatch:',
     'release_tag:',
     'docker buildx create --name contractor-ai-release --driver docker-container --use',
+    '--tag "${IMAGE}:sha-${SOURCE_SHA::12}"',
     '--sbom=true',
     '--provenance=mode=max',
     'release_sha="$(git rev-parse "refs/tags/$tag^{commit}")"',
     'git merge-base --is-ancestor "$release_sha" "$main_sha"',
-    'ref: ${{ needs.verify-release-source.outputs.tag }}',
+    'ref: ${{ needs.verify-release-source.outputs.source_sha }}',
+    'Verify immutable release source',
     'gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft'
   ]) {
     if (!releaseWorkflow.includes(requirement)) failures.push(`Release workflow is missing a required packaging control: ${requirement}`);
   }
-  if ((releaseWorkflow.match(/^\s+ref: \$\{\{ needs\.verify-release-source\.outputs\.tag \}\}$/gm) || []).length !== 2) {
-    failures.push('Windows and container packages must check out the exact validated release tag.');
+  if ((releaseWorkflow.match(/^\s+ref: \$\{\{ needs\.verify-release-source\.outputs\.source_sha \}\}$/gm) || []).length !== 2) {
+    failures.push('Windows and container packages must check out the exact validated immutable commit SHA.');
+  }
+  if ((releaseWorkflow.match(/Verify immutable release source/g) || []).length !== 2) {
+    failures.push('Both package jobs must assert that their checked-out source matches the verified commit SHA.');
+  }
+  if (/^\s+ref: \$\{\{ needs\.verify-release-source\.outputs\.tag \}\}$/m.test(releaseWorkflow)) {
+    failures.push('Package jobs must not re-resolve a mutable tag after source verification.');
   }
   if (!releaseWorkflow.includes('--label "org.opencontainers.image.revision=${{ needs.verify-release-source.outputs.source_sha }}"')) {
     failures.push('Container provenance labels must use the validated release source commit.');
+  }
+  if (releaseWorkflow.includes('--tag "${IMAGE}:sha-${GITHUB_SHA::12}"')) {
+    failures.push('Container source tags must use the validated release tag commit, not the workflow-dispatch commit.');
   }
 
   return {
