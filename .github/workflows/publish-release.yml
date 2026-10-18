@@ -57,8 +57,8 @@ jobs:
               echo "Manual package recovery must run from the current main branch." >&2
               exit 1
             fi
-            if ! git merge-base --is-ancestor "$release_sha" "$main_sha"; then
-              echo "The published release tag is not in current main history." >&2
+            if [[ "$release_sha" != "$main_sha" ]]; then
+              echo "Manual package recovery requires the published release tag to identify the exact current main commit." >&2
               exit 1
             fi
           fi

@@ -954,7 +954,7 @@ function verifyReleaseContract(root = path.resolve(__dirname, '..')) {
     'push-to-registry: true',
     'containerimage.digest',
     'release_sha="$(git rev-parse "refs/tags/$tag^{commit}")"',
-    'git merge-base --is-ancestor "$release_sha" "$main_sha"',
+    'if [[ "$release_sha" != "$main_sha" ]]; then',
     'ref: ${{ needs.verify-release-source.outputs.source_sha }}',
     'Verify immutable release source',
     'gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft'

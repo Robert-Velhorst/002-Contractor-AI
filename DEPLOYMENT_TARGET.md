@@ -46,7 +46,9 @@ capacity and co-residency before deployment.
    repository and expected release source ref before completing. Confirm the
    release workflow succeeded and record the immutable image digest. Do not
    treat BuildKit provenance alone as a GitHub artifact attestation, and do not
-   deploy PR images or a floating `latest` tag.
+   deploy PR images or a floating `latest` tag. Manual package recovery only
+   accepts a published release tag that identifies the exact current `main`
+   commit, keeping its source ref and artifact provenance aligned.
 2. Provision and verify the EU PostgreSQL, private S3 bucket, recovery policy,
    provider/DPA records, DNS ownership, ingress, firewall, monitoring and host
    update policy before putting company data on the server.

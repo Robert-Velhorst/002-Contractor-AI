@@ -59,6 +59,13 @@ test('release packages produce and verify repository-bound provenance attestatio
   assert.equal((workflow.match(/--source-ref \$env:ATTESTATION_REF|--source-ref "\$ATTESTATION_REF"/g) || []).length, 2);
 });
 
+test('manual release recovery cannot attest a different commit than the current main source', () => {
+  const workflow = fs.readFileSync(path.join(__dirname, '..', '.github/workflows/publish-release.yml'), 'utf8');
+  assert.match(workflow, /if \[\[ "\$release_sha" != "\$main_sha" \]\]; then/);
+  assert.match(workflow, /attestation_ref="refs\/heads\/main"/);
+  assert.doesNotMatch(workflow, /git merge-base --is-ancestor/);
+});
+
 test('production image includes the current work allocation and work-board runtime modules', () => {
   const dockerfile = fs.readFileSync(path.join(__dirname, '..', 'Dockerfile'), 'utf8');
   const buildStage = dockerfile.split('AS runtime')[0];
