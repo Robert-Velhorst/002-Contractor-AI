@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { EvidenceStorageError, LocalEvidenceStorage, S3EvidenceStorage, isValidSseCustomerKey } = require('../evidence-storage');
+const { EvidenceStorageError, LocalEvidenceStorage, S3EvidenceStorage, isValidSseCustomerKey, s3SigningRegion } = require('../evidence-storage');
 
 function expectedS3Authorization(url, headers, { accessKeyId, secretAccessKey, method = 'GET', region = 'eu-central-1' }) {
   const dateStamp = headers['x-amz-date'].slice(0, 8);
@@ -21,6 +21,23 @@ function expectedS3Authorization(url, headers, { accessKeyId, secretAccessKey, m
   const signature = crypto.createHmac('sha256', signingKey).update(stringToSign, 'utf8').digest('hex');
   return `AWS4-HMAC-SHA256 Credential=${accessKeyId}/${scope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
 }
+
+test('local S3 configuration retains the existing signing region and hosted mode requires an explicit region', async () => {
+  let signedRequest;
+  const options = {
+    endpoint: 'https://s3.eu-central-1.example.test', bucket: 'contractor-private',
+    accessKeyId: 'test-access', secretAccessKey: 'test-secret',
+    fetchFn: async (url, init) => { signedRequest = { url: new URL(url), headers: init.headers }; return new Response('retained evidence'); }
+  };
+  const storage = new S3EvidenceStorage({ ...options, region: s3SigningRegion(undefined, 'local') });
+  await storage.request('GET', 'contractor-ai/evidence/existing.txt');
+  assert.match(signedRequest.headers.authorization, /\/eu-central-1\/s3\/aws4_request/);
+  assert.equal(signedRequest.headers.authorization, expectedS3Authorization(signedRequest.url, signedRequest.headers, options));
+  assert.equal(s3SigningRegion('fsn1', 'hosted'), 'fsn1');
+  assert.equal(s3SigningRegion('us-east-1', 'local'), 'us-east-1');
+  assert.throws(() => new S3EvidenceStorage({ ...options, region: s3SigningRegion(undefined, 'hosted') }),
+    error => error instanceof EvidenceStorageError && error.code === 's3_configuration_required');
+});
 
 test('local evidence storage retains files under the configured private root', async t => {
   const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'contractor-ai-storage-project-'));

@@ -1,10 +1,14 @@
 # Final Verification Report
 
-## Current Production-Readiness Checkpoint - 2026-10-18 02:59 UTC
+Current acceptance must use the exact candidate commit and its GitHub workflow
+results. The checkpoints below are historical snapshots; they do not certify a
+later PR head or a deployed environment.
 
-The default branch is `main` at
+## Historical Production-Readiness Checkpoint - 2026-10-18 02:59 UTC
+
+At this historical checkpoint, the default branch was `main` at
 `65f12eb5221f7e76ce26c7bc75a6a1264f36f09d`. Draft PR
-[#129](https://github.com/Robert-Velhorst/002-Contractor-AI/pull/129) is open
+[#129](https://github.com/Robert-Velhorst/002-Contractor-AI/pull/129) was open
 from `codex/production-readiness-followup-20261017` at
 `cc1ecaad9169eb7633cd9147abb6fd494fdde4fc`. It carries the hosted-release,
 PostgreSQL/S3 readiness, deployment-wrapper, storage, and release-contract
@@ -18,7 +22,7 @@ The local release-contract suite passed 18/18; release verification, YAML
 parsing, lint, production build, and `git diff --check` also passed. These
 checks validate the repository and build artifacts, not hosted infrastructure.
 
-The live GitHub repository currently has no open Dependabot, code-scanning, or
+The repository inspection for this historical snapshot recorded no open Dependabot, code-scanning, or
 secret-scanning alerts. Dependabot updates, private vulnerability reporting,
 secret scanning, push protection, protected-main status checks, and Actions
 SHA-pinning are enabled. Generic non-provider secret scanning remains disabled:
@@ -38,11 +42,11 @@ operator ownership of the pinned host key nor valid deploy access. The Hetzner
 console is currently logged out. No host configuration was changed from this
 session.
 
-The only published GitHub Release remains the `v1.1.0-rc.1` pre-release. An
+The inspection recorded only the `v1.1.0-rc.1` GitHub pre-release. An
 isolated local smoke test using Node `v24.19.0` passed `/api/health/ready`
 with SQLite and local evidence storage. This is local-mode evidence only. The
-hosted runtime remains unaccepted: the app is not installed, the production
-TLS route is failing, and EU provider/DPA, PostgreSQL, encrypted/versioned
+hosted runtime was unaccepted at this checkpoint: installation was not verified,
+the observed production TLS route failed, and EU provider/DPA, PostgreSQL, encrypted/versioned
 object storage, hosted secrets, independent encrypted backups, witnessed
 restore, capacity and monitoring still require operator verification. Do not
 promote or describe this system as live production until those gates and

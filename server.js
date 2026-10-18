@@ -33,7 +33,7 @@ const { ResourcePlanner } = require('./resource-planner');
 const { registerConversationRoutes } = require('./conversation-routes');
 const { analysisConfig, registerAnalysisRoutes, runDurableConversationAnalysisBatch } = require('./conversation-analysis');
 const { registerWhatsAppWebhook, registerWhatsAppOfficeRoutes } = require('./whatsapp-channel');
-const { EvidenceStorageError, createEvidenceStorage, isValidSseCustomerKey } = require('./evidence-storage');
+const { EvidenceStorageError, createEvidenceStorage, isValidSseCustomerKey, s3SigningRegion } = require('./evidence-storage');
 const { createImageProcessor } = require('./image-processor');
 const imageProcessor = createImageProcessor();
 const publicFileRateLimit = rateLimit({
@@ -159,7 +159,7 @@ const effectiveMaxUploadBytes = maxUploadBytes ?? defaultMaxUploadBytes;
 const evidenceStorageOptions = {
   endpoint: process.env.CONTRACTOR_AI_S3_ENDPOINT,
   bucket: process.env.CONTRACTOR_AI_S3_BUCKET,
-  region: process.env.CONTRACTOR_AI_S3_REGION || (runtimeMode === 'hosted' ? '' : 'fsn1'),
+  region: s3SigningRegion(process.env.CONTRACTOR_AI_S3_REGION, runtimeMode),
   accessKeyId: process.env.CONTRACTOR_AI_S3_ACCESS_KEY_ID,
   secretAccessKey: process.env.CONTRACTOR_AI_S3_SECRET_ACCESS_KEY,
   sseCustomerKey: process.env.CONTRACTOR_AI_S3_SSE_C_KEY,

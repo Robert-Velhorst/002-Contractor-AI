@@ -556,6 +556,12 @@ function assertRetainedObject(actual, expected, expectedSha256) {
   }
 }
 
+function s3SigningRegion(region, runtimeMode) {
+  // Keep existing local S3/AWS configurations compatible. Hosted mode requires
+  // an explicit region and must never silently select a provider's region.
+  return region || (runtimeMode === 'hosted' ? '' : 'eu-central-1');
+}
+
 function createEvidenceStorage({ mode, rootDir, projectRoot, s3 = {} }) {
   if (mode === 'local') return new LocalEvidenceStorage({ rootDir, projectRoot });
   if (mode === 's3') return new S3EvidenceStorage(s3);
@@ -568,6 +574,7 @@ module.exports = {
   S3EvidenceStorage,
   createEvidenceStorage,
   isValidSseCustomerKey,
+  s3SigningRegion,
   normalizeS3ObjectKey,
   normalizeS3Prefix,
   parseS3Endpoint
