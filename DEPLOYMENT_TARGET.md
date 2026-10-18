@@ -134,21 +134,27 @@ EU PostgreSQL or evidence bucket, production backup, or migration receipt is
 configured or verified. Hetzner Object Storage has no default at-rest
 encryption; the hosted adapter now requires SSE-C, but a provider bucket,
 versioning policy, independent key backup, and live encrypted read/write test
-are still absent. This is a shared host with
-limited spare capacity; do not reset or reinstall it. A read-only console
-review confirmed the maintained host OS and container runtime are available,
-but the server already carries other production workloads and has a
-pre-existing service health issue that must be resolved with its owner before
-adding load. Contractor.AI is not installed. Keep exact host identifiers,
-addresses, resource measurements, service inventory, and proxy configuration
-in private operator records, not this public repository.
+are still absent. This is a shared host; do not reset or reinstall it. A
+read-only console review confirmed that a maintained host OS and container
+runtime are available. Current capacity, co-residency, and service health must
+be reviewed privately before adding load. Contractor.AI is not installed. Keep
+exact host identifiers, addresses, resource measurements, service inventory,
+and proxy configuration in private operator records, not this public
+repository.
 
-The Hetzner DNS A record `002contractor-ai.noodzakelijkonline.de` resolved to
-`159.69.55.178` on 2026-10-18. A fresh check received HTTP `308` to HTTPS, but
-Node's TLS client received `ERR_SSL_TLSV1_ALERT_INTERNAL_ERROR`. The subdomain
-has no verified proxy route, certificate, or Contractor.AI backend. No live
-configuration was changed. The host's Contractor.AI capacity has not been load
-tested; resolve the existing service health issue with its owner before cutover.
+On 2026-10-18, the Hetzner DNS A record for
+`002contractor-ai.noodzakelijkonline.de` resolved. HTTP returned `308` to
+HTTPS, while an independent Node TLS client received
+`ERR_SSL_TLSV1_ALERT_INTERNAL_ERROR`. The public IP is intentionally omitted.
+The subdomain has no verified proxy route, certificate, or Contractor.AI
+backend. No live configuration was changed. Do not cut over until TLS, private
+capacity, service health, and end-to-end readiness have been verified.
+
+The current release-readiness PR is #129 at
+`14198ae53a4e10714bce6eaec11ca05e424d7b26`. Its exact-head `verify`,
+`windows-standalone`, and CodeQL checks passed on 2026-10-18. The PR remains
+open as a draft. These checks validate the repository and build artifacts,
+not the live host, provider configuration, or production acceptance.
 
 GitHub `main` is `65f12eb5221f7e76ce26c7bc75a6a1264f36f09d`. Its `verify` run
 and six dependency-coverage runs completed successfully on 2026-10-17. These
