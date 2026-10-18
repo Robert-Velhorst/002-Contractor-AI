@@ -20,6 +20,7 @@ jobs:
       image: ${{ steps.metadata.outputs.image }}
       tag: ${{ steps.metadata.outputs.tag }}
       source_sha: ${{ steps.metadata.outputs.source_sha }}
+      attestation_ref: ${{ steps.metadata.outputs.attestation_ref }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -65,8 +66,14 @@ jobs:
             echo "Package jobs require an existing published release." >&2
             exit 1
           fi
+          if [[ "$GITHUB_EVENT_NAME" == "release" ]]; then
+            attestation_ref="refs/tags/$tag"
+          else
+            attestation_ref="refs/heads/main"
+          fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "source_sha=$release_sha" >> "$GITHUB_OUTPUT"
+          echo "attestation_ref=$attestation_ref" >> "$GITHUB_OUTPUT"
           echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
 
   windows-package:
@@ -74,6 +81,8 @@ jobs:
     runs-on: windows-latest
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -93,6 +102,16 @@ jobs:
       - name: Create Windows archive
         shell: pwsh
         run: Compress-Archive -Path release/ContractorAI-windows-x64/* -DestinationPath release/ContractorAI-windows-x64.zip -Force
+      - name: Attest Windows package
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: release/ContractorAI-windows-x64.zip
+      - name: Verify Windows package attestation
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ATTESTATION_REF: ${{ needs.verify-release-source.outputs.attestation_ref }}
+        shell: pwsh
+        run: gh attestation verify release/ContractorAI-windows-x64.zip --repo $env:GITHUB_REPOSITORY --source-ref $env:ATTESTATION_REF
       - name: Attach Windows package to release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -106,6 +125,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -126,13 +147,16 @@ jobs:
           docker buildx create --name contractor-ai-release --driver docker-container --use
           docker buildx inspect --bootstrap
       - name: Build and publish container package
+        id: publish-image
         env:
           IMAGE: ${{ needs.verify-release-source.outputs.image }}
           RELEASE_TAG: ${{ needs.verify-release-source.outputs.tag }}
           SOURCE_SHA: ${{ needs.verify-release-source.outputs.source_sha }}
+          METADATA_FILE: ${{ runner.temp }}/contractor-ai-image-metadata.json
         run: |
           set -euo pipefail
           docker buildx build \
+            --metadata-file "$METADATA_FILE" \
             --sbom=true \
             --provenance=mode=max \
             --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
@@ -141,3 +165,18 @@ jobs:
             --tag "${IMAGE}:${RELEASE_TAG}" \
             --tag "${IMAGE}:sha-${SOURCE_SHA::12}" \
             --push .
+          digest="$(jq -er '."containerimage.digest" | select(test("^sha256:[a-f0-9]{64}$"))' "$METADATA_FILE")"
+          printf 'digest=%s\n' "$digest" >> "$GITHUB_OUTPUT"
+      - name: Attest container image
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ needs.verify-release-source.outputs.image }}
+          subject-digest: ${{ steps.publish-image.outputs.digest }}
+          push-to-registry: true
+      - name: Verify container image attestation
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE: ${{ needs.verify-release-source.outputs.image }}
+          IMAGE_DIGEST: ${{ steps.publish-image.outputs.digest }}
+          ATTESTATION_REF: ${{ needs.verify-release-source.outputs.attestation_ref }}
+        run: gh attestation verify "oci://${IMAGE}@${IMAGE_DIGEST}" --repo "$GITHUB_REPOSITORY" --source-ref "$ATTESTATION_REF"

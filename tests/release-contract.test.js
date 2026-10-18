@@ -48,6 +48,17 @@ test('release packages use the exact commit SHA that passed source verification'
   assert.doesNotMatch(workflow, /^\s+ref: \$\{\{ needs\.verify-release-source\.outputs\.tag \}\}$/m);
 });
 
+test('release packages produce and verify repository-bound provenance attestations', () => {
+  const workflow = fs.readFileSync(path.join(__dirname, '..', '.github/workflows/publish-release.yml'), 'utf8');
+  assert.equal((workflow.match(/uses: actions\/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4\.2\.2/g) || []).length, 2);
+  assert.match(workflow, /subject-path: release\/ContractorAI-windows-x64\.zip/);
+  assert.match(workflow, /subject-name: \$\{\{ needs\.verify-release-source\.outputs\.image \}\}/);
+  assert.match(workflow, /push-to-registry: true/);
+  assert.match(workflow, /containerimage\.digest/);
+  assert.equal((workflow.match(/gh attestation verify/g) || []).length, 2);
+  assert.equal((workflow.match(/--source-ref \$env:ATTESTATION_REF|--source-ref "\$ATTESTATION_REF"/g) || []).length, 2);
+});
+
 test('production image includes the current work allocation and work-board runtime modules', () => {
   const dockerfile = fs.readFileSync(path.join(__dirname, '..', 'Dockerfile'), 'utf8');
   const buildStage = dockerfile.split('AS runtime')[0];

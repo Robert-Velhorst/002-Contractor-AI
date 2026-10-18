@@ -945,6 +945,14 @@ function verifyReleaseContract(root = path.resolve(__dirname, '..')) {
     '--tag "${IMAGE}:sha-${SOURCE_SHA::12}"',
     '--sbom=true',
     '--provenance=mode=max',
+    'attestations: write',
+    'id-token: write',
+    'actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2',
+    'gh attestation verify',
+    '--source-ref "$ATTESTATION_REF"',
+    'subject-path: release/ContractorAI-windows-x64.zip',
+    'push-to-registry: true',
+    'containerimage.digest',
     'release_sha="$(git rev-parse "refs/tags/$tag^{commit}")"',
     'git merge-base --is-ancestor "$release_sha" "$main_sha"',
     'ref: ${{ needs.verify-release-source.outputs.source_sha }}',
@@ -964,6 +972,9 @@ function verifyReleaseContract(root = path.resolve(__dirname, '..')) {
   }
   if (!releaseWorkflow.includes('--label "org.opencontainers.image.revision=${{ needs.verify-release-source.outputs.source_sha }}"')) {
     failures.push('Container provenance labels must use the validated release source commit.');
+  }
+  if (!releaseWorkflow.includes('attestation_ref="refs/tags/$tag"') || !releaseWorkflow.includes('attestation_ref="refs/heads/main"')) {
+    failures.push('Package attestations must bind to the published release tag or verified main source ref.');
   }
   if (releaseWorkflow.includes('--tag "${IMAGE}:sha-${GITHUB_SHA::12}"')) {
     failures.push('Container source tags must use the validated release tag commit, not the workflow-dispatch commit.');

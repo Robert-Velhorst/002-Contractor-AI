@@ -41,8 +41,12 @@ capacity and co-residency before deployment.
 1. Merge a reviewed commit to `main`, wait for required CI, and publish a
    semantic-version GitHub Release from that exact `main` commit. The release
    workflow builds a multi-stage image and publishes it to GHCR with SBOM and
-   provenance. Confirm the release workflow succeeded and record the immutable
-   image digest. Do not deploy PR images or a floating `latest` tag.
+   BuildKit provenance. It also creates GitHub artifact attestations for the
+   Windows archive and container digest, then verifies each against the
+   repository and expected release source ref before completing. Confirm the
+   release workflow succeeded and record the immutable image digest. Do not
+   treat BuildKit provenance alone as a GitHub artifact attestation, and do not
+   deploy PR images or a floating `latest` tag.
 2. Provision and verify the EU PostgreSQL, private S3 bucket, recovery policy,
    provider/DPA records, DNS ownership, ingress, firewall, monitoring and host
    update policy before putting company data on the server.
