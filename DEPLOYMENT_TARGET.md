@@ -143,13 +143,12 @@ adding load. Contractor.AI is not installed. Keep exact host identifiers,
 addresses, resource measurements, service inventory, and proxy configuration
 in private operator records, not this public repository.
 
-The Hetzner DNS A record `002contractor-ai.noodzakelijkonline.de` resolves to
-the intended server. A fresh external check on 2026-10-17 received the host
-proxy's HTTP-to-HTTPS redirect, but Node's TLS client received
-`ERR_SSL_TLSV1_ALERT_INTERNAL_ERROR`. The subdomain has no verified proxy route,
-certificate, or Contractor.AI backend. No live configuration was changed. The
-host's Contractor.AI capacity has not been load tested; resolve the existing
-service health issue with its owner before cutover.
+The Hetzner DNS A record `002contractor-ai.noodzakelijkonline.de` resolved to
+`159.69.55.178` on 2026-10-18. A fresh check received HTTP `308` to HTTPS, but
+Node's TLS client received `ERR_SSL_TLSV1_ALERT_INTERNAL_ERROR`. The subdomain
+has no verified proxy route, certificate, or Contractor.AI backend. No live
+configuration was changed. The host's Contractor.AI capacity has not been load
+tested; resolve the existing service health issue with its owner before cutover.
 
 GitHub `main` is `65f12eb5221f7e76ce26c7bc75a6a1264f36f09d`. Its `verify` run
 and six dependency-coverage runs completed successfully on 2026-10-17. These
