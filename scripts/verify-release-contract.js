@@ -115,7 +115,7 @@ const REQUIRED_PATHS = [
   'components/DeferredActionDialog.jsx',
   'components/ClientDeliveryPhotos.jsx',
   'scripts/verify-container-runtime.js',
-  'vitest.config.js'
+  'vitest.config.mjs'
 ];
 
 const RETIRED_PATHS = [

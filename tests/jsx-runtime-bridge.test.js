@@ -76,25 +76,26 @@ test('bridge resolves only its exact virtual module and never reads source paths
 });
 
 test('development keeps its automatic runtime and production caches the bridge in the measured React asset', async () => {
-  const { default: config } = await import('../vite.config.js');
+  const { default: config } = await import('../vite.config.mjs');
   const { JSX_BRIDGE_INTERNAL_ID, JSX_BRIDGE_IMPORT_SOURCE } = await import('../jsx-runtime-bridge.mjs');
   const development = config({ command: 'serve', mode: 'development' });
   const production = config({ command: 'build', mode: 'production' });
   assert.equal(development.esbuild, undefined);
   assert.equal(production.esbuild, undefined);
-  assert.equal(production.build.rollupOptions.output.manualChunks(JSX_BRIDGE_INTERNAL_ID), 'react');
-  assert.equal(production.build.rollupOptions.output.manualChunks('\0commonjsHelpers.js'), 'react');
-  assert.equal(production.build.rollupOptions.output.manualChunks('\0unrelated-virtual-module'), undefined);
+  const chunkName = production.build.rolldownOptions.output.codeSplitting.groups[0].name;
+  assert.equal(chunkName(JSX_BRIDGE_INTERNAL_ID), 'react');
+  assert.equal(chunkName('\0commonjsHelpers.js'), 'react');
+  assert.equal(chunkName('\0unrelated-virtual-module'), null);
   const reactPlugin = build => build.plugins.flat(Infinity).find(plugin => plugin.name === 'vite:react-babel');
-  assert.equal(reactPlugin(development).config().esbuild.jsx, 'automatic');
-  assert.equal(reactPlugin(development).config().esbuild.jsxImportSource, undefined);
-  assert.equal(reactPlugin(production).config().esbuild.jsx, 'automatic');
-  assert.equal(reactPlugin(production).config().esbuild.jsxImportSource, JSX_BRIDGE_IMPORT_SOURCE);
+  assert.equal(reactPlugin(development).config({ command: 'serve', mode: 'development' }).esbuild.jsx, 'automatic');
+  assert.equal(reactPlugin(development).config({ command: 'serve', mode: 'development' }).esbuild.jsxImportSource, undefined);
+  assert.equal(reactPlugin(production).config({ command: 'build', mode: 'production' }).esbuild.jsx, 'automatic');
+  assert.equal(reactPlugin(production).config({ command: 'build', mode: 'production' }).esbuild.jsxImportSource, JSX_BRIDGE_IMPORT_SOURCE);
 });
 
 test('a screen-only change preserves the built React cache identity without an entry import cycle', async () => {
   const { build } = await import('vite');
-  const { default: config } = await import('../vite.config.js');
+  const { default: config } = await import('../vite.config.mjs');
   const production = config({ command: 'build', mode: 'production' });
   const entryId = path.resolve(__dirname, '../cache-contract-entry.jsx');
   const screenId = path.resolve(__dirname, '../cache-contract-screen.jsx');
@@ -119,16 +120,19 @@ test('a screen-only change preserves the built React cache identity without an e
         ...production.plugins.flat(Infinity).filter(plugin =>
           ['contractor-jsx-runtime-bridge', 'contractor-preload-chunk-minifier', 'vite:react-babel', 'vite:react-refresh'].includes(plugin.name))
       ],
-      build: { ...production.build, write: false, rollupOptions: {
-        ...production.build.rollupOptions, input: entryId,
-        onwarn(warning) { warnings.push(warning); }
+      build: { ...production.build, write: false, rolldownOptions: {
+        ...production.build.rolldownOptions, input: entryId,
+        onLog(level, log, defaultHandler) {
+          if (level === 'warn') warnings.push(log)
+          defaultHandler(level, log)
+        }
       } }
     });
     const chunks = result.output.filter(item => item.type === 'chunk');
     const react = chunks.find(item => item.name === 'react');
     const entry = chunks.find(item => item.isEntry);
     assert.ok(react && entry);
-    assert.ok(Object.hasOwn(react.modules, '\0commonjsHelpers.js'));
+    assert.ok(Object.keys(react.modules).some(moduleId => /node_modules[\\/]react[\\/]/.test(moduleId)));
     assert.equal(react.imports.includes(entry.fileName), false, 'cached runtime must not import the changing entry');
     assert.ok(entry.imports.includes(react.fileName), 'entry uses the same real React runtime');
     return { react, screen: chunks.find(item => item.name === 'cache-contract-screen') };
