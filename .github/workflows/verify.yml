@@ -26,7 +26,7 @@ jobs:
         ports:
           - 5432:5432
         options: >-
-          --tmpfs /var/lib/postgresql/data:rw,noexec,nosuid,size=512m
+          --tmpfs /var/lib/postgresql:rw,noexec,nosuid,size=512m
           --health-cmd "pg_isready -U contractor_ai -d contractor_ai_test_ci"
           --health-interval 5s
           --health-timeout 5s
