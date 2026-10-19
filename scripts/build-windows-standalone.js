@@ -105,8 +105,7 @@ const runtimeFiles = [
   'scripts/node-compatibility.js',
   'scripts/runtime-healthcheck.js',
   'scripts/identity-maintenance.js',
-  'scripts/company-handover.js',
-  'scripts/start-ngrok.js'
+  'scripts/company-handover.js'
 ];
 
 function run(command, args, cwd = root) {
@@ -131,7 +130,6 @@ function copyRuntimeFile(relative) {
 function writeLaunchers() {
   const launchers = {
     'ContractorAI.cmd': '@echo off\r\ncd /d "%~dp0"\r\nruntime\\node.exe standalone-launcher.js\r\nif errorlevel 1 pause\r\n',
-    'ContractorAI-Tunnel.cmd': '@echo off\r\ncd /d "%~dp0"\r\nset CONTRACTOR_AI_USE_STANDALONE_CONFIG=true\r\nruntime\\node.exe scripts\\start-ngrok.js\r\nif errorlevel 1 pause\r\n',
     'ContractorAI-Export-HAI.cmd': '@echo off\r\ncd /d "%~dp0"\r\nruntime\\node.exe standalone-export-hai.js\r\nif errorlevel 1 pause\r\n'
   };
   for (const [name, contents] of Object.entries(launchers)) fs.writeFileSync(path.join(target, name), contents, 'ascii');

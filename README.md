@@ -767,12 +767,8 @@ runtime, mock API, public evidence directory, or alternate dashboard.
 | --- | --- | --- | --- | --- |
 | Local development | SQLite | Local private directory | Explicit loopback | Development and evaluation |
 | Windows standalone | SQLite | `%LOCALAPPDATA%\ContractorAI` | Loopback with generated owner key | Day-to-day single-machine use |
-| Authenticated ngrok | Same local SQLite | Same local files | Temporary verified HTTPS tunnel | Controlled temporary remote access |
 | Local Docker | SQLite in named volume | Named volume | Host-loopback port, authentication required | Container evaluation |
 | EU hosted | Managed PostgreSQL | Private EU S3-compatible bucket | HTTPS ingress with explicit proxy trust | Durable multi-user production |
-
-The tunnel is not hosted mode: it does not move the ledger, evidence, backup, or
-recovery responsibility off the local machine.
 
 ## Quick start
 
@@ -1095,7 +1091,6 @@ backups, or runtime data.
 | Variable | Purpose |
 | --- | --- |
 | `CONTRACTOR_AI_HAI_FEED_PATH` | Absolute path for atomic read-only HAI feed publication |
-| `NGROK_AUTHTOKEN` | ngrok agent credential used only by the verified tunnel launcher |
 | `WEATHER_PROVIDER_MAX_RESPONSE_BYTES` | Maximum decoded JSON response size accepted from the weather provider |
 | `CONTRACTOR_AI_VERIFIED_INTEGRATIONS` | Provider identifiers permitted for delivery receipts |
 | `CONTRACTOR_AI_AUTONOMOUS_SCHEDULER_ENABLED` | Opt in to durable internal scheduler cycles |
@@ -1304,7 +1299,6 @@ cutover. Registry origin rebinding and offline reassociation are not automatic.
 | `npm run doctor -- --url ... --token ...` | Query minimized readiness/support state; reports local service readiness separately from hosted-runtime readiness (hosted mode, PostgreSQL and S3 required; provider residency and DPA still need operator verification) |
 | `npm run package:windows` | Build the portable Windows distribution |
 | `npm run start:standalone` | Start through the standalone launcher |
-| `npm run start:tunnel` | Start the verified authenticated ngrok lifecycle |
 | `npm run export:hai` | Atomically export the read-only HAI feed |
 | `npm run restore:local -- ...` | Restore a stopped local runtime |
 | `npm run migrate:hosted -- ...` | Import a frozen signed package with its targeted permit; the hosted target remains blocked pending source release |
@@ -1411,7 +1405,6 @@ benchmark artifacts, and packaged releases should not be committed.
 | [Operator runbook](docs/OPERATOR_RUNBOOK.md) | Startup, daily checks, diagnostics, safety stop, recovery, and incidents |
 | [Windows standalone](docs/WINDOWS_STANDALONE.md) | Portable Windows installation and retained data |
 | [Hetzner deployment](DEPLOYMENT_TARGET.md) | Production architecture, release-image deployment, migration, cutover, and rollback |
-| [ngrok operation](docs/NGROK.md) | Verified temporary remote-access lifecycle |
 | [EU hosting](docs/EU_HOSTING.md) | Hosted requirements, migration, recovery, and acceptance |
 | [Company environments](docs/COMPANY_ENVIRONMENTS.md) | Company, storage, session, migration and offline boundaries |
 | [Company handover](docs/COMPANY_HANDOVER.md) | Source freeze, verified migration, retirement, activation and interrupted-transfer handling |
