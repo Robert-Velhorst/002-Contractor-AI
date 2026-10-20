@@ -35,7 +35,7 @@ Use migration `076_company_authority_handover` on both sides. Follow the current
    outside source code and generated packages. A source key never goes to the
    target. Windows file modes do not substitute for verified NTFS permissions.
 
-Commands below use Node 26.x. Windows packages can use `runtime/node.exe` instead
+Commands below use Node 24.x LTS. Windows packages can use `runtime/node.exe` instead
 of `node`. Replace bracketed values with reviewed values. Environment files are
 private and are not loaded automatically by npm scripts. The examples use
 `node --env-file=...` explicitly; the files themselves must not be committed.

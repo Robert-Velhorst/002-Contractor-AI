@@ -135,9 +135,12 @@ test('real Vite builds preserve CSS and new dependency preloads, and changed cod
       };
     } };
     const result = await build({ root, configFile: false, logLevel: 'silent', plugins: [...(filtered ? [loadedPreloadFilterPlugin()] : []), observer],
-      build: { write: false, minify: 'terser', modulePreload: {}, rollupOptions: { output: {
-        onlyExplicitManualChunks: true,
-        manualChunks(id) { if (id.endsWith('/shared.js')) return 'shared'; if (id.endsWith('/fresh.js')) return 'fresh'; }
+      build: { write: false, minify: 'terser', modulePreload: {}, rolldownOptions: { output: {
+        codeSplitting: { groups: [{ includeDependenciesRecursively: false, name(id) {
+          if (id.endsWith('/shared.js')) return 'shared';
+          if (id.endsWith('/fresh.js')) return 'fresh';
+          return null;
+        } }] }
       } } } });
     return { output: result.output, observations };
   }

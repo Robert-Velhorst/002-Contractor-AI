@@ -12,7 +12,7 @@ function fixture(t) {
 }
 
 test('Brotli compression follows relative build output without rewriting the served assets', async t => {
-  const { brotliAssetsPlugin } = await import('../vite.config.js');
+  const { brotliAssetsPlugin } = await import('../brotli-assets-plugin.mjs');
   const root = fixture(t);
   const activeAssets = path.join(root, 'dist', 'assets');
   const stagedAssets = path.join(root, 'candidate', 'assets');
@@ -34,7 +34,7 @@ test('Brotli compression follows relative build output without rewriting the ser
 });
 
 test('Brotli compression supports an absolute staged output and a missing asset directory', async t => {
-  const { brotliAssetsPlugin } = await import('../vite.config.js');
+  const { brotliAssetsPlugin } = await import('../brotli-assets-plugin.mjs');
   const root = fixture(t);
   const outDir = path.join(root, 'isolated', 'web');
   const plugin = brotliAssetsPlugin();
@@ -47,12 +47,12 @@ test('Brotli compression supports an absolute staged output and a missing asset 
 });
 
 test('Brotli compression refuses to guess an output path before Vite configuration resolves', async () => {
-  const { brotliAssetsPlugin } = await import('../vite.config.js');
+  const { brotliAssetsPlugin } = await import('../brotli-assets-plugin.mjs');
   assert.throws(() => brotliAssetsPlugin().closeBundle(), /build output must be resolved/);
 });
 
 test('precompression selects the smaller lossless representation per asset, not blindly the highest quality', async t => {
-  const { brotliAssetsPlugin } = await import('../vite.config.js');
+  const { brotliAssetsPlugin } = await import('../brotli-assets-plugin.mjs');
   const root = fixture(t), assets = path.join(root, 'candidate', 'assets');
   fs.mkdirSync(assets, { recursive: true });
   const sources = {

@@ -46,6 +46,7 @@ test('deployment wrapper and sudoers policy fail closed on mutable deployment in
   assert.match(script, /setting must appear exactly once/);
   assert.match(script, /CORS_ORIGINS must include the exact/);
   assert.match(script, /CONTRACTOR_AI_S3_PREFIX must stay within/);
+  assert.match(script, /CONTRACTOR_AI_S3_SSE_C_KEY must be canonical base64 for exactly 32 bytes/);
   assert.match(script, /CONTRACTOR_AI_EVIDENCE_STORAGE_MAX_BYTES must be a positive integer/);
   assert.match(script, /unrestricted or hop-count rule/);
   assert.match(script, /! "\$proxy" =~ \/0\+\(\[,\[:space:\]\]\|\$\)/);

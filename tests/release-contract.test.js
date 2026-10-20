@@ -9,6 +9,8 @@ const {
   findApprovalPrincipalPriorityViolations,
   findOperationalPrincipalPriorityViolations,
   findRequestDerivedActorExpressions,
+  hasExactOriginListEntry,
+  hasExactLockedDependency,
   verifyReleaseContract,
   walkFiles
 } = require('../scripts/verify-release-contract');
@@ -21,11 +23,47 @@ test('release contract retains only the canonical runtime and mandatory delivery
   assert.ok(result.checks.hostedEnvironmentKeys >= 11);
 });
 
+test('release contract permits dependency upgrades only when the exact lockfile version matches', () => {
+  const dependency = '@axe-core/playwright';
+  const packageJson = { devDependencies: { [dependency]: '4.13.0' } };
+  const packageLock = { packages: { [`node_modules/${dependency}`]: { version: '4.13.0' } } };
+  assert.equal(hasExactLockedDependency(packageJson, packageLock, dependency), true);
+  assert.equal(hasExactLockedDependency(packageJson, { packages: { [`node_modules/${dependency}`]: { version: '4.12.1' } } }, dependency), false);
+  assert.equal(hasExactLockedDependency({ devDependencies: { [dependency]: '^4.13.0' } }, packageLock, dependency), false);
+});
+
+test('hosted CORS origin checks require an exact allowlist entry', () => {
+  const expected = 'https://002contractor-ai.noodzakelijkonline.de';
+  assert.equal(hasExactOriginListEntry(expected, expected), true);
+  assert.equal(hasExactOriginListEntry(`https://evil.example, ${expected}`, expected), true);
+  assert.equal(hasExactOriginListEntry('https://evil.example/https://002contractor-ai.noodzakelijkonline.de', expected), false);
+  assert.equal(hasExactOriginListEntry(`${expected}.evil.example`, expected), false);
+  assert.equal(hasExactOriginListEntry(`${expected}/extra-path`, expected), false);
+});
+
 test('release packages use the exact commit SHA that passed source verification', () => {
   const workflow = fs.readFileSync(path.join(__dirname, '..', '.github/workflows/publish-release.yml'), 'utf8');
   assert.equal((workflow.match(/^\s+ref: \$\{\{ needs\.verify-release-source\.outputs\.source_sha \}\}$/gm) || []).length, 2);
   assert.equal((workflow.match(/Verify immutable release source/g) || []).length, 2);
   assert.doesNotMatch(workflow, /^\s+ref: \$\{\{ needs\.verify-release-source\.outputs\.tag \}\}$/m);
+});
+
+test('release packages produce and verify repository-bound provenance attestations', () => {
+  const workflow = fs.readFileSync(path.join(__dirname, '..', '.github/workflows/publish-release.yml'), 'utf8');
+  assert.equal((workflow.match(/uses: actions\/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4\.2\.2/g) || []).length, 2);
+  assert.match(workflow, /subject-path: release\/ContractorAI-windows-x64\.zip/);
+  assert.match(workflow, /subject-name: \$\{\{ needs\.verify-release-source\.outputs\.image \}\}/);
+  assert.match(workflow, /push-to-registry: true/);
+  assert.match(workflow, /containerimage\.digest/);
+  assert.equal((workflow.match(/gh attestation verify/g) || []).length, 2);
+  assert.equal((workflow.match(/--source-ref \$env:ATTESTATION_REF|--source-ref "\$ATTESTATION_REF"/g) || []).length, 2);
+});
+
+test('manual release recovery cannot attest a different commit than the current main source', () => {
+  const workflow = fs.readFileSync(path.join(__dirname, '..', '.github/workflows/publish-release.yml'), 'utf8');
+  assert.match(workflow, /if \[\[ "\$release_sha" != "\$main_sha" \]\]; then/);
+  assert.match(workflow, /attestation_ref="refs\/heads\/main"/);
+  assert.doesNotMatch(workflow, /git merge-base --is-ancestor/);
 });
 
 test('production image includes the current work allocation and work-board runtime modules', () => {

@@ -84,7 +84,8 @@ function BidPackageWorkspace({
           <div className="bid-package-list">
             {rows.map((bidPackage) => (
               <article className={`bid-package-row ${selectedBidPackage?.id === bidPackage.id ? 'bid-package-row-selected' : ''}`} key={bidPackage.id}>
-                <button className="bid-package-main" onClick={() => onSelect(bidPackage)} aria-label={t('Open bid package {number}', { number: bidPackage.packageNumber })}>
+                <button className="bid-package-main" onClick={() => onSelect(bidPackage)}>
+                  <span className="visually-hidden">{t('Open bid package')}</span>
                   <span className="bid-package-icon"><ClipboardList size={17} /></span>
                   <span>
                     <span className="pipeline-title">
@@ -233,7 +234,7 @@ function BidPackageWorkspace({
                     </span>
                     <a
                       className="secondary-button"
-                      aria-label={t('Download purchase order {reference}', { reference: selectedBidPackage.commitment.issuePackage.issueReference })}
+                      aria-label={t('Download {title}', { title: `${t('Order')} ${selectedBidPackage.commitment.issuePackage.issueReference}` })}
                       href={companyApiUrl(`/api/ledger/documents/${encodeURIComponent(selectedBidPackage.commitment.issuePackage.htmlDocumentId)}/issue-package`)}
                       download
                     >
@@ -241,11 +242,11 @@ function BidPackageWorkspace({
                     </a>
                     <a
                       className="secondary-button"
-                      aria-label={t('Download purchase order UBL {reference}', { reference: selectedBidPackage.commitment.issuePackage.issueReference })}
+                      aria-label={t('Download {title}', { title: `${t('Order UBL')} ${selectedBidPackage.commitment.issuePackage.issueReference}` })}
                       href={companyApiUrl(`/api/ledger/documents/${encodeURIComponent(selectedBidPackage.commitment.issuePackage.ublDocumentId)}/issue-package`)}
                       download
                     >
-                      <FileDown size={15} /> UBL
+                      <FileDown size={15} /> {t('Order UBL')}
                     </a>
                   </div>
                 </div>

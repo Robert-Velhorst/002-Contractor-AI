@@ -62,7 +62,7 @@ test('office builds a shared work dossier and the assigned phone work pack retai
     await phone.getByRole('button', { name: 'Sign in', exact: true }).click();
     await phone.getByLabel(/^(Language|Taal)$/).selectOption('nl-NL');
     const pack = phone.getByTestId('field-work-pack');
-    await pack.getByRole('button', { name: `Werkpakket ${title} openen` }).click();
+    await pack.getByRole('button', { name: `Open werkpakket ${title}` }).click();
     await pack.getByRole('tab', { name: 'Weten', exact: true }).click();
     await expect(pack.getByText('Opening afzetten', { exact: true })).toBeVisible();
     await expect(pack.getByText('Private betaler')).toHaveCount(0);

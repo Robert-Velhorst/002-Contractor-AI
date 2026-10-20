@@ -61,11 +61,11 @@ test('preconstruction search reuses exact dossier text while typing without ledg
   const input = pipeline.getByPlaceholder('Search client, scope or location', { exact: true });
   await input.pressSequentially('LeAd 0');
   await expect(pipeline.locator('.pipeline-row')).toHaveCount(1);
-  await expect(pipeline.getByRole('button', { name: `Open ${opportunities[0].title}`, exact: true })).toBeVisible();
+  await expect(pipeline.locator('.pipeline-row-main').filter({ hasText: opportunities[0].title })).toHaveAccessibleName(new RegExp(`^Open ${opportunities[0].title} `));
   expect(await page.evaluate(() => window.searchWork.opportunities)).toBe(8);
   await input.fill(' NESTED-EVIDENCE-1 ');
   await expect(pipeline.locator('.pipeline-row')).toHaveCount(1);
-  await expect(pipeline.getByRole('button', { name: `Open ${opportunities[1].title}`, exact: true })).toBeVisible();
+  await expect(pipeline.locator('.pipeline-row-main').filter({ hasText: opportunities[1].title })).toHaveAccessibleName(new RegExp(`^Open ${opportunities[1].title} `));
   expect(await page.evaluate(() => window.searchWork.opportunities)).toBe(8);
   await input.fill('lead 0');
   await pipeline.locator('.pipeline-panel').scrollIntoViewIfNeeded();
@@ -95,7 +95,7 @@ test('preconstruction search reuses exact dossier text while typing without ledg
   expect((await new AxeBuilder({ page }).include('.bid-register').analyze()).violations).toEqual([]);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
   await page.screenshot({ path: testInfo.outputPath('indexed-bids-mobile.png') });
-  await bids.getByRole('button', { name: `Open bid package ${packages[0].packageNumber}`, exact: true }).click();
+  await bids.getByRole('button', { name: new RegExp(`^Open bid package ${packages[0].packageNumber} /`) }).click();
   await expect(pipeline.locator('.bid-package-detail').getByRole('heading', { name: `${packages[0].packageNumber} / ${packages[0].title}`, exact: true })).toBeVisible();
   expect(writes).toEqual([]);
   expect(errors).toEqual([]);

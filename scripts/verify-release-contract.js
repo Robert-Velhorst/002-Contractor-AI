@@ -40,7 +40,6 @@ const REQUIRED_PATHS = [
   'docs/FINAL_VERIFICATION_REPORT.md',
   'docs/GOAL_COMPLETION_MATRIX.md',
   'docs/HAI_CONNECTOR.md',
-  'docs/NGROK.md',
   'docs/OPERATOR_RUNBOOK.md',
   'docs/PERFORMANCE_BENCHMARK.md',
   'docs/SECURITY.md',
@@ -108,14 +107,13 @@ const REQUIRED_PATHS = [
   'scripts/identity-maintenance.js',
   'scripts/run-node-tests.js',
   'scripts/node-test-runtime.js',
-  'scripts/start-ngrok.js',
   'scripts/verify-bundle-budget.js',
   'preload-chunk-minifier.mjs',
   'components/OperatorActionDialogs.jsx',
   'components/DeferredActionDialog.jsx',
   'components/ClientDeliveryPhotos.jsx',
   'scripts/verify-container-runtime.js',
-  'vitest.config.js'
+  'vitest.config.mjs'
 ];
 
 const RETIRED_PATHS = [
@@ -129,7 +127,10 @@ const RETIRED_PATHS = [
   'fn.indexOf(name)!',
   'pnpm-lock.yaml',
   'public/client-portal.html',
-  'public/index.html'
+  'public/index.html',
+  'scripts/start-ngrok.js',
+  'tests/ngrok-tunnel.test.js',
+  'docs/NGROK.md'
 ];
 
 const REQUIRED_HOSTED_ENV_KEYS = [
@@ -149,6 +150,7 @@ const REQUIRED_HOSTED_ENV_KEYS = [
   'CONTRACTOR_AI_DATABASE_URL',
   'CONTRACTOR_AI_S3_ENDPOINT',
   'CONTRACTOR_AI_S3_BUCKET',
+  'CONTRACTOR_AI_S3_SSE_C_KEY',
   'CONTRACTOR_AI_POSTGRES_BACKUP_MODE',
   'CONTRACTOR_AI_OBJECT_VERSIONING_ENABLED',
   'CONTRACTOR_AI_BACKUP_POLICY_REFERENCE',
@@ -211,6 +213,17 @@ function findOperationalPrincipalPriorityViolations(source = '') {
   }));
 }
 
+function hasExactLockedDependency(packageJson, packageLock, dependencyName) {
+  const declaredVersion = packageJson.devDependencies?.[dependencyName];
+  const lockedVersion = packageLock.packages?.[`node_modules/${dependencyName}`]?.version;
+  return /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(declaredVersion || '')
+    && lockedVersion === declaredVersion;
+}
+
+function hasExactOriginListEntry(value, expectedOrigin) {
+  return typeof value === 'string' && value.split(',').some(origin => origin.trim() === expectedOrigin);
+}
+
 function verifyReleaseContract(root = path.resolve(__dirname, '..')) {
   const failures = [];
   try {
@@ -240,12 +253,14 @@ function verifyReleaseContract(root = path.resolve(__dirname, '..')) {
   const packageFile = path.join(root, 'package.json');
   const packageJson = JSON.parse(fs.readFileSync(packageFile, 'utf8'));
   if (packageJson.main !== 'server.js') failures.push('package.json must use server.js as the sole runtime entrypoint.');
-  for (const script of ['benchmark:ledger', 'build', 'doctor', 'export:hai', 'lint', 'migrate:hosted', 'package:windows', 'restore:local', 'start:standalone', 'start:tunnel', 'test', 'test:browser', 'test:container', 'test:frontend', 'test:performance', 'test:windows-package', 'verify:bundle', 'verify:hai-contract', 'verify:release']) {
+  for (const script of ['benchmark:ledger', 'build', 'doctor', 'export:hai', 'lint', 'migrate:hosted', 'package:windows', 'restore:local', 'start:standalone', 'test', 'test:browser', 'test:container', 'test:frontend', 'test:performance', 'test:windows-package', 'verify:bundle', 'verify:hai-contract', 'verify:release']) {
     if (!packageJson.scripts?.[script]) failures.push(`package.json is missing required script: ${script}`);
   }
   if (packageJson.scripts?.pretest) failures.push('package.json must not duplicate the full Node suite through an automatic pretest hook.');
-  if (packageJson.devDependencies?.['@axe-core/playwright'] !== '4.12.1') {
-    failures.push('The browser accessibility gate must use the pinned @axe-core/playwright 4.12.1 engine.');
+  const packageLockFile = path.join(root, 'package-lock.json');
+  const packageLock = JSON.parse(fs.readFileSync(packageLockFile, 'utf8'));
+  if (!hasExactLockedDependency(packageJson, packageLock, '@axe-core/playwright')) {
+    failures.push('The browser accessibility gate must use an exact @axe-core/playwright version matching package-lock.json.');
   }
   if (!packageJson.scripts?.test?.startsWith('node scripts/run-node-tests.js ')) {
     failures.push('package.json test must isolate and clean temporary Node test state.');
@@ -270,15 +285,8 @@ function verifyReleaseContract(root = path.resolve(__dirname, '..')) {
   }
 
   const serverSource = fs.readFileSync(path.join(root, 'server.js'), 'utf8');
-  const ngrokSource = fs.readFileSync(path.join(root, 'scripts', 'start-ngrok.js'), 'utf8');
-  for (const tunnelBoundary of [
-    "CONTRACTOR_AI_NGROK_ACTIVE: 'verifying'",
-    "expectedStatus: 401",
-    'publicAuthenticationBoundary',
-    'validatePublicReadiness',
-    'await closeTunnelIngress(runtime.listener)'
-  ]) {
-    if (!ngrokSource.includes(tunnelBoundary)) failures.push(`ngrok launcher is missing verified lifecycle boundary: ${tunnelBoundary}`);
+  if (serverSource.includes('CONTRACTOR_AI_NGROK_') || serverSource.includes('publicTunnel')) {
+    failures.push('The server must not expose retired ngrok runtime configuration.');
   }
   for (const requiredActorBoundary of [
     'function trustedRequestActor(req)',
@@ -815,6 +823,26 @@ function verifyReleaseContract(root = path.resolve(__dirname, '..')) {
   for (const key of REQUIRED_HOSTED_ENV_KEYS) {
     if (!new RegExp(`^${key}=`, 'm').test(hostedEnvironment)) failures.push(`Hosted environment contract is missing: ${key}`);
   }
+  const hostedOrigin = 'https://002contractor-ai.noodzakelijkonline.de';
+  const hostedValues = new Map(hostedEnvironment.split(/\r?\n/).map(line => {
+    const separator = line.indexOf('=');
+    return separator < 0 ? null : [line.slice(0, separator), line.slice(separator + 1)];
+  }).filter(Boolean));
+  if (hostedValues.get('CONTRACTOR_AI_PUBLIC_URL') !== hostedOrigin) {
+    failures.push('Hosted public URL must use the configured Contractor.AI subdomain.');
+  }
+  if (!hasExactOriginListEntry(hostedValues.get('CORS_ORIGINS'), hostedOrigin)) {
+    failures.push('Hosted CORS origins must include the configured Contractor.AI subdomain.');
+  }
+  if (hostedValues.get('CONTRACTOR_AI_HOSTING_PROVIDER') !== 'Hetzner Cloud'
+    || hostedValues.get('CONTRACTOR_AI_HOSTING_REGION') !== 'fsn1'
+    || hostedValues.get('CONTRACTOR_AI_S3_ENDPOINT') !== 'https://fsn1.your-objectstorage.com'
+    || hostedValues.get('CONTRACTOR_AI_S3_REGION') !== 'fsn1') {
+    failures.push('Hosted infrastructure defaults must match the selected Hetzner Falkenstein target.');
+  }
+  if (!/^CONTRACTOR_AI_S3_SSE_C_KEY=replace-with-base64-encoded-32-byte-key$/m.test(hostedEnvironment)) {
+    failures.push('Hosted environment must require a private SSE-C key for Hetzner Object Storage.');
+  }
 
   const dockerfile = fs.readFileSync(path.join(root, 'Dockerfile'), 'utf8');
   if (!/^USER node$/m.test(dockerfile)) failures.push('Docker runtime must run as the node user.');
@@ -910,8 +938,16 @@ function verifyReleaseContract(root = path.resolve(__dirname, '..')) {
     '--tag "${IMAGE}:sha-${SOURCE_SHA::12}"',
     '--sbom=true',
     '--provenance=mode=max',
+    'attestations: write',
+    'id-token: write',
+    'actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2',
+    'gh attestation verify',
+    '--source-ref "$ATTESTATION_REF"',
+    'subject-path: release/ContractorAI-windows-x64.zip',
+    'push-to-registry: true',
+    'containerimage.digest',
     'release_sha="$(git rev-parse "refs/tags/$tag^{commit}")"',
-    'git merge-base --is-ancestor "$release_sha" "$main_sha"',
+    'if [[ "$release_sha" != "$main_sha" ]]; then',
     'ref: ${{ needs.verify-release-source.outputs.source_sha }}',
     'Verify immutable release source',
     'gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft'
@@ -929,6 +965,9 @@ function verifyReleaseContract(root = path.resolve(__dirname, '..')) {
   }
   if (!releaseWorkflow.includes('--label "org.opencontainers.image.revision=${{ needs.verify-release-source.outputs.source_sha }}"')) {
     failures.push('Container provenance labels must use the validated release source commit.');
+  }
+  if (!releaseWorkflow.includes('attestation_ref="refs/tags/$tag"') || !releaseWorkflow.includes('attestation_ref="refs/heads/main"')) {
+    failures.push('Package attestations must bind to the published release tag or verified main source ref.');
   }
   if (releaseWorkflow.includes('--tag "${IMAGE}:sha-${GITHUB_SHA::12}"')) {
     failures.push('Container source tags must use the validated release tag commit, not the workflow-dispatch commit.');
@@ -960,6 +999,8 @@ module.exports = {
   findApprovalPrincipalPriorityViolations,
   findOperationalPrincipalPriorityViolations,
   findRequestDerivedActorExpressions,
+  hasExactOriginListEntry,
+  hasExactLockedDependency,
   verifyReleaseContract,
   walkFiles
 };

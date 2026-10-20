@@ -182,8 +182,8 @@ test('operator carries a selected bid through approved purchase-order delivery',
   await expect(orderPackagePanel).toContainText(/PO-\d{4}-\d{6}/);
   await expect(orderPackagePanel).toContainText(secondPartner.email);
   await expect(orderPackagePanel).toContainText(/draft/i);
-  await expect(orderPackagePanel.getByRole('link', { name: /Download purchase order PO-/ })).toBeVisible();
-  await expect(orderPackagePanel.getByRole('link', { name: /Download purchase order UBL PO-/ })).toBeVisible();
+  await expect(orderPackagePanel.getByRole('link', { name: /Download Order PO-/ })).toBeVisible();
+  await expect(orderPackagePanel.getByRole('link', { name: /Download Order UBL PO-/ })).toBeVisible();
 
   await detail.getByRole('button', { name: 'Review transmission' }).click();
   const transmissionApproval = page.locator('.approval-item').filter({ hasText: 'Approve email update before sending' });

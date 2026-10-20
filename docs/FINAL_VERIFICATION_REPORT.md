@@ -1,6 +1,132 @@
 # Final Verification Report
 
-## Current Production-Readiness Checkpoint - 2026-10-14 (post-merge)
+Current acceptance must use the exact candidate commit and its GitHub workflow
+results. The checkpoints below are historical snapshots; they do not certify a
+later PR head or a deployed environment.
+
+## Local Storage and Workflow Checkpoint - 2026-10-20
+
+This working-tree audit starts from PR #129 at
+`fa768cb83b2d0c03d2d9363b7c081e5ba70f3751`. It is not a production release
+or a claim that every product-roadmap item is complete.
+
+Implemented corrections:
+
+- Pin new S3 evidence references to returned object versions; verify the exact
+  version on upload and download, and target only that version when removing a
+  pinned reference. Historical unversioned references remain compatible.
+- Refuse signed-storage redirects, close unread response bodies, and reject
+  malformed or ambiguous version listings before orphan deletion.
+- Resolve the real PostgreSQL cleanup-claim parameter typing failure and use the
+  original reservation reference when cleaning an upload rejected by the ledger.
+  The API regression verifies that previously committed evidence survives.
+- Keep visible and accessible workflow labels consistent in Dutch and English.
+  Compound opportunity, tender and work-pack buttons expose their visible
+  metadata; order downloads retain the PO reference; equipment and field
+  evidence actions preserve their visible action text.
+
+Completed local gates on the corrected product sources:
+
+- Lint, production build and all 531 frontend tests across 86 files passed.
+- The complete Node rerun passed: 1,141 functional tests and 34 serial stress
+  tests, zero failures. Without the PostgreSQL URL, those groups explicitly
+  skipped 71 and one PostgreSQL-dependent tests respectively; the database
+  evidence below is separate, not an assertion that these skips ran here.
+- The current npm dependency audit reported zero known vulnerabilities.
+- Release-contract verification passed: 114 canonical paths, 11 retired paths,
+  21 hosted environment keys and 825 source files.
+- Bundle budgets passed: initial gzip 119,711 bytes and complete-product gzip
+  710,162 bytes; this is a transfer-size check, not a universal latency claim.
+- Node 24.22.0 container acceptance passed with a non-root, read-only,
+  loopback-bound runtime, restart persistence, session authentication, graceful
+  shutdown, migration 097, isolated identity persistence/OIDC and backup/restore,
+  signed handover fencing, and packaged resource planning.
+- A separate TLS PostgreSQL 16.15 contract run passed 128 tests without skips
+  before upstream dependency synchronization. After synchronization, 71 focused
+  backend/storage/release tests passed, including the real PostgreSQL cleanup
+  regression. Neither run establishes managed-provider acceptance.
+- Targeted procurement, search, finance, field work-pack and work-permit browser
+  tests passed after the accessibility corrections. Desktop/mobile screenshots
+  were inspected. The complete browser rerun then passed all 181 scenarios in
+  all 46 planned batches, with zero failed batches and complete per-batch
+  discovery/execution coverage.
+
+The first complete Node run found one obsolete source assertion for an old
+purchase-order download label (1,140 passed, one failed, 71 PostgreSQL-dependent
+skips). Its replacement checks the actual translated UBL label, retained PO
+reference and document route; the 33-test source-contract file then passed.
+The complete Node rerun subsequently passed as recorded above; its earlier
+failure is retained here rather than represented as a passing first attempt.
+
+The immutable browser candidate is
+`0735c541fffd542078a7d04ddb562fe865dc5df8be66dfd4eb0d9b892b959245`.
+The runner checks its source/build hashes before and after each batch. An
+earlier run was correctly stopped when packaged hosting documentation changed;
+that incomplete run is not acceptance evidence.
+
+Hosting remains a separate gate. The user-selected existing EU host and its
+authenticated console were revalidated, and read-only SSH administration worked
+against a separately recorded, matching host-key pin. The Contractor.AI deploy
+identity is still rejected, and the application/deployment wrapper is not
+installed. DNS points to the selected host, but the application HTTPS readiness
+request still fails with `ERR_SSL_TLSV1_ALERT_INTERNAL_ERROR` on a fresh check.
+The selected Hetzner project's object-storage page reports no existing buckets.
+No bucket was purchased, credentials changed, or existing workload modified.
+Do not deploy an unverified pre-release image, replace shared ingress, reuse
+another application's database credentials, or infer production acceptance from
+these local results. Provider configuration, independent encrypted recovery,
+capacity/monitoring and office/field acceptance remain unverified.
+
+## Historical Production-Readiness Checkpoint - 2026-10-18 02:59 UTC
+
+At this historical checkpoint, the default branch was `main` at
+`65f12eb5221f7e76ce26c7bc75a6a1264f36f09d`. Draft PR
+[#129](https://github.com/Robert-Velhorst/002-Contractor-AI/pull/129) was open
+from `codex/production-readiness-followup-20261017` at
+`cc1ecaad9169eb7633cd9147abb6fd494fdde4fc`. It carries the hosted-release,
+PostgreSQL/S3 readiness, deployment-wrapper, storage, and release-contract
+changes; it is not merged or deployed.
+
+Exact-head workflow run
+[39090081024](https://github.com/Robert-Velhorst/002-Contractor-AI/actions/runs/39090081024)
+passed `verify` (including the complete Chromium browser suite) and
+`windows-standalone`. CodeQL and all language analyses passed for this PR head.
+The local release-contract suite passed 18/18; release verification, YAML
+parsing, lint, production build, and `git diff --check` also passed. These
+checks validate the repository and build artifacts, not hosted infrastructure.
+
+The repository inspection for this historical snapshot recorded no open Dependabot, code-scanning, or
+secret-scanning alerts. Dependabot updates, private vulnerability reporting,
+secret scanning, push protection, protected-main status checks, and Actions
+SHA-pinning are enabled. Generic non-provider secret scanning remains disabled:
+the attempted repository API update did not enable it, and
+[GitHub documents](https://docs.github.com/en/rest/repos/repos?piVersion=2022-11-28)
+a delegated-bypass dependency. Delegated bypass was not enabled. Secret
+validity checks also remain disabled.
+
+The intended application origin is
+`https://002contractor-ai.noodzakelijkonline.de` under `noodzakelijkonline.de`.
+DNS resolves and HTTP redirects to HTTPS, but a fresh Node TLS handshake still
+fails with `ERR_SSL_TLSV1_ALERT_INTERNAL_ERROR`. SSH port 22 is reachable and
+the presented key matched the existing local `known_hosts` entry. Batch SSH
+authentication as `deploy` using the local Contractor.AI deployment key was
+rejected (`Permission denied (publickey,password)`). This confirms neither
+operator ownership of the pinned host key nor valid deploy access. The Hetzner
+console is currently logged out. No host configuration was changed from this
+session.
+
+The inspection recorded only the `v1.1.0-rc.1` GitHub pre-release. An
+isolated local smoke test using Node `v24.19.0` passed `/api/health/ready`
+with SQLite and local evidence storage. This is local-mode evidence only. The
+hosted runtime was unaccepted at this checkpoint: installation was not verified,
+the observed production TLS route failed, and EU provider/DPA, PostgreSQL, encrypted/versioned
+object storage, hosted secrets, independent encrypted backups, witnessed
+restore, capacity and monitoring still require operator verification. Do not
+promote or describe this system as live production until those gates and
+independent office/field acceptance are verified. Follow [Hetzner Production Deployment](../DEPLOYMENT_TARGET.md),
+[EU Hosting](EU_HOSTING.md), and [Company Handover](COMPANY_HANDOVER.md).
+
+## Historical Checkpoint - 2026-10-14 (post-merge)
 
 The current `main` commit is `895cc093099ead12e46304339c89244ca0f77ed9`.
 PR [#120](https://github.com/Robert-Velhorst/002-Contractor-AI/pull/120)

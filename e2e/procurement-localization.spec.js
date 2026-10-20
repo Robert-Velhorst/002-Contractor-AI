@@ -12,7 +12,7 @@ async function openDutchBidPackage(page, title) {
   const bids = page.getByTestId('bid-package-workspace');
   await bids.getByRole('button', { name: 'alle', exact: true }).click();
   const row = bids.locator('.bid-package-row').filter({ hasText: title });
-  await row.getByRole('button', { name: /Offerteaanvraag BID-[\d-]+ openen/ }).first().click();
+  await row.getByRole('button', { name: /Open offerteaanvraag BID-[\d-]+/ }).first().click();
   return { pipeline, bids, row, detail: pipeline.locator('.bid-package-detail') };
 }
 

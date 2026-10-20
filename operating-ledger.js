@@ -6569,6 +6569,7 @@ class ContractorOperatingLedger {
     } else {
       fs.mkdirSync(path.dirname(this.dbFile), { recursive: true });
       this.db = new DatabaseSync(this.dbFile);
+      this.db.exec('PRAGMA busy_timeout = 5000;');
     }
     const initializeLedger = () => {
       if (require('./identity-registry').tableExists(this.db, 'registry_identities')) {
@@ -9579,7 +9580,7 @@ class ContractorOperatingLedger {
         WHERE r.status IN ('reserved', 'cleanup_pending', 'cleaning')
           AND (r.lease_until <= ? OR r.status = 'cleanup_pending' OR r.cleanup_lease_until <= ?)
           AND (r.cleanup_lease_until IS NULL OR r.cleanup_lease_until <= ?)
-          AND (? IS NULL OR r.reservation_id = ?)
+          AND (CAST(? AS TEXT) IS NULL OR r.reservation_id = ?)
           AND (r.idempotency_key_hash IS NULL OR NOT EXISTS (
             SELECT 1 FROM idempotency_records i WHERE i.key_hash = r.idempotency_key_hash
               AND i.request_hash = r.request_hash AND i.status = 'processing' AND i.lease_until > ?

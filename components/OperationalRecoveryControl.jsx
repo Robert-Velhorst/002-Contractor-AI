@@ -13,12 +13,12 @@ const MATERIAL_READINESS = { covered: 'tekort gedekt', expected_by_task_start: '
   task_not_scheduled: 'taak niet ingepland', not_comparable: 'planning onbekend' }
 
 function MaterialReadinessSummary({ source, jobId, canEdit }) {
-  return (source.impact?.scheduleProjection?.materialReadiness || []).map(line => <span key={`${source.id}:${line.materialRequirementId}`}>
-    {line.tasks.map(task => <span key={task.taskId}> / {line.itemName}: {MATERIAL_READINESS[task.status] || 'onbekend'} / {task.title}
+  return (source.impact?.scheduleProjection?.materialReadiness || []).map((line, lineIndex) => <span key={`${source.id}:${line.materialRequirementId || line.itemName || lineIndex}`}>
+    {line.tasks.map((task, taskIndex) => <span key={task.taskId || `${line.materialRequirementId || line.itemName || lineIndex}:${task.title || 'task'}:${taskIndex}`}> / {line.itemName}: {MATERIAL_READINESS[task.status] || 'onbekend'} / {task.title}
       {task.plannedStart ? ` start ${formatDate(task.plannedStart)}` : ''}
       {line.expectedAvailableAt ? ` / verwacht ${formatDate(line.expectedAvailableAt)}${line.evidenceReference ? ` [${line.evidenceReference}]` : ''}` : ''}
     </span>)}
-    {line.supplierLeadTimeRisks?.map(risk => <small className="context-source-note" key={`${source.id}:${risk.supplier}:${risk.requiredBy}`}>
+    {line.supplierLeadTimeRisks?.map((risk, riskIndex) => <small className="context-source-note" key={`${source.id}:${lineIndex}:${risk.supplier || 'supplier'}:${risk.requiredBy || riskIndex}`}>
       Historisch leverrisico voor {risk.supplier}: P75 {risk.historicalLeadTimeDays} dagen op basis van {risk.sampleSize} afgeronde bestellingen;
       vergelijkingsdatum {formatDate(risk.historicalP75EquivalentCompletionAt)} ligt na benodigd {formatDate(risk.requiredBy)}. Dit is geen actuele ETA.
     </small>)}

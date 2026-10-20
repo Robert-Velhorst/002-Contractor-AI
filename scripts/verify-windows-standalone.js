@@ -91,84 +91,6 @@ function removeFixture(directory) {
   fs.rmSync(resolved, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 });
 }
 
-function jsonResponse(body, status = 200) {
-  return {
-    ok: status >= 200 && status < 300,
-    status,
-    headers: { get: name => String(name).toLowerCase() === 'content-type' ? 'application/json' : null },
-    text: async () => JSON.stringify(body)
-  };
-}
-
-async function verifyPackagedTunnelLifecycle(ownerToken) {
-  const packagedTunnel = require(path.join(packageRoot, 'scripts', 'start-ngrok.js'));
-  const environment = {
-    NGROK_AUTHTOKEN: 'packaged-ngrok-verification-token-at-least-32-characters',
-    CONTRACTOR_AI_AUTH_TOKEN: ownerToken,
-    PORT: '43210'
-  };
-  const events = [];
-  const publicUrl = 'https://contractor-windows-package.ngrok.app';
-  const runtime = await packagedTunnel.startTunnel({
-    environment,
-    app: {
-      locals: {
-        runtimeControl: {
-          start: async options => {
-            assert.deepEqual(options, { host: '127.0.0.1', port: 43210 });
-            events.push('server-start');
-            return { listening: true };
-          },
-          shutdown: async () => { events.push('server-stop'); }
-        }
-      }
-    },
-    ngrok: {
-      forward: async options => {
-        assert.equal(options.addr, 'http://127.0.0.1:43210');
-        events.push('listener-open');
-        return {
-          url: () => publicUrl,
-          close: async () => { events.push('listener-close'); }
-        };
-      }
-    },
-    fetchImpl: async (url, options) => {
-      if (url.startsWith('http://127.0.0.1:43210/')) {
-        return jsonResponse({
-          status: 'ready',
-          checks: { configuration: 'ready', database: 'ready', evidenceStorage: 'verified' }
-        });
-      }
-      if (!options.headers.Authorization) {
-        return jsonResponse({ error: { code: 'authentication_required' } }, 401);
-      }
-      const verified = environment.CONTRACTOR_AI_NGROK_ACTIVE === 'true';
-      return jsonResponse({
-        status: 'ready',
-        runtime: {
-          auth: { required: true },
-          exposure: {
-            loopbackOnly: true,
-            publicOrigin: publicUrl,
-            publicTunnel: verified,
-            publicTunnelVerified: verified && Boolean(environment.CONTRACTOR_AI_NGROK_VERIFIED_AT),
-            publicTunnelVerificationPending: !verified
-          }
-        }
-      });
-    }
-  });
-
-  assert.equal(runtime.publicUrl, publicUrl);
-  assert.equal(environment.CONTRACTOR_AI_NGROK_ACTIVE, 'true');
-  assert.match(environment.CONTRACTOR_AI_NGROK_VERIFIED_AT, /^\d{4}-\d{2}-\d{2}T/);
-  await packagedTunnel.stopTunnel(runtime, 'windows-package-test');
-  assert.deepEqual(events, ['server-start', 'listener-open', 'listener-close', 'server-stop']);
-  assert.equal(environment.CONTRACTOR_AI_NGROK_ACTIVE, 'false');
-  return true;
-}
-
 async function verifyPackagedIdentity(fixtureRoot) {
   const port = await reservePort(), issuer = `http://127.0.0.1:${port}`;
   const directory = path.join(fixtureRoot, 'identity'), companiesFile = path.join(directory, 'companies.json');
@@ -244,7 +166,7 @@ async function verifyWindowsStandalone() {
   assert.ok(fs.existsSync(runtimeExecutable), 'Build the Windows standalone package before running its smoke test.');
   const build = JSON.parse(fs.readFileSync(path.join(packageRoot, 'BUILD.json'), 'utf8'));
   assert.equal(build.format, 'contractor-ai-windows-package/v1');
-  assert.match(String(build.node || ''), /^26\.12\.0$/, 'The packaged runtime must use Node.js 26.12.0.');
+  assert.match(String(build.node || ''), /^24\.22\.0$/, 'The packaged runtime must use Node.js 24.22.0.');
   verifyPackagedBundle(packageRoot, build);
 
   const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'contractor-ai-windows-package-'));
@@ -351,7 +273,6 @@ async function verifyWindowsStandalone() {
     assert.equal(haiPublication.body?.externalCommitments, 0);
     assert.ok(fs.existsSync(haiFeedPath));
     assert.equal(stdout.includes(ownerToken), false, 'A retained standalone owner key must not reappear in startup output.');
-    const ngrokLifecycleVerified = await verifyPackagedTunnelLifecycle(ownerToken);
     const identityRuntime = await verifyPackagedIdentity(fixtureRoot);
     const handoverRun = spawnSync(runtimeExecutable, ['-e', handoverSmokeCode], { cwd: packageRoot, encoding: 'utf8', timeout: 60000, windowsHide: true });
     assert.equal(handoverRun.status, 0, handoverRun.stderr);
@@ -383,8 +304,6 @@ async function verifyWindowsStandalone() {
       haiContract: manifest.body.schema,
       haiLocalFeedPublished: true,
       haiDestination: 'isolated_local_fixture',
-      ngrokLifecycleVerified,
-      ngrokEdge: 'test_double',
       packagedHandover,
       resourcePlanning,
       identityRuntime

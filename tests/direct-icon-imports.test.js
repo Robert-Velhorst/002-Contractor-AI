@@ -52,7 +52,7 @@ test('plugin ignores dependency and non-JavaScript files on Windows and POSIX', 
   for (const id of ['C:\\app\\node_modules\\package\\index.jsx', '/app/node_modules/package/index.jsx', '/app/styles.css', '/app/component.tsx']) {
     assert.equal(plugin.transform(source, id), null);
   }
-  assert.match(plugin.transform(source, 'C:\\app\\view.jsx?query').code, /icons\/check.js/);
+  assert.match(plugin.transform(source, 'C:\\app\\view.jsx?query').code, /icons\/check\.m?js/);
 });
 
 test('every installed icon alias resolves to an existing module and original default export', async () => {

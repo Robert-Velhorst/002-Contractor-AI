@@ -458,7 +458,7 @@ Form constraints, task-scoped progress/blocker reporting, standby holds and owne
 `frontend-tests/work-board-office.test.jsx`, `frontend-tests/work-board-callouts.test.jsx`, and
 `frontend-tests/work-board-material-hold.test.jsx`.
 Browser workflow, waitlist rank/withdrawal, task-linked blocker reporting and owner controls: `e2e/work-board.spec.js`.
-Use Node 26.x and isolated test ledgers. No synthetic applicants or positions
+Use Node 24.x LTS and isolated test ledgers. No synthetic applicants or positions
 should be introduced into an operator's real database for QA.
 
 ## Durable worker notifications

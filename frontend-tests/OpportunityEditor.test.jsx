@@ -27,7 +27,7 @@ describe('isolated opportunity editor', () => {
     await userEvent.type(screen.getByLabelText('Opportunity title'), title)
     expect(screen.getByLabelText('Opportunity title').value).toBe(title)
     expect(dashboardRender).toHaveBeenCalledTimes(initial)
-  })
+  }, 30_000)
 
   it('preserves batched fields and sends their current normalized payload', async () => {
     const input = props()

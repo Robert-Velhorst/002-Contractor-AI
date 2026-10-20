@@ -29,7 +29,7 @@ test('browser child environment excludes hosted storage, real credentials, paths
     CONTRACTOR_AI_AUTH_TOKEN: 'synthetic-token', CONTRACTOR_AI_DATA_DIR: '/operator-data',
     STATE_FILE: '/operator-state', LEDGER_DB_FILE: '/operator-ledger', UPLOAD_DIR: '/operator-files',
     CONTRACTOR_AI_HAI_FEED_PATH: '/operator-feed', CONTRACTOR_AI_AUTHORITY_KEY_FILE: '/operator-key',
-    CONTRACTOR_AI_PUBLIC_URL: 'https://fixture.invalid', CONTRACTOR_AI_NGROK_ACTIVE: 'verified',
+    CONTRACTOR_AI_PUBLIC_URL: 'https://fixture.invalid',
     NODE_OPTIONS: '--require ./unexpected.js', HTTPS_PROXY: 'https://fixture.invalid',
     DASHBOARD_AUTH_TOKEN: 'synthetic-token', UNKNOWN_PROVIDER_TOKEN: 'synthetic-secret',
     CONTRACTOR_AI_AUTONOMOUS_SCHEDULER_ENABLED: 'true', CONTRACTOR_AI_CHAT_AI_ENABLED: 'true',

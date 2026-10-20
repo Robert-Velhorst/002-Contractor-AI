@@ -169,7 +169,8 @@ function PipelineWorkspace({
                   className={`pipeline-row ${selectedOpportunity?.id === opportunity.id ? 'pipeline-row-selected' : ''}`}
                   key={opportunity.id}
                 >
-                  <button className="pipeline-row-main" onClick={() => onSelect(opportunity)} aria-label={`Open ${opportunity.title}`}>
+                  <button className="pipeline-row-main" onClick={() => onSelect(opportunity)}>
+                    <span className="visually-hidden">{t('Open')}</span>
                     <span className={`pipeline-stage-marker pipeline-stage-${opportunity.stage}`} aria-hidden="true" />
                     <span className="pipeline-copy">
                       <span className="pipeline-title">

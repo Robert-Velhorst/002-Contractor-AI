@@ -11,7 +11,7 @@ function apiFixture() {
 it('opens personal work and switches between the four phone views', async () => {
   const onOpenJob = vi.fn()
   render(<FieldWorkPack api={apiFixture()} canRespond onOpenJob={onOpenJob} />)
-  await userEvent.click(await screen.findByRole('button', { name: 'Open work pack Kitchen renovation' }))
+  await userEvent.click(await screen.findByRole('button', { name: 'Open work pack Kitchen renovation Teststraat 1' }))
   await screen.findByRole('heading', { name: 'Kitchen renovation' })
   await userEvent.click(screen.getByRole('tab', { name: 'Be qualified' }))
   await screen.findByText('VCA')
@@ -30,7 +30,7 @@ it('shows the mixed-trade crew and each member role with the shared task', async
     ? { pack: crewPack, workers: [] }
     : { rows: [pack.job], nextCursor: null })
   render(<FieldWorkPack api={api} canRespond />)
-  await userEvent.click(await screen.findByRole('button', { name: 'Open work pack Kitchen renovation' }))
+  await userEvent.click(await screen.findByRole('button', { name: 'Open work pack Kitchen renovation Teststraat 1' }))
   await userEvent.click(screen.getByRole('tab', { name: 'Do' }))
   const task = (await screen.findAllByText('Install frame')).find(element => element.tagName === 'STRONG')
   expect(task).toBeTruthy()
@@ -49,7 +49,7 @@ it('shows the configured supervision ratio and current supervisor check-ins', as
     ? { pack: supervisionPack, workers: [] }
     : { rows: [pack.job], nextCursor: null })
   render(<FieldWorkPack api={api} canRespond />)
-  await userEvent.click(await screen.findByRole('button', { name: 'Open work pack Kitchen renovation' }))
+  await userEvent.click(await screen.findByRole('button', { name: 'Open work pack Kitchen renovation Teststraat 1' }))
   await userEvent.click(screen.getByRole('tab', { name: 'Do' }))
   const task = (await screen.findAllByText('Install frame')).find(element => element.tagName === 'STRONG')
   const taskRow = task.closest('li')
@@ -79,7 +79,7 @@ it('shows approved task-linked hazard analyses and safety data in the worker kno
     ? { pack: safetyPack, workers: [] }
     : { rows: [pack.job], nextCursor: null })
   render(<FieldWorkPack api={api} canRespond />)
-  await userEvent.click(await screen.findByRole('button', { name: 'Open work pack Kitchen renovation' }))
+  await userEvent.click(await screen.findByRole('button', { name: 'Open work pack Kitchen renovation Teststraat 1' }))
   await userEvent.click(screen.getByRole('tab', { name: 'Know' }))
   expect(await screen.findByRole('heading', { name: 'Task JHA applicability' })).toBeTruthy()
   expect(screen.getByText('A task-specific JHA is required.')).toBeTruthy()
@@ -105,7 +105,7 @@ it('shows only released submittal references and task scope in the worker knowle
     ? { pack: submittalPack, workers: [] }
     : { rows: [pack.job], nextCursor: null })
   render(<FieldWorkPack api={api} canRespond />)
-  await userEvent.click(await screen.findByRole('button', { name: 'Open work pack Kitchen renovation' }))
+  await userEvent.click(await screen.findByRole('button', { name: 'Open work pack Kitchen renovation Teststraat 1' }))
   await userEvent.click(screen.getByRole('tab', { name: 'Know' }))
   const approved = await screen.findByRole('heading', { name: 'Approved submittals' })
   expect(approved.parentElement.textContent).toContain('Window specification')
@@ -131,7 +131,7 @@ it('shows material SDS readiness and keeps required missing evidence visibly blo
     ? { pack: safetyPack, workers: [] }
     : { rows: [pack.job], nextCursor: null })
   render(<FieldWorkPack api={api} canRespond />)
-  await userEvent.click(await screen.findByRole('button', { name: 'Open work pack Kitchen renovation' }))
+  await userEvent.click(await screen.findByRole('button', { name: 'Open work pack Kitchen renovation Teststraat 1' }))
   await userEvent.click(screen.getByRole('tab', { name: 'Know' }))
   const readiness = await screen.findByRole('region', { name: 'Material SDS readiness' })
   expect(readiness.textContent).toContain('Frame adhesive')
@@ -141,7 +141,7 @@ it('shows material SDS readiness and keeps required missing evidence visibly blo
 
 it('shows the worker-specific shift rather than treating the project date as their work time', async () => {
   render(<FieldWorkPack api={apiFixture()} canRespond />)
-  await userEvent.click(await screen.findByRole('button', { name: 'Open work pack Kitchen renovation' }))
+  await userEvent.click(await screen.findByRole('button', { name: 'Open work pack Kitchen renovation Teststraat 1' }))
   const shifts = await screen.findByRole('region', { name: 'My scheduled shifts' })
   expect(shifts.textContent).toContain('Carpenter')
   expect(shifts.textContent).toContain('8 allocated hours')
@@ -159,7 +159,7 @@ it('shows the exact shift briefing and warns a replacement whose assignment was 
   const api = vi.fn().mockImplementation(async url => url.includes('/jobs/')
     ? { pack: briefPack, workers: [] } : { rows: [pack.job], nextCursor: null })
   render(<FieldWorkPack api={api} canRespond />)
-  await userEvent.click(await screen.findByRole('button', { name: 'Open work pack Kitchen renovation' }))
+  await userEvent.click(await screen.findByRole('button', { name: 'Open work pack Kitchen renovation Teststraat 1' }))
   await userEvent.click(screen.getByRole('tab', { name: 'Know' }))
   const region = await screen.findByRole('region', { name: 'Daily shift briefing' })
   expect(region.textContent).toContain('updated wall sequence')
@@ -171,14 +171,14 @@ it('shows the exact shift briefing and warns a replacement whose assignment was 
   api.mockImplementation(async url => url.includes('/jobs/')
     ? { pack: mismatchPack, workers: [] } : { rows: [pack.job], nextCursor: null })
   await userEvent.click(screen.getByRole('button', { name: 'Work packs' }))
-  await userEvent.click(await screen.findByRole('button', { name: 'Open work pack Kitchen renovation' }))
+  await userEvent.click(await screen.findByRole('button', { name: 'Open work pack Kitchen renovation Teststraat 1' }))
   await userEvent.click(screen.getByRole('tab', { name: 'Know' }))
   expect(await screen.findByText(/does not cover this exact worker shift/)).toBeTruthy()
 })
 
 it('shows current planning readiness while clearly withholding start permission', async () => {
   render(<FieldWorkPack api={apiFixture()} canRespond />)
-  await userEvent.click(await screen.findByRole('button', { name: 'Open work pack Kitchen renovation' }))
+  await userEvent.click(await screen.findByRole('button', { name: 'Open work pack Kitchen renovation Teststraat 1' }))
   const readiness = await screen.findByRole('region', { name: 'Work planning readiness' })
   expect(readiness.textContent).toContain('blocked')
   expect(readiness.textContent).toContain('2 blockers, 1 missing items, 0 warnings')
@@ -187,7 +187,7 @@ it('shows current planning readiness while clearly withholding start permission'
 
 it('keeps supervisor start release blocked until the server-projected prerequisites are clear', async () => {
   render(<FieldWorkPack api={apiFixture()} canIssueStartRelease />)
-  await userEvent.click(await screen.findByRole('button', { name: 'Open work pack Kitchen renovation' }))
+  await userEvent.click(await screen.findByRole('button', { name: 'Open work pack Kitchen renovation Teststraat 1' }))
   const release = await screen.findByRole('region', { name: 'Supervisor start release' })
   expect(release.textContent).toContain('Dispatch and planning readiness must be fully ready')
   expect(release.textContent).toContain('A released start huddle for this exact worker assignment and shift is required')
@@ -210,7 +210,7 @@ it('lets an authorized office reviewer issue a checklist-backed shift release on
     return url.includes('/jobs/') ? { pack: currentPack, workers: [] } : { rows: [pack.job], nextCursor: null }
   })
   render(<FieldWorkPack api={api} canIssueStartRelease />)
-  await userEvent.click(await screen.findByRole('button', { name: 'Open work pack Kitchen renovation' }))
+  await userEvent.click(await screen.findByRole('button', { name: 'Open work pack Kitchen renovation Teststraat 1' }))
   for (const name of ['Current site conditions checked', 'Work method and controls reviewed', 'Required permits confirmed', 'Crew and qualifications checked', 'Equipment and PPE available', 'Emergency arrangements known']) {
     await userEvent.click(screen.getByRole('checkbox', { name }))
   }
@@ -239,7 +239,7 @@ it('requires the assigned worker to confirm release receipt and allows them to s
     return options ? { success: true } : url.includes('/jobs/') ? { pack: currentPack, workers: [] } : { rows: [pack.job], nextCursor: null }
   })
   render(<FieldWorkPack api={api} canRespond />)
-  await userEvent.click(await screen.findByRole('button', { name: 'Open work pack Kitchen renovation' }))
+  await userEvent.click(await screen.findByRole('button', { name: 'Open work pack Kitchen renovation Teststraat 1' }))
   const confirm = screen.getByRole('button', { name: 'Confirm release received' })
   expect(confirm.disabled).toBe(true)
   await userEvent.click(screen.getByRole('checkbox', { name: 'I received this release and will stop if site conditions or controls differ.' }))
@@ -264,7 +264,7 @@ it('shows accepted scope changes as work context without implying tasks or dates
   }
   const api = vi.fn().mockImplementation(async url => url.includes('/jobs/') ? { pack: updatedPack, workers: [] } : { rows: [updatedPack.job], nextCursor: null })
   render(<FieldWorkPack api={api} canRespond />)
-  await userEvent.click(await screen.findByRole('button', { name: 'Open work pack Kitchen renovation' }))
+  await userEvent.click(await screen.findByRole('button', { name: 'Open work pack Kitchen renovation Teststraat 1' }))
   await userEvent.click(screen.getByRole('tab', { name: 'Know' }))
   await screen.findByRole('heading', { name: 'Accepted scope changes' })
   await screen.findByText('Install floor protection on the revised access route.')
@@ -278,7 +278,7 @@ it('shows a case-linked office recovery instruction inside only the worker work-
     recordedAt: '2026-09-24T10:00:00.000Z' }] } }
   const api = vi.fn().mockImplementation(async url => url.includes('/jobs/') ? { pack: instructedPack, workers: [] } : { rows: [pack.job], nextCursor: null })
   render(<FieldWorkPack api={api} canRespond />)
-  await userEvent.click(await screen.findByRole('button', { name: 'Open work pack Kitchen renovation' }))
+  await userEvent.click(await screen.findByRole('button', { name: 'Open work pack Kitchen renovation Teststraat 1' }))
   await userEvent.click(screen.getByRole('tab', { name: 'Know' }))
   const instructions = await screen.findByRole('region', { name: 'Updated task instructions' })
   expect(instructions.textContent).toContain('Install frame')
@@ -291,7 +291,7 @@ it('shows an approved client answer linked to the worker task without exposing i
     response: 'The office verified the approved opening is 900 mm. Check the current drawing before fitting.', answeredAt: '2026-09-25T10:00:00.000Z' }] } }
   const api = vi.fn().mockImplementation(async url => url.includes('/jobs/') ? { pack: clientUpdatePack, workers: [] } : { rows: [clientUpdatePack.job], nextCursor: null })
   render(<FieldWorkPack api={api} canRespond />)
-  await userEvent.click(await screen.findByRole('button', { name: 'Open work pack Kitchen renovation' }))
+  await userEvent.click(await screen.findByRole('button', { name: 'Open work pack Kitchen renovation Teststraat 1' }))
   await userEvent.click(screen.getByRole('tab', { name: 'Know' }))
   const updates = await screen.findByRole('region', { name: 'Approved client updates' })
   expect(updates.textContent).toContain('Install frame')
@@ -325,7 +325,7 @@ it('shows assignment-scoped safety dossier content without presenting it as star
   }
   const api = vi.fn().mockImplementation(async url => url.includes('/jobs/') ? { pack: safetyPack, workers: [] } : { rows: [pack.job], nextCursor: null })
   render(<FieldWorkPack api={api} canRespond />)
-  await userEvent.click(await screen.findByRole('button', { name: 'Open work pack Kitchen renovation' }))
+  await userEvent.click(await screen.findByRole('button', { name: 'Open work pack Kitchen renovation Teststraat 1' }))
   await userEvent.click(screen.getByRole('tab', { name: 'Know' }))
   await screen.findByRole('region', { name: 'Safety dossier review' })
   await screen.findByText('Verify isolation')
@@ -337,7 +337,7 @@ it('shows assignment-scoped safety dossier content without presenting it as star
 it('requires explicit read confirmation and retains the exact current source', async () => {
   const api = apiFixture()
   render(<FieldWorkPack api={api} canRespond />)
-  await userEvent.click(await screen.findByRole('button', { name: 'Open work pack Kitchen renovation' }))
+  await userEvent.click(await screen.findByRole('button', { name: 'Open work pack Kitchen renovation Teststraat 1' }))
   const button = await screen.findByRole('button', { name: 'Record read confirmation' })
   expect(button.disabled).toBe(true)
   await userEvent.click(screen.getByLabelText('I have read this work-pack version'))
@@ -355,7 +355,7 @@ it('office preview cannot impersonate a worker and failures remain retryable', a
   render(<FieldWorkPack api={api} />)
   await screen.findByRole('alert')
   await userEvent.click(screen.getByRole('button', { name: 'Retry' }))
-  await userEvent.click(await screen.findByRole('button', { name: 'Open work pack Kitchen renovation' }))
+  await userEvent.click(await screen.findByRole('button', { name: 'Open work pack Kitchen renovation Teststraat 1' }))
   await screen.findByRole('heading', { name: 'Kitchen renovation' })
   expect(screen.queryByRole('button', { name: 'Record read confirmation' })).toBeNull()
 })
@@ -363,7 +363,7 @@ it('office preview cannot impersonate a worker and failures remain retryable', a
 it('reports progress against the selected task and retains it for office review', async () => {
   const api = apiFixture()
   render(<FieldWorkPack api={api} canRespond />)
-  await userEvent.click(await screen.findByRole('button', { name: 'Open work pack Kitchen renovation' }))
+  await userEvent.click(await screen.findByRole('button', { name: 'Open work pack Kitchen renovation Teststraat 1' }))
   await screen.findByRole('heading', { name: 'Kitchen renovation' })
   await userEvent.selectOptions(screen.getByLabelText('Task'), 'task-1')
   await userEvent.selectOptions(screen.getByLabelText('Progress status'), 'blocked')
@@ -383,7 +383,7 @@ it('lets a field worker report held equipment as a blocker and sends its exact c
   }
   const api = vi.fn().mockImplementation(async (url, options) => options ? { success: true } : url.includes('/jobs/') ? { pack: equipmentPack, workers: [] } : { rows: [pack.job], nextCursor: null })
   render(<FieldWorkPack api={api} canRespond />)
-  await userEvent.click(await screen.findByRole('button', { name: 'Open work pack Kitchen renovation' }))
+  await userEvent.click(await screen.findByRole('button', { name: 'Open work pack Kitchen renovation Teststraat 1' }))
   await userEvent.selectOptions(screen.getByLabelText('Task'), 'task-1')
   await userEvent.selectOptions(screen.getByLabelText('Progress status'), 'blocked')
   await userEvent.selectOptions(screen.getByLabelText('Equipment condition'), 'reservation-1')
@@ -409,7 +409,7 @@ it('shows supervised-only tasks without offering them for the workers progress r
   }
   const api = vi.fn().mockImplementation(async url => url.includes('/jobs/') ? { pack: supervisedPack, workers: [] } : { rows: [pack.job], nextCursor: null })
   render(<FieldWorkPack api={api} canRespond />)
-  await userEvent.click(await screen.findByRole('button', { name: 'Open work pack Kitchen renovation' }))
+  await userEvent.click(await screen.findByRole('button', { name: 'Open work pack Kitchen renovation Teststraat 1' }))
   await userEvent.click(screen.getByRole('tab', { name: 'Do' }))
   await screen.findByText('You are the designated supervisor for this task. Progress reports belong to its assigned worker.')
   const choices = screen.getByLabelText('Task')
@@ -424,7 +424,7 @@ it('explains and blocks in-progress reporting for a task awaiting its required s
   }
   const api = vi.fn().mockImplementation(async url => url.includes('/jobs/') ? { pack: controlledPack, workers: [] } : { rows: [pack.job], nextCursor: null })
   render(<FieldWorkPack api={api} canRespond />)
-  await userEvent.click(await screen.findByRole('button', { name: 'Open work pack Kitchen renovation' }))
+  await userEvent.click(await screen.findByRole('button', { name: 'Open work pack Kitchen renovation Teststraat 1' }))
   await screen.findByText('A current supervisor start release and your receipt confirmation are required before this task can be reported in progress. You can still report a blocker.')
   const submit = screen.getByRole('button', { name: 'Report to office' })
   expect(submit.disabled).toBe(true)
@@ -443,7 +443,7 @@ it('enables in-progress reporting after the required start release is current an
   const api = vi.fn().mockImplementation(async (url, options) => options ? { success: true }
     : url.includes('/jobs/') ? { pack: controlledPack, workers: [] } : { rows: [pack.job], nextCursor: null })
   render(<FieldWorkPack api={api} canRespond />)
-  await userEvent.click(await screen.findByRole('button', { name: 'Open work pack Kitchen renovation' }))
+  await userEvent.click(await screen.findByRole('button', { name: 'Open work pack Kitchen renovation Teststraat 1' }))
   expect(screen.queryByText(/required before this task can be reported in progress/)).toBeNull()
   await userEvent.type(screen.getByLabelText('What changed or blocks this task?'), 'Starting the released task.')
   expect(screen.getByRole('button', { name: 'Report to office' }).disabled).toBe(false)
@@ -455,7 +455,7 @@ it('lets the assigned worker confirm a warehouse issue arrival with accepted and
     dispatchReference: 'PICK-77', expectedArrivalAt: '2026-10-02T10:00:00.000Z', receipts: [] }] } }
   const api = vi.fn().mockImplementation(async (url, options) => options ? { success: true } : url.includes('/jobs/') ? { pack: issuePack, workers: [] } : { rows: [pack.job], nextCursor: null })
   render(<FieldWorkPack api={api} canRespond />)
-  await userEvent.click(await screen.findByRole('button', { name: 'Open work pack Kitchen renovation' }))
+  await userEvent.click(await screen.findByRole('button', { name: 'Open work pack Kitchen renovation Teststraat 1' }))
   await screen.findByRole('heading', { name: 'Kitchen renovation' })
   await userEvent.click(screen.getByRole('tab', { name: 'Have' }))
   await screen.findByText(/Dispatch reference: PICK-77/)
@@ -482,7 +482,7 @@ it('shows only an approved office answer in the field worker conversation', asyn
   const question = { id: 'question-1', message: 'Which drawing revision should I follow?', recordedAt: '2026-09-24T09:00:00.000Z', replyStatus: 'pending_approval', response: null }
   const pendingApi = vi.fn().mockImplementation(async url => url.includes('/jobs/') ? { pack: { ...pack, questions: [question] }, workers: [] } : { rows: [pack.job], nextCursor: null })
   const view = render(<FieldWorkPack api={pendingApi} canRespond />)
-  await userEvent.click(await screen.findByRole('button', { name: 'Open work pack Kitchen renovation' }))
+  await userEvent.click(await screen.findByRole('button', { name: 'Open work pack Kitchen renovation Teststraat 1' }))
   await screen.findByText(question.message)
   await screen.findByText(/Office reply pending approval/)
   expect(screen.queryByText('Use drawing revision B.')).toBeNull()
@@ -492,7 +492,7 @@ it('shows only an approved office answer in the field worker conversation', asyn
     pack: { ...pack, questions: [{ ...question, replyStatus: 'answered', response: 'Use drawing revision B.' }] }, workers: []
   } : { rows: [pack.job], nextCursor: null })
   render(<FieldWorkPack api={answeredApi} canRespond />)
-  await userEvent.click(await screen.findByRole('button', { name: 'Open work pack Kitchen renovation' }))
+  await userEvent.click(await screen.findByRole('button', { name: 'Open work pack Kitchen renovation Teststraat 1' }))
   await screen.findByText(/Office replied/)
   await screen.findByText('Use drawing revision B.')
 })
@@ -507,7 +507,7 @@ it('refreshes replies while the assigned worker stays in an online work pack', a
     ? { questions: replies[1].pack.questions }
     : url.includes('/jobs/') ? replies[0] : { rows: [pack.job], nextCursor: null })
   render(<FieldWorkPack api={api} canRespond pollIntervalMs={50} />)
-  await userEvent.click(await screen.findByRole('button', { name: 'Open work pack Kitchen renovation' }))
+  await userEvent.click(await screen.findByRole('button', { name: 'Open work pack Kitchen renovation Teststraat 1' }))
   await screen.findByText('No. Wait for the delivery and confirmation.', {}, { timeout: 3000 })
   await screen.findByText(/A new approved office reply is available/, {}, { timeout: 3000 })
   await screen.findByText(/Office replied/)

@@ -68,7 +68,7 @@ test('office retains a partial delivery, verifies a separate client response and
     await phone.getByRole('button', { name: 'Sign in', exact: true }).click();
     await phone.getByLabel(/^(Language|Taal)$/).selectOption('nl-NL');
     const pack = phone.getByTestId('field-work-pack');
-    await pack.getByRole('button', { name: `Werkpakket ${title} openen` }).click();
+    await pack.getByRole('button', { name: `Open werkpakket ${title}` }).click();
     await pack.getByRole('tab', { name: 'Weten', exact: true }).click();
     await expect(pack.getByText('Eerste deur opgeleverd', { exact: true })).toBeVisible();
     await expect(pack.getByText('Private customer name')).toHaveCount(0);

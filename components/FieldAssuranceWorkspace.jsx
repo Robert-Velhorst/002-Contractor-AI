@@ -285,7 +285,7 @@ function FieldAssuranceWorkspace({
                 {captureAction ? (
                   <button
                     className="secondary-button"
-                    aria-label={t('Capture field evidence for {job}', { job: job.title })}
+                    aria-label={t('{action} for {job}', { action: t('Capture evidence'), job: job.title })}
                     disabled={submitting}
                     onClick={() => onCapture(item)}
                   >

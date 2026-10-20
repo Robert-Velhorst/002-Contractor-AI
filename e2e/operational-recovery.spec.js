@@ -107,7 +107,7 @@ test('office links a disruption to recovery and the worker resumes from an encry
   await workerPage.getByRole('button', { name: 'Sign in', exact: true }).click();
   await workerPage.getByLabel(/^(Language|Taal)$/).selectOption('nl-NL');
   const workPack = workerPage.getByTestId('field-work-pack');
-  await workPack.getByRole('button', { name: `Werkpakket ${title} openen` }).click();
+  await workPack.getByRole('button', { name: `Open werkpakket ${title}` }).click();
   await workPack.getByText('Offline werkmap', { exact: true }).click();
   await workerPage.getByLabel('Offline wachtzin (minimaal 10 tekens)').fill('test offline herstelinstructie');
   await workerPage.getByRole('button', { name: 'Werkpakket offline bewaren' }).click();

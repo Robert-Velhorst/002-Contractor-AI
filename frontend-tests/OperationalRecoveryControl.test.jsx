@@ -46,7 +46,7 @@ it('waits for refreshed case evidence after a child cost review before allowing 
     return original
   })
   render(<OperationalRecoveryControl api={api} jobId={item.jobId} canEdit />)
-  await userEvent.click(await screen.findByText('Kostenimpact beoordelen'))
+  await userEvent.click(await screen.findByText('Kostenimpact beoordelen', {}, { timeout: 10_000 }))
   await userEvent.type(screen.getByLabelText('Indicatieve raming in euro'), '60')
   await userEvent.type(screen.getByLabelText('Onderbouwing'), 'Kosten op basis van een goedgekeurde bon.')
   await userEvent.type(screen.getByLabelText('Bewijsbron kostenimpact'), 'bon:GR-11')

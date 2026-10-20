@@ -1618,7 +1618,7 @@ test('field assurance prepares internal safety records and gates an RFI answer',
   await expect(page.getByText('Internal safety pack retained. It does not grant access, publish evidence, or authorize field work.')).toBeVisible();
   safetyRow = assurance.locator('.assurance-item').filter({ hasText: safetyJob.job.title });
   await expect(safetyRow.getByRole('button', { name: `Prepare safety pack for ${safetyJob.job.title}` })).toHaveCount(0);
-  await safetyRow.getByRole('button', { name: `Capture field evidence for ${safetyJob.job.title}` }).click();
+  await safetyRow.getByRole('button', { name: `Capture evidence for ${safetyJob.job.title}` }).click();
   await expect(page.getByTestId('field-evidence-form').getByRole('combobox', { name: 'Job', exact: true })).toHaveValue(safetyJob.job.id);
 
   await safetyRow.getByRole('button', { name: `Approve JHA for ${safetyJob.job.title}` }).click();

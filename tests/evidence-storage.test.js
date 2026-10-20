@@ -4,23 +4,41 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { EvidenceStorageError, LocalEvidenceStorage, S3EvidenceStorage } = require('../evidence-storage');
+const http = require('node:http');
+const { EvidenceStorageError, LocalEvidenceStorage, S3EvidenceStorage, isValidSseCustomerKey, s3SigningRegion } = require('../evidence-storage');
 
-function expectedS3Authorization(url, headers, { accessKeyId, secretAccessKey }) {
+function expectedS3Authorization(url, headers, { accessKeyId, secretAccessKey, method = 'GET', region = 'eu-central-1' }) {
   const dateStamp = headers['x-amz-date'].slice(0, 8);
   const signedHeaderNames = Object.keys(headers).filter(name => name !== 'authorization').sort();
   const canonicalHeaders = signedHeaderNames.map(name => `${name}:${headers[name]}\n`).join('');
   const signedHeaders = signedHeaderNames.join(';');
-  const canonicalRequest = ['GET', url.pathname, url.search.slice(1), canonicalHeaders, signedHeaders,
+  const canonicalRequest = [method, url.pathname, url.search.slice(1), canonicalHeaders, signedHeaders,
     headers['x-amz-content-sha256']].join('\n');
-  const scope = `${dateStamp}/eu-central-1/s3/aws4_request`;
+  const scope = `${dateStamp}/${region}/s3/aws4_request`;
   const hmac = (key, value) => crypto.createHmac('sha256', key).update(value, 'utf8').digest();
-  const signingKey = hmac(hmac(hmac(hmac(`AWS4${secretAccessKey}`, dateStamp), 'eu-central-1'), 's3'), 'aws4_request');
+  const signingKey = hmac(hmac(hmac(hmac(`AWS4${secretAccessKey}`, dateStamp), region), 's3'), 'aws4_request');
   const stringToSign = ['AWS4-HMAC-SHA256', headers['x-amz-date'], scope,
     crypto.createHash('sha256').update(canonicalRequest).digest('hex')].join('\n');
   const signature = crypto.createHmac('sha256', signingKey).update(stringToSign, 'utf8').digest('hex');
   return `AWS4-HMAC-SHA256 Credential=${accessKeyId}/${scope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
 }
+
+test('local S3 configuration retains the existing signing region and hosted mode requires an explicit region', async () => {
+  let signedRequest;
+  const options = {
+    endpoint: 'https://s3.eu-central-1.example.test', bucket: 'contractor-private',
+    accessKeyId: 'test-access', secretAccessKey: 'test-secret',
+    fetchFn: async (url, init) => { signedRequest = { url: new URL(url), headers: init.headers }; return new Response('retained evidence'); }
+  };
+  const storage = new S3EvidenceStorage({ ...options, region: s3SigningRegion(undefined, 'local') });
+  await storage.request('GET', 'contractor-ai/evidence/existing.txt');
+  assert.match(signedRequest.headers.authorization, /\/eu-central-1\/s3\/aws4_request/);
+  assert.equal(signedRequest.headers.authorization, expectedS3Authorization(signedRequest.url, signedRequest.headers, options));
+  assert.equal(s3SigningRegion('fsn1', 'hosted'), 'fsn1');
+  assert.equal(s3SigningRegion('us-east-1', 'local'), 'us-east-1');
+  assert.throws(() => new S3EvidenceStorage({ ...options, region: s3SigningRegion(undefined, 'hosted') }),
+    error => error instanceof EvidenceStorageError && error.code === 's3_configuration_required');
+});
 
 test('local evidence storage retains files under the configured private root', async t => {
   const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'contractor-ai-storage-project-'));
@@ -63,14 +81,19 @@ test('local evidence rejects growth beyond its retained ledger size before readi
 
 test('S3 evidence storage signs private object requests and requires full configuration', async () => {
   assert.throws(() => new S3EvidenceStorage({}), error => error instanceof EvidenceStorageError && error.code === 's3_configuration_required');
+  assert.equal(isValidSseCustomerKey(Buffer.alloc(32, 0x42).toString('base64')), true);
+  assert.equal(isValidSseCustomerKey(Buffer.alloc(31, 0x42).toString('base64')), false);
+  assert.equal(isValidSseCustomerKey('not-a-key'), false);
   const requests = [];
   const retainedBodies = new Map();
+  const sseCustomerKey = Buffer.alloc(32, 0x42);
   const storage = new S3EvidenceStorage({
     endpoint: 'https://s3.eu-central-1.example.test',
     bucket: 'contractor-private',
     region: 'eu-central-1',
     accessKeyId: 'test-access',
     secretAccessKey: 'test-secret',
+    sseCustomerKey: sseCustomerKey.toString('base64'),
     fetchFn: async (url, options) => {
       requests.push({ url: String(url), options });
       const target = String(url);
@@ -91,6 +114,14 @@ test('S3 evidence storage signs private object requests and requires full config
   assert.equal(stored.sha256, crypto.createHash('sha256').update(Buffer.from([0xff, 0xd8, 0xff, 0xe0])).digest('hex'));
   assert.match(requests[0].url, /contractor-private\/contractor-ai\/evidence\//);
   assert.match(requests[0].options.headers.authorization, /^AWS4-HMAC-SHA256 Credential=test-access\//);
+  for (const request of requests.filter(item => item.options.method === 'PUT' || (item.options.method === 'GET' && !new URL(item.url).searchParams.has('versions')))) {
+    assert.equal(request.options.headers['x-amz-server-side-encryption-customer-algorithm'], 'AES256');
+    assert.equal(request.options.headers['x-amz-server-side-encryption-customer-key'], sseCustomerKey.toString('base64'));
+    assert.equal(request.options.headers['x-amz-server-side-encryption-customer-key-md5'], crypto.createHash('md5').update(sseCustomerKey).digest('base64'));
+    assert.equal(request.options.headers.authorization, expectedS3Authorization(new URL(request.url), request.options.headers, {
+      accessKeyId: 'test-access', secretAccessKey: 'test-secret', method: request.options.method
+    }));
+  }
   assert.deepEqual(await storage.read(stored.storageRef), Buffer.from([0xff, 0xd8, 0xff, 0xe0]));
 
   const verification = await storage.verify();
@@ -101,15 +132,89 @@ test('S3 evidence storage signs private object requests and requires full config
   assert.equal(retainedBodies.has(requests.at(-1).url), false);
   assert.equal(await storage.remove(stored.storageRef), true);
   assert.equal(requests.at(-1).options.method, 'DELETE');
+  const versionListing = requests.find(item => new URL(item.url).searchParams.has('versions'));
+  assert.equal(versionListing.options.headers['x-amz-server-side-encryption-customer-key'], undefined);
+});
+
+test('S3 signed requests never follow redirects that could forward evidence encryption headers', async t => {
+  let forwardedRequests = 0;
+  const server = http.createServer((req, res) => {
+    if (req.url === '/redirect-target') {
+      forwardedRequests += 1;
+      res.end('private');
+      return;
+    }
+    res.writeHead(307, { location: `http://127.0.0.1:${server.address().port}/redirect-target` });
+    res.end();
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }));
+  const storage = new S3EvidenceStorage({
+    endpoint: `http://127.0.0.1:${server.address().port}`, bucket: 'contractor-private', region: 'eu-central-1',
+    accessKeyId: 'test-access', secretAccessKey: 'test-secret', sseCustomerKey: Buffer.alloc(32, 0x42).toString('base64')
+  });
+  await assert.rejects(() => storage.read('s3://contractor-private/contractor-ai/evidence/proof.jpg'),
+    error => error.code === 'object_storage_request_failed');
+  assert.equal(forwardedRequests, 0);
+});
+
+test('S3 releases unread response streams for writes, missing objects, errors and oversized declarations', async () => {
+  for (const scenario of [
+    { method: 'PUT', status: 200 },
+    { method: 'DELETE', status: 200 },
+    { method: 'GET', status: 404, allowMissing: true },
+    { method: 'GET', status: 403, code: 'object_storage_request_failed' },
+    { method: 'GET', status: 200, headers: { 'content-length': '100' }, code: 'evidence_response_too_large' }
+  ]) {
+    let cancelled = false;
+    const storage = new S3EvidenceStorage({
+      endpoint: 'https://s3.eu-central-1.example.test', bucket: 'contractor-private', region: 'eu-central-1',
+      accessKeyId: 'test-access', secretAccessKey: 'test-secret',
+      fetchFn: async () => new Response(new ReadableStream({ cancel() { cancelled = true; } }), {
+        status: scenario.status, headers: scenario.headers
+      })
+    });
+    const request = storage.request(scenario.method, 'contractor-ai/evidence/proof.jpg', null, null, {
+      allowMissing: scenario.allowMissing, maxResponseBytes: 4
+    });
+    if (scenario.code) await assert.rejects(request, error => error.code === scenario.code);
+    else await request;
+    assert.equal(cancelled, true, `${scenario.method} ${scenario.status} must release its unread body`);
+  }
+});
+
+test('S3 cleanup rejects malformed or ambiguous version listings before deleting any object', async () => {
+  const invalidListings = [
+    '<Error><Code>AccessDenied</Code></Error>',
+    '<ListVersionsResult/>',
+    '<ListVersionsResult><IsTruncated>not-a-boolean</IsTruncated></ListVersionsResult>',
+    '<ListVersionsResult><IsTruncated>true</IsTruncated><IsTruncated>false</IsTruncated></ListVersionsResult>',
+    '<ListVersionsResult><Version><Key>contractor-ai/evidence/proof.jpg</Key></Version><IsTruncated>false</IsTruncated></ListVersionsResult>',
+    '<ListVersionsResult><Version><Key>contractor-ai/evidence/proof.jpg</Key><VersionId>v1</VersionId><VersionId>v2</VersionId></Version><IsTruncated>false</IsTruncated></ListVersionsResult>',
+    '<ListVersionsResult><IsTruncated>false</ListVersionsResult>'
+  ];
+  for (const listing of invalidListings) {
+    const methods = [];
+    const storage = new S3EvidenceStorage({
+      endpoint: 'https://s3.eu-central-1.example.test', bucket: 'contractor-private', region: 'eu-central-1',
+      accessKeyId: 'test-access', secretAccessKey: 'test-secret', fetchFn: async (_url, options) => {
+        methods.push(options.method);
+        return new Response(listing, { status: 200 });
+      }
+    });
+    await assert.rejects(() => storage.remove('s3://contractor-private/contractor-ai/evidence/proof.jpg'),
+      error => error.code === 'object_storage_version_listing_invalid');
+    assert.deepEqual(methods, ['GET']);
+  }
 });
 
 test('S3 cleanup deletes every exact-key version and delete marker across listing pages', async () => {
   const requests = [];
   const pages = [
-    `<ListVersionsResult>
-      <Version><Key>contractor-ai/evidence/uploads/orphan.jpg</Key><VersionId>v1</VersionId></Version>
+    `<ListVersionsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+      <Version><Key><![CDATA[contractor-ai/evidence/uploads/orphan.jpg]]></Key><VersionId>v1&amp;/+=</VersionId></Version>
       <Version><Key>contractor-ai/evidence/uploads/orphan.jpg-suffix</Key><VersionId>unrelated</VersionId></Version>
-      <IsTruncated>true</IsTruncated><NextKeyMarker>contractor-ai/evidence/uploads/orphan.jpg</NextKeyMarker><NextVersionIdMarker>v1</NextVersionIdMarker>
+      <IsTruncated>true</IsTruncated><NextKeyMarker>contractor-ai/evidence/uploads/orphan.jpg</NextKeyMarker><NextVersionIdMarker>v1&amp;/+=</NextVersionIdMarker>
     </ListVersionsResult>`,
     `<ListVersionsResult>
       <DeleteMarker><Key>contractor-ai/evidence/uploads/orphan.jpg</Key><VersionId>marker-2</VersionId></DeleteMarker>
@@ -138,10 +243,13 @@ test('S3 cleanup deletes every exact-key version and delete marker across listin
   const listing = requests.filter(request => request.options.method === 'GET');
   assert.equal(listing.length, 2);
   assert.equal(listing[0].url.searchParams.get('prefix'), 'contractor-ai/evidence/uploads/orphan.jpg');
+  assert.equal(listing[1].url.searchParams.get('version-id-marker'), 'v1&/+=');
   assert.equal(listing[0].options.headers.authorization, expectedS3Authorization(listing[0].url,
     listing[0].options.headers, { accessKeyId: 'test-access', secretAccessKey: 'test-secret' }));
   const deletions = requests.filter(request => request.options.method === 'DELETE');
-  assert.deepEqual(deletions.map(request => request.url.searchParams.get('versionId')), ['v1', 'marker-2', 'v3']);
+  assert.deepEqual(deletions.map(request => request.url.searchParams.get('versionId')), ['v1&/+=', 'marker-2', 'v3']);
+  assert.equal(deletions[0].options.headers.authorization, expectedS3Authorization(deletions[0].url,
+    deletions[0].options.headers, { accessKeyId: 'test-access', secretAccessKey: 'test-secret', method: 'DELETE' }));
   assert.ok(deletions.every(request => request.url.pathname.endsWith('/contractor-ai/evidence/uploads/orphan.jpg')));
 });
 
@@ -367,7 +475,13 @@ test('S3 exact retry does not create another object version', async () => {
         retained.set(target, Buffer.from(options.body));
         return new Response(null, { status: 200, headers: { 'x-amz-version-id': `version-${versionCount}` } });
       }
-      if (options.method === 'GET') return new Response(retained.get(target) || null, { status: retained.has(target) ? 200 : 404 });
+      if (options.method === 'GET') {
+        const parsed = new URL(target);
+        const body = retained.get(`${parsed.origin}${parsed.pathname}`);
+        if (!body) return new Response(null, { status: 404 });
+        const versionId = parsed.searchParams.get('versionId') || 'version-1';
+        return new Response(body, { status: 200, headers: { 'x-amz-version-id': versionId } });
+      }
       return new Response(null, { status: 200 });
     }
   });
@@ -376,8 +490,74 @@ test('S3 exact retry does not create another object version', async () => {
   const replay = await storage.store(input, { operationId: 'same-versioned-request' });
   assert.equal(first.reused, false);
   assert.equal(replay.reused, true);
+  assert.match(first.storageRef, /\?versionId=version-1$/);
+  assert.equal(replay.storageRef, first.storageRef);
   assert.equal(versionCount, 1);
   assert.equal(requests.filter(method => method === 'PUT').length, 1);
+});
+
+test('S3 evidence references pin reads and cleanup to the retained object version', async () => {
+  const expected = Buffer.from('immutable-ledger-evidence');
+  const versions = new Map();
+  const requests = [];
+  const storage = new S3EvidenceStorage({
+    endpoint: 'https://s3.eu-central-1.example.test',
+    bucket: 'contractor-private',
+    region: 'eu-central-1',
+    accessKeyId: 'test-access',
+    secretAccessKey: 'test-secret',
+    fetchFn: async (url, options) => {
+      const parsed = new URL(String(url));
+      requests.push({ url: parsed, method: options.method });
+      if (options.method === 'PUT') {
+        versions.set('v1', Buffer.from(options.body));
+        return new Response(null, { status: 200, headers: { 'x-amz-version-id': 'v1' } });
+      }
+      if (options.method === 'GET') {
+        const versionId = parsed.searchParams.get('versionId') || 'v2';
+        const body = versions.get(versionId);
+        return body
+          ? new Response(body, { status: 200, headers: { 'x-amz-version-id': versionId } })
+          : new Response(null, { status: 404 });
+      }
+      if (options.method === 'DELETE') {
+        versions.delete(parsed.searchParams.get('versionId'));
+        return new Response(null, { status: 204 });
+      }
+      return new Response(null, { status: 405 });
+    }
+  });
+
+  const stored = await storage.store({ originalName: 'proof.pdf', mimeType: 'application/pdf', size: expected.length, buffer: expected });
+  assert.match(stored.storageRef, /\?versionId=v1$/);
+  assert.equal(requests[1].url.searchParams.get('versionId'), 'v1');
+
+  versions.set('v2', Buffer.from('later-overwrite'));
+  assert.deepEqual(await storage.read(stored.storageRef), expected);
+  assert.equal(requests.at(-1).url.searchParams.get('versionId'), 'v1');
+
+  assert.equal(await storage.remove(stored.storageRef), true);
+  assert.equal(requests.at(-1).url.searchParams.get('versionId'), 'v1');
+  assert.equal(versions.has('v1'), false);
+  assert.equal(versions.has('v2'), true);
+  assert.equal(requests.filter(request => request.url.searchParams.has('versions')).length, 0);
+});
+
+test('S3 rejects a read-after-write response for a different object version', async () => {
+  const storage = new S3EvidenceStorage({
+    endpoint: 'https://s3.eu-central-1.example.test',
+    bucket: 'contractor-private',
+    region: 'eu-central-1',
+    accessKeyId: 'test-access',
+    secretAccessKey: 'test-secret',
+    fetchFn: async (_url, options) => options.method === 'PUT'
+      ? new Response(null, { status: 200, headers: { 'x-amz-version-id': 'uploaded-v1' } })
+      : new Response('retained', { status: 200, headers: { 'x-amz-version-id': 'other-v2' } })
+  });
+  await assert.rejects(
+    () => storage.store({ originalName: 'mismatch.bin', mimeType: 'application/octet-stream', size: 8, buffer: Buffer.from('retained') }),
+    error => error instanceof EvidenceStorageError && error.code === 'evidence_retention_unverified'
+  );
 });
 
 test('S3 evidence references remain inside the configured private prefix', async () => {
@@ -403,7 +583,11 @@ test('S3 evidence references remain inside the configured private prefix', async
     's3://contractor-private/tenant-b/contractor-evidence/site-proof.jpg',
     's3://contractor-private/tenant-a/other/site-proof.jpg',
     's3://contractor-private/tenant-a/contractor-evidence/../private-payroll.csv',
-    's3://different-bucket/tenant-a/contractor-evidence/site-proof.jpg'
+    's3://different-bucket/tenant-a/contractor-evidence/site-proof.jpg',
+    `${validReference}?versionId=`,
+    `${validReference}?versionId=v1&versionId=v2`,
+    `${validReference}?versionId=v1&unrelated=true`,
+    `${validReference}#version=v1`
   ];
   for (const reference of invalidReferences) {
     await assert.rejects(

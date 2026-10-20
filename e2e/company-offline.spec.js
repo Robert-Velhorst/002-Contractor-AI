@@ -65,7 +65,7 @@ test('mobile offline folders retain separate company queues and refuse a wrong-c
   await page.goto(base);
   await page.getByLabel(/^(Language|Taal)$/).selectOption('nl-NL');
   const workPack = page.getByTestId('field-work-pack');
-  await workPack.getByRole('button', { name: 'Werkpakket Company A private work openen' }).click();
+  await workPack.getByRole('button', { name: 'Open werkpakket Company A private work' }).click();
   await workPack.getByText('Offline werkmap', { exact: true }).click();
   await workPack.getByLabel('Offline wachtzin (minimaal 10 tekens)').fill('offline-company-a-passphrase');
   await workPack.getByRole('button', { name: 'Werkpakket offline bewaren' }).click();

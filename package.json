@@ -28,19 +28,17 @@
     "test:container": "node scripts/verify-container-runtime.js",
     "test:windows-package": "node scripts/verify-windows-standalone.js",
     "start:standalone": "node standalone-launcher.js",
-    "start:tunnel": "node scripts/start-ngrok.js",
     "export:hai": "node scripts/export-hai-feed.js",
     "package:windows": "node scripts/build-windows-standalone.js",
     "verify:bundle": "node scripts/verify-bundle-budget.js"
   },
   "dependencies": {
     "@dagrejs/graphlib": "^4.0.5",
-    "@ngrok/ngrok": "1.7.0",
     "compression": "1.8.2",
     "cors": "^2.8.5",
     "express": "^5.3.0",
     "express-rate-limit": "8.7.1",
-    "lucide-react": "^0.510.0",
+    "lucide-react": "^1.55.0",
     "negotiator": "1.1.0",
     "oidc-provider": "9.12.2",
     "openid-client": "6.8.8",
@@ -50,32 +48,33 @@
     "saxes": "6.0.0",
     "sharp": "0.35.5",
     "yauzl": "3.4.0",
-    "z3-solver": "5.2.0"
+    "z3-solver": "5.3.1"
   },
   "devDependencies": {
-    "@axe-core/playwright": "4.12.1",
+    "@axe-core/playwright": "4.14.0",
     "@babel/parser": "^7.29.9",
     "@eslint/js": "^10.0.1",
-    "@playwright/test": "^1.61.1",
-    "@testing-library/react": "^16.3.0",
-    "@testing-library/user-event": "^14.6.1",
+    "@playwright/test": "^1.64.1",
+    "@testing-library/react": "^16.3.3",
+    "@testing-library/user-event": "^14.6.8",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
-    "@vitejs/plugin-react": "^4.4.1",
-    "eslint": "^10.8.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "esbuild": "^0.28.2",
+    "eslint": "^10.12.0",
     "eslint-plugin-react-hooks": "^7.1.1",
-    "eslint-plugin-react-refresh": "^0.5.3",
+    "eslint-plugin-react-refresh": "^0.5.7",
     "espree": "^11.2.0",
     "globals": "^17.13.0",
     "jsdom": "^26.1.0",
     "lightningcss": "^1.33.0",
-    "postcss": "^8.5.23",
+    "postcss": "^8.5.30",
     "terser": "^5.51.2",
-    "vite": "^6.3.5",
-    "vitest": "^4.1.10"
+    "vite": "^8.3.4",
+    "vitest": "^5.0.5"
   },
   "engines": {
-    "node": "26.x"
+    "node": "24.x || 26.x"
   },
   "keywords": [
     "contractor",

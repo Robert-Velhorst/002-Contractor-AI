@@ -46,6 +46,24 @@ test('offline shell includes entry assets and the offline route dependency closu
   assert.equal(assets.some(name => name.includes('office')), false);
 })
 
+test('offline shell follows the Vite HTML entry when main.jsx is emitted as a dependency chunk', async () => {
+  const chunk = ({ fileName, name, modules = {}, imports = [], dynamicImports = [], isEntry = false, facadeModuleId }) => ({
+    type: 'chunk', fileName, name, modules, imports, dynamicImports, isEntry, facadeModuleId,
+    viteMetadata: { importedCss: new Set(), importedAssets: new Set() },
+  })
+  const bundle = {
+    'assets/index.js': chunk({ fileName: 'assets/index.js', name: 'index', isEntry: true, facadeModuleId: '/project/index.html', imports: ['assets/main.js'] }),
+    'assets/main.js': chunk({ fileName: 'assets/main.js', name: 'main', modules: { '/project/main.jsx': {} }, dynamicImports: ['assets/OfflineField.js', 'assets/ClientPortal.js'] }),
+    'assets/OfflineField.js': chunk({ fileName: 'assets/OfflineField.js', modules: { '/project/OfflineField.jsx': {} } }),
+    'assets/ClientPortal.js': chunk({ fileName: 'assets/ClientPortal.js', modules: { '/project/ClientPortal.jsx': {} } }),
+  }
+  const assets = await loadAssets(bundle)
+  assert.ok(assets.includes('/assets/index.js'))
+  assert.ok(assets.includes('/assets/main.js'))
+  assert.ok(assets.includes('/assets/OfflineField.js'))
+  assert.ok(assets.includes('/assets/ClientPortal.js'))
+})
+
 test('offline shell generation fails closed if a route entry is absent', async () => {
   const { offlineShellAssets } = await import('../offline-shell-plugin.mjs');
   assert.throws(() => offlineShellAssets({}), /Could not locate the main, offline field and client portal entry chunks/);

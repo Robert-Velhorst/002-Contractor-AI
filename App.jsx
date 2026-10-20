@@ -12779,17 +12779,11 @@ function App() {
                     <div data-testid="runtime-exposure-readiness">
                       <span>Access</span>
                       <strong>
-                        {data.health.runtime?.exposure?.publicTunnel
-                          ? data.health.runtime.exposure.publicTunnelVerified
-                            ? ot('verified authenticated tunnel')
-                            : ot('tunnel attention')
-                          : data.health.runtime?.exposure?.publicTunnelVerificationPending
-                            ? ot('tunnel verification pending')
-                          : data.health.runtime?.exposure?.loopbackOnly
-                            ? 'this computer only'
-                            : data.health.runtime?.mode === 'hosted'
-                              ? 'hosted ingress'
-                              : 'local network'}
+                        {data.health.runtime?.exposure?.loopbackOnly
+                          ? 'this computer only'
+                          : data.health.runtime?.mode === 'hosted'
+                            ? 'hosted ingress'
+                            : 'local network'}
                       </strong>
                     </div>
                     <div data-testid="storage-readiness">

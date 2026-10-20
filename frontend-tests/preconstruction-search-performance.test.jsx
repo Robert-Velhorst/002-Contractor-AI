@@ -37,10 +37,10 @@ describe('preconstruction search work', () => {
     await act(async () => render(<PipelineWorkspace {...pipelineProps(rows)} />))
     expect(serialized).not.toHaveBeenCalled()
     search(opportunitySearch, 'needle-1')
-    expect(screen.getByRole('button', { name: 'Open Local 1', exact: true })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^Open Local 1\b/ })).toBeTruthy()
     for (let index = 0; index < 100; index++) search(opportunitySearch, index % 2 ? ' NEEDLE-1 ' : 'needle-2')
     expect(serialized).toHaveBeenCalledTimes(50)
-    expect(screen.queryByRole('button', { name: 'Open Local 61', exact: true })).toBeNull()
+    expect(screen.queryByRole('button', { name: /^Open Local 61\b/ })).toBeNull()
     expect(screen.getByPlaceholderText(opportunitySearch).value).toBe(' NEEDLE-1 ')
   })
 
@@ -56,13 +56,13 @@ describe('preconstruction search work', () => {
     expect(first.serialized).toHaveBeenCalledTimes(10)
     fireEvent.click(screen.getByRole('button', { name: 'all', exact: true }))
     expect(first.serialized).toHaveBeenCalledTimes(30)
-    fireEvent.click(screen.getByRole('button', { name: 'Open Local 11', exact: true }))
+    fireEvent.click(screen.getByRole('button', { name: /^Open Local 11\b/ }))
     expect(selected).toHaveBeenCalledWith(first.rows[11])
     const next = fixtures('opportunity')
     next.rows[1].internalEvidence.reference = 'new reference'
     view.rerender(<PipelineWorkspace {...props} opportunities={next.rows} />)
     expect(next.serialized).toHaveBeenCalledTimes(20)
-    expect(screen.queryByRole('button', { name: 'Open Local 1', exact: true })).toBeNull()
+    expect(screen.queryByRole('button', { name: /^Open Local 1\b/ })).toBeNull()
     expect(screen.getByPlaceholderText(opportunitySearch).value).toBe('needle-1')
   })
 
@@ -84,7 +84,7 @@ describe('preconstruction search work', () => {
     expect(serialized).not.toHaveBeenCalled()
     for (let index = 0; index < 100; index++) search(packageSearch, index % 2 ? ' NEEDLE-1 ' : 'needle-2')
     expect(serialized).toHaveBeenCalledTimes(50)
-    fireEvent.click(screen.getByRole('button', { name: 'Open bid package PK-1', exact: true }))
+    fireEvent.click(screen.getByRole('button', { name: /^Open bid package PK-1\b/ }))
     expect(selected).toHaveBeenCalledWith(rows[1])
   })
 

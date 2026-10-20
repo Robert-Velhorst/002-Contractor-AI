@@ -318,10 +318,9 @@ test('operational export and backup are local, auditable maintenance controls', 
   assert.equal(health.response.status, 200);
   assert.equal(health.body.services.ai, 'ledger_only');
   assert.equal(health.body.services.notifications, 'draft_only');
-  assert.equal(health.body.runtime.exposure.publicTunnel, false);
-  assert.equal(health.body.runtime.exposure.publicTunnelVerified, false);
-  assert.equal(health.body.runtime.exposure.publicTunnelVerificationPending, false);
-  assert.equal(health.body.runtime.exposure.tunnelVerifiedAt, null);
+  assert.equal(health.body.runtime.exposure.loopbackOnly, true);
+  assert.equal(health.body.runtime.exposure.publicOrigin, null);
+  assert.equal(health.body.runtime.hosting.publicHttps, false);
 
   const capabilities = await request(baseUrl, '/api/operations/capabilities');
   assert.equal(capabilities.response.status, 200);
@@ -802,8 +801,10 @@ test('hosted readiness uses the PostgreSQL ledger adapter when durable services 
     CORS_ORIGINS: 'https://contractor-ai.test',
     CONTRACTOR_AI_S3_ENDPOINT: storageEndpoint,
     CONTRACTOR_AI_S3_BUCKET: 'contractor-private',
+    CONTRACTOR_AI_S3_REGION: 'eu-central-1',
     CONTRACTOR_AI_S3_ACCESS_KEY_ID: 'test-access',
-    CONTRACTOR_AI_S3_SECRET_ACCESS_KEY: 'test-secret'
+    CONTRACTOR_AI_S3_SECRET_ACCESS_KEY: 'test-secret',
+    CONTRACTOR_AI_S3_SSE_C_KEY: Buffer.alloc(32, 0x42).toString('base64')
   });
   const server = app.listen(0);
   await new Promise(resolve => server.once('listening', resolve));
@@ -908,8 +909,10 @@ test('hosted readiness fails closed when object storage rejects the verification
     CORS_ORIGINS: 'https://contractor-ai.test',
     CONTRACTOR_AI_S3_ENDPOINT: storageEndpoint,
     CONTRACTOR_AI_S3_BUCKET: 'contractor-private',
+    CONTRACTOR_AI_S3_REGION: 'eu-central-1',
     CONTRACTOR_AI_S3_ACCESS_KEY_ID: 'test-access',
-    CONTRACTOR_AI_S3_SECRET_ACCESS_KEY: 'test-secret'
+    CONTRACTOR_AI_S3_SECRET_ACCESS_KEY: 'test-secret',
+    CONTRACTOR_AI_S3_SSE_C_KEY: Buffer.alloc(32, 0x42).toString('base64')
   });
   const server = app.listen(0);
   await new Promise(resolve => server.once('listening', resolve));

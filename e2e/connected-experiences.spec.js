@@ -214,7 +214,7 @@ test('encrypted field work packs reopen offline and synchronize one retained que
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
   await page.getByLabel(/^(Language|Taal)$/).selectOption('nl-NL');
   const pack = page.getByTestId('field-work-pack');
-  await pack.getByRole('button', { name: `Werkpakket ${job.title} openen` }).click();
+  await pack.getByRole('button', { name: `Open werkpakket ${job.title}` }).click();
   await expect(pack.getByRole('heading', { name: job.title })).toBeVisible();
   expect(documentAssets).toEqual([]);
   await pack.getByRole('tab', { name: 'Weten', exact: true }).click();

@@ -44,49 +44,99 @@ function encodeS3Query(query = {}) {
     .join('&');
 }
 
+function makeS3StorageRef(bucket, key, versionId = null) {
+  const reference = `s3://${bucket}/${key}`;
+  return versionId === null || versionId === undefined
+    ? reference
+    : `${reference}?versionId=${encodeURIComponent(String(versionId))}`;
+}
+
 function parseS3VersionPage(xml) {
   const parser = new SaxesParser({ xmlns: false });
   const stack = [];
   const versions = [];
+  const fields = new Map();
   let current = null;
-  let isTruncated = false;
-  const markers = { key: null, versionId: null };
-  const markerTags = new Map([
-    ['NextKeyMarker', 'key'],
-    ['NextVersionIdMarker', 'versionId']
-  ]);
+  let rootSeen = false;
+  const pageFields = new Set(['IsTruncated', 'NextKeyMarker', 'NextVersionIdMarker']);
+  const entryFields = new Map([['Key', 'key'], ['VersionId', 'versionId']]);
+  const invalid = () => new EvidenceStorageError('object_storage_version_listing_invalid',
+    'Object storage did not return a complete, unambiguous version listing; cleanup was not completed.');
 
   parser.on('opentag', node => {
     stack.push(node.name);
-    if ((node.name === 'Version' || node.name === 'DeleteMarker') && stack.at(-2) === 'ListVersionsResult') {
-      current = { key: '', versionId: '' };
+    if (stack.length === 1) {
+      if (node.name !== 'ListVersionsResult') throw invalid();
+      rootSeen = true;
+    }
+    if (node.name === 'Version' || node.name === 'DeleteMarker') {
+      if (stack.length !== 2 || current) throw invalid();
+      current = { key: null, versionId: null };
+    }
+    if (pageFields.has(node.name)) {
+      if (stack.length !== 2 || fields.has(node.name)) throw invalid();
+      fields.set(node.name, '');
+    }
+    if (entryFields.has(node.name)) {
+      const field = entryFields.get(node.name);
+      if (stack.length !== 3 || !current || current[field] !== null) throw invalid();
+      current[field] = '';
+    }
+    if (pageFields.has(stack.at(-2)) || entryFields.has(stack.at(-2))) {
+      throw invalid();
     }
   });
-  parser.on('text', value => {
+  const text = value => {
     const name = stack.at(-1);
-    if (current && (name === 'Key' || name === 'VersionId')) {
-      current[name === 'Key' ? 'key' : 'versionId'] += value;
-    } else if (name === 'IsTruncated') {
-      isTruncated = value.trim() === 'true';
-    } else if (markerTags.has(name)) {
-      markers[markerTags.get(name)] = (markers[markerTags.get(name)] || '') + value;
+    if (current && stack.length === 3 && entryFields.has(name)) {
+      current[entryFields.get(name)] += value;
+    } else if (stack.length === 2 && pageFields.has(name)) {
+      fields.set(name, fields.get(name) + value);
     }
-  });
+  };
+  parser.on('text', text);
+  parser.on('cdata', text);
+  parser.on('doctype', () => { throw invalid(); });
   parser.on('closetag', node => {
     const name = node.name;
-    if ((name === 'Version' || name === 'DeleteMarker') && current) {
+    if ((name === 'Version' || name === 'DeleteMarker') && stack.length === 2) {
+      if (!current?.key || !current.versionId) throw invalid();
       versions.push(current);
       current = null;
     }
     stack.pop();
   });
-  parser.write(Buffer.isBuffer(xml) ? xml.toString('utf8') : String(xml)).close();
+  try {
+    parser.write(Buffer.isBuffer(xml) ? xml.toString('utf8') : String(xml)).close();
+  } catch {
+    throw invalid();
+  }
+  const truncated = fields.get('IsTruncated')?.trim();
+  if (!rootSeen || !['true', 'false'].includes(truncated)) throw invalid();
   return {
     versions,
-    isTruncated,
-    nextKeyMarker: markers.key,
-    nextVersionIdMarker: markers.versionId
+    isTruncated: truncated === 'true',
+    nextKeyMarker: fields.get('NextKeyMarker') || null,
+    nextVersionIdMarker: fields.get('NextVersionIdMarker') || null
   };
+}
+
+function decodeSseCustomerKey(value) {
+  if (value === undefined || value === null || value === '') return null;
+  const encoded = String(value).trim();
+  const key = Buffer.from(encoded, 'base64');
+  if (key.length !== 32 || key.toString('base64') !== encoded) {
+    throw new EvidenceStorageError('invalid_s3_sse_c_key', 'S3 SSE-C requires a canonical base64-encoded 32-byte key.');
+  }
+  return key;
+}
+
+function isValidSseCustomerKey(value) {
+  try {
+    return Boolean(decodeSseCustomerKey(value));
+  } catch {
+    return false;
+  }
 }
 
 function hasUnsafeS3Characters(value) {
@@ -226,7 +276,7 @@ class LocalEvidenceStorage {
 
 class S3EvidenceStorage {
   constructor({ endpoint, bucket, region, accessKeyId, secretAccessKey, prefix = 'contractor-ai/evidence', timeoutMs = 5000,
-    maxReadBytes = 10 * 1024 * 1024, fetchFn = global.fetch }) {
+    maxReadBytes = 10 * 1024 * 1024, sseCustomerKey = null, fetchFn = global.fetch }) {
     if (!endpoint || !bucket || !region || !accessKeyId || !secretAccessKey) {
       throw new EvidenceStorageError('s3_configuration_required', 'S3 evidence storage requires endpoint, bucket, region, access key, and secret key.');
     }
@@ -241,6 +291,7 @@ class S3EvidenceStorage {
     this.region = region;
     this.accessKeyId = accessKeyId;
     this.secretAccessKey = secretAccessKey;
+    this.sseCustomerKey = decodeSseCustomerKey(sseCustomerKey);
     this.prefix = normalizeS3Prefix(prefix);
     this.timeoutMs = Math.max(500, Number(timeoutMs) || 5000);
     this.maxReadBytes = Number(maxReadBytes);
@@ -277,6 +328,11 @@ class S3EvidenceStorage {
       'x-amz-content-sha256': payloadHash,
       'x-amz-date': timestamp
     };
+    if (this.sseCustomerKey && !allowBucketRequest && ['GET', 'PUT'].includes(method)) {
+      headers['x-amz-server-side-encryption-customer-algorithm'] = 'AES256';
+      headers['x-amz-server-side-encryption-customer-key'] = this.sseCustomerKey.toString('base64');
+      headers['x-amz-server-side-encryption-customer-key-md5'] = crypto.createHash('md5').update(this.sseCustomerKey).digest('base64');
+    }
     if (contentType) headers['content-type'] = contentType;
     const signedHeaderNames = Object.keys(headers).sort();
     const canonicalHeaders = signedHeaderNames.map(name => `${name}:${headers[name]}\n`).join('');
@@ -292,9 +348,11 @@ class S3EvidenceStorage {
     url.search = canonicalQuery;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+    let response;
     try {
-      const response = await this.fetch(url, {
+      response = await this.fetch(url, {
         method,
+        redirect: 'manual',
         headers: {
           ...headers,
           authorization: `AWS4-HMAC-SHA256 Credential=${this.accessKeyId}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`
@@ -321,6 +379,10 @@ class S3EvidenceStorage {
       throw new EvidenceStorageError('object_storage_unavailable', 'Object storage could not be reached.');
     } finally {
       clearTimeout(timeout);
+      if (response?.body && !response.bodyUsed && !response.body.locked) {
+        controller.abort();
+        try { await response.body.cancel(); } catch { /* The abort may already have closed the provider body. */ }
+      }
     }
   }
 
@@ -331,15 +393,15 @@ class S3EvidenceStorage {
     }
     const storageName = safeStorageName(file.originalName, operationId);
     const key = operationId ? `${this.prefix}/uploads/${storageName}` : this.objectKey(storageName);
-    const storageRef = `s3://${this.bucket}/${key}`;
     const sha256 = crypto.createHash('sha256').update(payload).digest('hex');
     if (operationId) {
       const existing = await this.request('GET', key, null, null, { maxResponseBytes: payload.length, allowMissing: true });
       if (!existing.missing) {
         assertRetainedObject(existing.body, payload, sha256);
+        const versionId = existing.response.headers?.get?.('x-amz-version-id') || null;
         return {
           filename: storageName,
-          storageRef,
+          storageRef: makeS3StorageRef(this.bucket, key, versionId),
           size: payload.length,
           mimeType: file.mimeType,
           sha256,
@@ -347,15 +409,24 @@ class S3EvidenceStorage {
         };
       }
     }
-    await this.request('PUT', key, payload, file.mimeType || 'application/octet-stream');
-    const retained = await this.request('GET', key, null, null, { maxResponseBytes: payload.length, allowMissing: true });
+    const uploaded = await this.request('PUT', key, payload, file.mimeType || 'application/octet-stream');
+    const uploadedVersionId = uploaded.response.headers?.get?.('x-amz-version-id') || null;
+    const retained = await this.request('GET', key, null, null, {
+      maxResponseBytes: payload.length,
+      allowMissing: true,
+      query: uploadedVersionId === null ? null : { versionId: uploadedVersionId }
+    });
     if (retained.missing) {
       throw new EvidenceStorageError('evidence_retention_unverified', 'Object storage acknowledged the upload but the retained evidence is not yet readable.');
+    }
+    const retainedVersionId = retained.response.headers?.get?.('x-amz-version-id') || null;
+    if (uploadedVersionId !== null && retainedVersionId !== uploadedVersionId) {
+      throw new EvidenceStorageError('evidence_retention_unverified', 'Object storage did not return the exact version created by the upload.');
     }
     assertRetainedObject(retained.body, payload, sha256);
     return {
       filename: storageName,
-      storageRef,
+      storageRef: makeS3StorageRef(this.bucket, key, uploadedVersionId ?? retainedVersionId),
       size: payload.length,
       mimeType: file.mimeType,
       sha256,
@@ -365,16 +436,27 @@ class S3EvidenceStorage {
 
   async read(storageRef, options = {}) {
     const limits = normalizeReadOptions(options, this.maxReadBytes);
-    const result = await this.request('GET', this.keyFromStorageRef(storageRef), null, null, {
+    const key = this.keyFromStorageRef(storageRef);
+    const versionId = this.versionFromStorageRef(storageRef);
+    const result = await this.request('GET', key, null, null, {
       maxResponseBytes: limits.maxBytes,
       expectedSize: limits.expectedSize,
-      expectedSha256: limits.expectedSha256
+      expectedSha256: limits.expectedSha256,
+      query: versionId === null ? null : { versionId }
     });
+    if (versionId !== null && result.response.headers?.get?.('x-amz-version-id') !== versionId) {
+      throw new EvidenceStorageError('evidence_integrity_failed', 'Object storage did not return the retained evidence version from its ledger reference.', 409);
+    }
     return result.body;
   }
 
   async remove(storageRef) {
     const key = this.keyFromStorageRef(storageRef);
+    const versionId = this.versionFromStorageRef(storageRef);
+    if (versionId !== null) {
+      await this.request('DELETE', key, null, null, { query: { versionId } });
+      return true;
+    }
     const versions = [];
     let keyMarker = null;
     let versionIdMarker = null;
@@ -430,14 +512,29 @@ class S3EvidenceStorage {
   keyFromStorageRef(storageRef) {
     const expectedPrefix = `s3://${this.bucket}/${this.prefix}/`;
     const reference = String(storageRef || '');
-    if (!reference.startsWith(expectedPrefix)) {
+    const queryIndex = reference.indexOf('?');
+    const baseReference = queryIndex < 0 ? reference : reference.slice(0, queryIndex);
+    if (!baseReference.startsWith(expectedPrefix) || reference.includes('#')) {
       throw new EvidenceStorageError('invalid_storage_reference', 'Evidence storage reference does not match the configured private object prefix.', 404);
     }
-    const key = normalizeS3ObjectKey(reference.slice(`s3://${this.bucket}/`.length));
+    const key = normalizeS3ObjectKey(baseReference.slice(`s3://${this.bucket}/`.length));
     if (!key.startsWith(`${this.prefix}/`)) {
       throw new EvidenceStorageError('invalid_storage_reference', 'Evidence object key is outside the configured private prefix.', 404);
     }
     return key;
+  }
+
+  versionFromStorageRef(storageRef) {
+    const reference = String(storageRef || '');
+    const queryIndex = reference.indexOf('?');
+    if (queryIndex < 0) return null;
+    const query = reference.slice(queryIndex + 1);
+    const parameters = new URLSearchParams(query);
+    const versions = parameters.getAll('versionId');
+    if (parameters.size !== 1 || versions.length !== 1 || !versions[0]) {
+      throw new EvidenceStorageError('invalid_storage_reference', 'Evidence storage reference contains invalid object-version metadata.', 404);
+    }
+    return versions[0];
   }
 
   async verify() {
@@ -532,6 +629,12 @@ function assertRetainedObject(actual, expected, expectedSha256) {
   }
 }
 
+function s3SigningRegion(region, runtimeMode) {
+  // Keep existing local S3/AWS configurations compatible. Hosted mode requires
+  // an explicit region and must never silently select a provider's region.
+  return region || (runtimeMode === 'hosted' ? '' : 'eu-central-1');
+}
+
 function createEvidenceStorage({ mode, rootDir, projectRoot, s3 = {} }) {
   if (mode === 'local') return new LocalEvidenceStorage({ rootDir, projectRoot });
   if (mode === 's3') return new S3EvidenceStorage(s3);
@@ -543,6 +646,8 @@ module.exports = {
   LocalEvidenceStorage,
   S3EvidenceStorage,
   createEvidenceStorage,
+  isValidSseCustomerKey,
+  s3SigningRegion,
   normalizeS3ObjectKey,
   normalizeS3Prefix,
   parseS3Endpoint

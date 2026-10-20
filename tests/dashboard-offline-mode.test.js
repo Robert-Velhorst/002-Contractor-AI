@@ -185,7 +185,8 @@ test('finance dashboard completes standalone purchase orders through approved im
   assert.match(dashboardSource, /purchase-orders\/\$\{encodeURIComponent\(action\.purchaseOrderId\)\}\/issue-package/);
   assert.match(dashboardSource, /data-testid="finance-order-delivery-modal"/);
   assert.match(dashboardSource, /communications\/\$\{encodeURIComponent\(communicationId\)\}\/delivery-receipt/);
-  assert.match(dashboardSource, /Download purchase order UBL/);
+  assert.match(financeWorkspaceSource, /label: `\$\{t\('Order UBL'\)\} \$\{purchaseOrderPackage\.issueReference\}`/);
+  assert.match(financeWorkspaceSource, /purchaseOrderPackage\.ublDocumentId\)\}\/issue-package/);
   assert.match(dashboardSource, /This records an existing delivery receipt; it does not contact the supplier or initiate payment/);
 });
 
@@ -477,9 +478,8 @@ test('operations view lists, verifies, and exports portable checksummed local ba
   assert.match(dashboardSource, /operationCapabilities\?\.hostedMigration\?\.available/);
   assert.match(dashboardSource, />EU migration</);
   assert.match(dashboardSource, /data-testid="runtime-exposure-readiness"/);
-  assert.match(dashboardSource, /publicTunnelVerified/);
-  assert.match(dashboardSource, /verified authenticated tunnel/);
-  assert.match(dashboardSource, /tunnel verification pending/);
+  assert.doesNotMatch(dashboardSource, /publicTunnel|ngrok/i);
+  assert.match(dashboardSource, /hosted ingress/);
   assert.match(dashboardSource, /data-testid="hai-connector-readiness"/);
   assert.match(dashboardSource, /href=\{companyApiUrl\('\/api\/integrations\/hai\/feed\?limit=100'\)\}/);
   assert.match(dashboardSource, /Download HAI feed/);
