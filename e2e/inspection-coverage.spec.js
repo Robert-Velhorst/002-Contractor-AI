@@ -80,7 +80,7 @@ test('office defines and reviews complete inspection coverage and the assigned p
     const phone = await phoneContext.newPage(); phone.on('pageerror', error => errors.push(error.message));
     await phone.goto(base); await phone.locator('#operator-access-key').fill('browser-field-token-at-least-32-characters'); await phone.getByRole('button', { name: 'Sign in', exact: true }).click();
     await phone.getByLabel(/^(Language|Taal)$/).selectOption('nl-NL'); const field = phone.getByTestId('field-work-pack');
-    await field.getByRole('button', { name: `Werkpakket ${title} openen` }).click(); await field.getByRole('tab', { name: 'Weten', exact: true }).click();
+    await field.getByRole('button', { name: `Open werkpakket ${title}` }).click(); await field.getByRole('tab', { name: 'Weten', exact: true }).click();
     await expect(field.getByText('Controleplan afgedekt', { exact: true })).toBeVisible(); await expect(field.getByText(/Private/)).toHaveCount(0);
     await field.getByText('Offline werkmap', { exact: true }).click(); await field.getByLabel('Offline wachtzin (minimaal 10 tekens)').fill('coverage-offline-passphrase');
     await field.getByRole('button', { name: 'Werkpakket offline bewaren' }).click(); await expect(field.getByText('Versleuteld opgeslagen voor maximaal 7 dagen.')).toBeVisible();

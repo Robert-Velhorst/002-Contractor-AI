@@ -241,4 +241,23 @@ test('PostgreSQL ledger instances share quota locks and fence stale reservation 
   assert.equal(first.commitEvidenceStorageReservation('postgres-reservation', firstClaim.leaseId), false);
   assert.equal(second.commitEvidenceStorageReservation('postgres-reservation', nextClaim.leaseId), true);
   assert.deepEqual(second.evidenceStorageReservationsUsage(), { bytes: 6, reservations: 1 });
+
+  first.reserveEvidenceStorage(reservation({ reservationId: 'postgres-orphan', requestHash: 'orphan-request',
+    ownerLeaseId: 'orphan-owner', bytes: 2, maxBytes: 20 }));
+  first.setEvidenceStorageReservationObject('postgres-orphan', 'orphan-owner',
+    's3://bucket/evidence/orphan.jpg', 'b'.repeat(64));
+  first.db.prepare('UPDATE evidence_storage_reservations SET lease_until = ? WHERE reservation_id = ?')
+    .run(new Date(Date.now() - 1_000).toISOString(), 'postgres-orphan');
+
+  const [cleanup] = second.claimEvidenceStorageCleanup({ reservationId: 'postgres-orphan', limit: 1 });
+  assert.equal(cleanup.reservation_id, 'postgres-orphan');
+  assert.equal(second.finishEvidenceStorageCleanup('postgres-orphan', cleanup.cleanupLeaseId, {
+    removed: false, errorCode: 'storage_temporarily_unavailable'
+  }), true);
+  const [recovered] = first.claimEvidenceStorageCleanup({ limit: 10 });
+  assert.equal(recovered.reservation_id, 'postgres-orphan');
+  assert.equal(first.finishEvidenceStorageCleanup('postgres-orphan', recovered.cleanupLeaseId, { removed: true }), true);
+  assert.deepEqual(second.evidenceStorageReservationsUsage(), { bytes: 6, reservations: 1 });
+  assert.equal(second.db.prepare('SELECT status FROM evidence_storage_reservations WHERE reservation_id = ?')
+    .get('postgres-reservation').status, 'committed');
 });

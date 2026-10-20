@@ -9032,7 +9032,7 @@ app.post('/api/ledger/upload', async (req, res) => {
     }
     if (storageReservation && !ledgerCommitted) {
       await cleanupEvidenceStorageReservation(storageReservation.reservationId, storageReservationOwner,
-        retainedUpload?.storageRef || storageCandidateRef, error.code || 'evidence_upload_failed');
+        storageCandidateRef || retainedUpload?.storageRef, error.code || 'evidence_upload_failed');
     }
     if (error instanceof UploadRequestError) {
       return sendError(req, res, error.statusCode, error.code, error.message, error.details);

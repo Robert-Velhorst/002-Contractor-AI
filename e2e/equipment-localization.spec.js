@@ -7,7 +7,7 @@ async function postJson(request, route, data) {
   return response.json();
 }
 
-test('Dutch equipment lifecycle preserves evidence through custody and English round trip', async ({ page, request }) => {
+test('Dutch equipment lifecycle preserves evidence through custody and English round trip', async ({ page, request }, testInfo) => {
   test.setTimeout(120_000);
   page.setDefaultTimeout(10_000);
   const suffix = Date.now();
@@ -51,7 +51,18 @@ test('Dutch equipment lifecycle preserves evidence through custody and English r
   expect(tool).toBeTruthy();
   expect(tool.category).toBe('measurement');
 
-  await equipmentRow.getByRole('button', { name: `Inspectie voor ${equipmentName} vastleggen` }).click();
+  await expect(equipmentRow.getByRole('button', { name: `Inspectie vastleggen voor ${equipmentName}` })).toHaveText('Inspectie vastleggen');
+  await expect(equipmentRow.getByRole('button', { name: `Onderhoud vastleggen voor ${equipmentName}` })).toHaveText('Onderhoud vastleggen');
+  expect((await new AxeBuilder({ page }).include('[data-testid="resources-workspace"]').analyze()).violations).toEqual([]);
+  await equipmentRow.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: testInfo.outputPath('equipment-nl-desktop.png') });
+  await page.locator('header').getByLabel('Taal', { exact: true }).selectOption('en-GB');
+  await expect(equipmentRow.getByRole('button', { name: `Record inspection for ${equipmentName}` })).toHaveText('Record inspection');
+  await expect(equipmentRow.getByRole('button', { name: `Record maintenance for ${equipmentName}` })).toHaveText('Record maintenance');
+  expect((await new AxeBuilder({ page }).include('[data-testid="resources-workspace"]').analyze()).violations).toEqual([]);
+  await page.locator('header').getByLabel('Language', { exact: true }).selectOption('nl-NL');
+
+  await equipmentRow.getByRole('button', { name: `Inspectie vastleggen voor ${equipmentName}` }).click();
   let inspection = page.getByTestId('equipment-inspection-modal');
   await expect(inspection.getByRole('heading', { name: 'Materieelinspectie vastleggen' })).toBeVisible();
   await inspection.getByLabel('Inspectieresultaat').selectOption('failed');
@@ -65,7 +76,7 @@ test('Dutch equipment lifecycle preserves evidence through custody and English r
   await directory.getByRole('tab', { name: 'Aandacht', exact: true }).click();
   equipmentRow = directory.locator('.equipment-row').filter({ hasText: equipmentName });
   await expect(equipmentRow).toContainText('Inspectie afgekeurd');
-  await equipmentRow.getByRole('button', { name: `Onderhoud voor ${equipmentName} vastleggen` }).click();
+  await equipmentRow.getByRole('button', { name: `Onderhoud vastleggen voor ${equipmentName}` }).click();
   const maintenance = page.getByTestId('equipment-maintenance-modal');
   await expect(maintenance.getByRole('heading', { name: 'Materieelonderhoud vastleggen' })).toBeVisible();
   await maintenance.getByLabel('Onderhoudstype').selectOption('corrective');
@@ -77,7 +88,7 @@ test('Dutch equipment lifecycle preserves evidence through custody and English r
   await expect(page.getByText(new RegExp(`Het onderhoud van ${equipmentName} is als voltooid vastgelegd`, 'i'))).toBeVisible();
 
   equipmentRow = directory.locator('.equipment-row').filter({ hasText: equipmentName });
-  await equipmentRow.getByRole('button', { name: `Inspectie voor ${equipmentName} vastleggen` }).click();
+  await equipmentRow.getByRole('button', { name: `Inspectie vastleggen voor ${equipmentName}` }).click();
   inspection = page.getByTestId('equipment-inspection-modal');
   await expect(inspection).toContainText('Voltooid onderhoud is vastgelegd');
   await inspection.getByLabel('Inspecteur of interne referentie').fill(inspector);
@@ -191,6 +202,7 @@ test('Dutch equipment lifecycle preserves evidence through custody and English r
   expect(accessibility.violations).toEqual([]);
 
   await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.locator('.side-nav')).not.toBeVisible();
   const geometry = await resources.evaluate(element => ({
     pageWidth: document.documentElement.scrollWidth,
     viewportWidth: document.documentElement.clientWidth,
@@ -199,5 +211,7 @@ test('Dutch equipment lifecycle preserves evidence through custody and English r
   }));
   expect(geometry.pageWidth).toBeLessThanOrEqual(geometry.viewportWidth);
   expect(geometry.scrollWidth).toBeLessThanOrEqual(geometry.clientWidth + 1);
+  await equipmentRow.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: testInfo.outputPath('equipment-en-mobile.png') });
   expect(consoleErrors).toEqual([]);
 });

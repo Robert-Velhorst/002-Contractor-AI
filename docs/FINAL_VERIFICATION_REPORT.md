@@ -4,6 +4,79 @@ Current acceptance must use the exact candidate commit and its GitHub workflow
 results. The checkpoints below are historical snapshots; they do not certify a
 later PR head or a deployed environment.
 
+## Local Storage and Workflow Checkpoint - 2026-10-20
+
+This working-tree audit starts from PR #129 at
+`fa768cb83b2d0c03d2d9363b7c081e5ba70f3751`. It is not a production release
+or a claim that every product-roadmap item is complete.
+
+Implemented corrections:
+
+- Pin new S3 evidence references to returned object versions; verify the exact
+  version on upload and download, and target only that version when removing a
+  pinned reference. Historical unversioned references remain compatible.
+- Refuse signed-storage redirects, close unread response bodies, and reject
+  malformed or ambiguous version listings before orphan deletion.
+- Resolve the real PostgreSQL cleanup-claim parameter typing failure and use the
+  original reservation reference when cleaning an upload rejected by the ledger.
+  The API regression verifies that previously committed evidence survives.
+- Keep visible and accessible workflow labels consistent in Dutch and English.
+  Compound opportunity, tender and work-pack buttons expose their visible
+  metadata; order downloads retain the PO reference; equipment and field
+  evidence actions preserve their visible action text.
+
+Completed local gates on the corrected product sources:
+
+- Lint, production build and all 531 frontend tests across 86 files passed.
+- The complete Node rerun passed: 1,141 functional tests and 34 serial stress
+  tests, zero failures. Without the PostgreSQL URL, those groups explicitly
+  skipped 71 and one PostgreSQL-dependent tests respectively; the database
+  evidence below is separate, not an assertion that these skips ran here.
+- The current npm dependency audit reported zero known vulnerabilities.
+- Release-contract verification passed: 114 canonical paths, 11 retired paths,
+  21 hosted environment keys and 825 source files.
+- Bundle budgets passed: initial gzip 119,711 bytes and complete-product gzip
+  710,162 bytes; this is a transfer-size check, not a universal latency claim.
+- Node 24.22.0 container acceptance passed with a non-root, read-only,
+  loopback-bound runtime, restart persistence, session authentication, graceful
+  shutdown, migration 097, isolated identity persistence/OIDC and backup/restore,
+  signed handover fencing, and packaged resource planning.
+- A separate TLS PostgreSQL 16.15 contract run passed 128 tests without skips
+  before upstream dependency synchronization. After synchronization, 71 focused
+  backend/storage/release tests passed, including the real PostgreSQL cleanup
+  regression. Neither run establishes managed-provider acceptance.
+- Targeted procurement, search, finance, field work-pack and work-permit browser
+  tests passed after the accessibility corrections. Desktop/mobile screenshots
+  were inspected. The complete browser rerun then passed all 181 scenarios in
+  all 46 planned batches, with zero failed batches and complete per-batch
+  discovery/execution coverage.
+
+The first complete Node run found one obsolete source assertion for an old
+purchase-order download label (1,140 passed, one failed, 71 PostgreSQL-dependent
+skips). Its replacement checks the actual translated UBL label, retained PO
+reference and document route; the 33-test source-contract file then passed.
+The complete Node rerun subsequently passed as recorded above; its earlier
+failure is retained here rather than represented as a passing first attempt.
+
+The immutable browser candidate is
+`0735c541fffd542078a7d04ddb562fe865dc5df8be66dfd4eb0d9b892b959245`.
+The runner checks its source/build hashes before and after each batch. An
+earlier run was correctly stopped when packaged hosting documentation changed;
+that incomplete run is not acceptance evidence.
+
+Hosting remains a separate gate. The user-selected existing EU host and its
+authenticated console were revalidated, and read-only SSH administration worked
+against a separately recorded, matching host-key pin. The Contractor.AI deploy
+identity is still rejected, and the application/deployment wrapper is not
+installed. DNS points to the selected host, but the application HTTPS readiness
+request still fails with `ERR_SSL_TLSV1_ALERT_INTERNAL_ERROR` on a fresh check.
+The selected Hetzner project's object-storage page reports no existing buckets.
+No bucket was purchased, credentials changed, or existing workload modified.
+Do not deploy an unverified pre-release image, replace shared ingress, reuse
+another application's database credentials, or infer production acceptance from
+these local results. Provider configuration, independent encrypted recovery,
+capacity/monitoring and office/field acceptance remain unverified.
+
 ## Historical Production-Readiness Checkpoint - 2026-10-18 02:59 UTC
 
 At this historical checkpoint, the default branch was `main` at

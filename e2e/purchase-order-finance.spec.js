@@ -93,8 +93,8 @@ test('finance issues a standalone purchase order only after approval and provide
 
   row = finance.locator('.finance-item').filter({ hasText: jobTitle });
   await expect(row).toContainText(/PO-\d{4}-\d{6} prepared/, { timeout: 15_000 });
-  await expect(row.getByRole('link', { name: /Download purchase order PO-/ })).toBeVisible();
-  await expect(row.getByRole('link', { name: /Download purchase order UBL PO-/ })).toBeVisible();
+  await expect(row.getByRole('link', { name: /Download Order PO-/ })).toBeVisible();
+  await expect(row.getByRole('link', { name: /Download Order UBL PO-/ })).toBeVisible();
   await row.getByRole('button', { name: 'Review approval' }).click();
 
   const transmissionApproval = page.locator('.approval-item').filter({ hasText: 'Approve email update before sending' });

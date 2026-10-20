@@ -18,7 +18,18 @@ Every retained audit event advances one SHA-256 chain head in the same SQLite or
 
 The evidence storage adapter uses the standard S3 API with `CONTRACTOR_AI_S3_ENDPOINT`, `CONTRACTOR_AI_S3_BUCKET`, `CONTRACTOR_AI_S3_REGION`, `CONTRACTOR_AI_S3_ACCESS_KEY_ID`, and `CONTRACTOR_AI_S3_SECRET_ACCESS_KEY`. Hosted endpoints must use HTTPS and cannot contain embedded credentials, query parameters, or fragments. Configure a private bucket, EU residency, encryption at rest, and the provider's DPA before use. Every retained reference is constrained to `CONTRACTOR_AI_S3_PREFIX`, preventing a ledger record from reading a sibling tenant prefix. Evidence is served through the authenticated ledger route, never from a public object URL.
 
-The runtime role needs object read/write/delete access within the configured prefix, bucket-level `s3:ListBucketVersions` scoped to that prefix, and `s3:DeleteObjectVersion` for that prefix. Startup verification exercises version listing and cleanup as well as bounded PUT/GET. Orphan cleanup lists all versions and delete markers for the exact unreferenced object key before deleting them; incomplete pagination, more than 1,000 versions, retention locks, or denied permissions leave the reservation pending for operator recovery. The application does not purge versions of retained ledger evidence.
+When the object store returns a version identifier, new retained references include
+`?versionId=...`. Read-after-write checks fetch that exact version and verify its
+identifier and checksum; later downloads cannot silently switch to the latest
+object at the same key. Preserve these complete references in exports and recovery.
+Existing unversioned references remain readable for compatibility; this does not
+retroactively pin historical evidence. Never edit a retained reference manually.
+
+The runtime role needs object read/write/delete access within the configured prefix, bucket-level `s3:ListBucketVersions` scoped to that prefix, and `s3:DeleteObjectVersion` for that prefix. Startup verification exercises version listing and cleanup as well as bounded PUT/GET. Removal of a version-pinned reference targets only that version. Orphan cleanup for an unversioned reservation lists all versions and delete markers for the exact unreferenced object key before deleting them; malformed or ambiguous listings, incomplete pagination, more than 1,000 versions, retention locks, or denied permissions leave the reservation pending for operator recovery. The application does not purge versions of retained ledger evidence.
+
+Signed storage requests reject redirects rather than forwarding credentials or
+SSE-C headers to a new destination. Configure the canonical endpoint directly;
+resolve endpoint or provider errors before retrying a pending cleanup.
 
 Hosted startup performs bounded PUT/GET and exact-version cleanup verification against a unique readiness marker under `CONTRACTOR_AI_S3_PREFIX`. The service does not listen when the bucket is unreachable, credentials are rejected, the marker cannot be read back, or the marker versions cannot be removed. `CONTRACTOR_AI_STORAGE_TIMEOUT_MS` bounds each object-store request and `CONTRACTOR_AI_STORAGE_VERIFY_TTL_MS` controls the verification cache. Grant the runtime only the object and version permissions it needs for the configured prefix. Docker probes the minimal public `/api/health/ready` endpoint; detailed runtime and provider state remains behind authenticated `/api/readiness` and `/api/operations/capabilities` routes.
 

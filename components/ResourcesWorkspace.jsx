@@ -878,23 +878,23 @@ function EquipmentDirectory({
               {canCoordinate && tool.status !== 'retired' && !tool.retirementApprovalId ? (
                 <button
                   className="secondary-button"
-                  aria-label={t('Record maintenance for {name}', { name: tool.name })}
+                  aria-label={t('{action} for {name}', { action: t('Record maintenance'), name: tool.name })}
                   disabled={submitting}
                   onClick={() => onMaintain(tool)}
                 >
                   <Wrench size={15} />
-                  {t('Maintain')}
+                  {t('Record maintenance')}
                 </button>
               ) : null}
               {canCoordinate && tool.status !== 'retired' && !tool.retirementApprovalId ? (
                 <button
                   className="secondary-button"
-                  aria-label={t('Record inspection for {name}', { name: tool.name })}
+                  aria-label={t('{action} for {name}', { action: t('Record inspection'), name: tool.name })}
                   disabled={submitting}
                   onClick={() => onInspect(tool)}
                 >
                   <ClipboardCheck size={15} />
-                  {t('Inspect')}
+                  {t('Record inspection')}
                 </button>
               ) : null}
               {canCoordinate && tool.status !== 'retired' ? (

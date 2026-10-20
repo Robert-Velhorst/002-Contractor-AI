@@ -62,7 +62,7 @@ test('named worker reads a mobile work pack, reports a blocker and sees revised 
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
   await page.getByLabel(/^(Language|Taal)$/).selectOption('nl-NL');
   const pack = page.getByTestId('field-work-pack');
-  await pack.getByRole('button', { name: `Werkpakket ${title} openen` }).click();
+  await pack.getByRole('button', { name: `Open werkpakket ${title}` }).click();
   await expect(pack.getByRole('heading', { name: title })).toBeVisible();
   const readiness = pack.getByRole('region', { name: 'Gereedheid werkplanning' });
   await expect(readiness).toContainText(/blokkades|waarschuwingen|missing|ready/i);

@@ -81,7 +81,7 @@ manual evidence is recorded in `FINAL_VERIFICATION_REPORT.md`.
 | 064 | Threat model and security design review | Implemented | `SECURITY.md` trust boundaries, controls and incident procedure |
 | 065 | Privacy impact assessment | Partial | data classes/purpose/minimization/retention risks documented; counsel sign-off external |
 | 066 | Supply chain and dependency review | Implemented | lockfile audit at zero known advisories and CI dependency gate |
-| 067 | License and third-party service review | Partial | MIT package license and provider boundaries; service terms need operator legal review |
+| 067 | License and third-party service review | Partial | AGPL-3.0-only package license and provider boundaries; service terms need operator legal review |
 | 068 | CI/CD quality gates | Implemented | lint, audit, release, test, build, axe accessibility, browser and container workflows |
 | 069 | Release process, canary, and rollback | Blocked | local gate/runbook implemented; real EU canary/rollback needs selected infrastructure |
 | 070 | Operator runbook | Implemented | `OPERATOR_RUNBOOK.md` and `EU_HOSTING.md` |

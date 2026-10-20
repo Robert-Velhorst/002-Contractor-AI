@@ -185,7 +185,8 @@ test('finance dashboard completes standalone purchase orders through approved im
   assert.match(dashboardSource, /purchase-orders\/\$\{encodeURIComponent\(action\.purchaseOrderId\)\}\/issue-package/);
   assert.match(dashboardSource, /data-testid="finance-order-delivery-modal"/);
   assert.match(dashboardSource, /communications\/\$\{encodeURIComponent\(communicationId\)\}\/delivery-receipt/);
-  assert.match(dashboardSource, /Download purchase order UBL/);
+  assert.match(financeWorkspaceSource, /label: `\$\{t\('Order UBL'\)\} \$\{purchaseOrderPackage\.issueReference\}`/);
+  assert.match(financeWorkspaceSource, /purchaseOrderPackage\.ublDocumentId\)\}\/issue-package/);
   assert.match(dashboardSource, /This records an existing delivery receipt; it does not contact the supplier or initiate payment/);
 });
 

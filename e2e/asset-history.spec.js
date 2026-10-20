@@ -77,7 +77,7 @@ test('office records and shares installation history with an offline worker and 
     await phone.goto(base); await phone.locator('#operator-access-key').fill('browser-field-token-at-least-32-characters');
     await phone.getByRole('button', { name: 'Sign in', exact: true }).click(); await phone.getByLabel(/^(Language|Taal)$/).selectOption('nl-NL');
     const field = phone.getByTestId('field-work-pack');
-    await field.getByRole('button', { name: `Werkpakket ${title} openen` }).click(); await field.getByRole('tab', { name: 'Weten', exact: true }).click();
+    await field.getByRole('button', { name: `Open werkpakket ${title}` }).click(); await field.getByRole('tab', { name: 'Weten', exact: true }).click();
     await expect(field.getByText('Filter en aansluiting gecontroleerd.', { exact: true })).toBeVisible();
     await expect(field.getByText('Private office execution discussion')).toHaveCount(0);
     await field.getByText('Offline werkmap', { exact: true }).click(); await field.getByLabel('Offline wachtzin (minimaal 10 tekens)').fill('asset-history-offline-passphrase');
