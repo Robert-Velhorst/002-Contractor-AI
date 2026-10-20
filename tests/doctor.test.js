@@ -3,22 +3,22 @@ const assert = require('node:assert/strict');
 const { runDoctor } = require('../scripts/doctor');
 const { assessNodeCompatibility, nodeCompatibilityIssue } = require('../scripts/node-compatibility');
 
-test('checks the running app against the declared Node 24 LTS major', () => {
+test('checks the running app against both declared supported Node majors', () => {
   assert.deepEqual(assessNodeCompatibility('v24.22.0'), {
-    status: 'supported', supported: true, actual: 'v24.22.0', required: '24.x'
+    status: 'supported', supported: true, actual: 'v24.22.0', required: '24.x || 26.x'
   });
   assert.deepEqual(assessNodeCompatibility('v26.12.0'), {
-    status: 'unsupported', supported: false, actual: 'v26.12.0', required: '24.x'
+    status: 'supported', supported: true, actual: 'v26.12.0', required: '24.x || 26.x'
   });
   assert.deepEqual(assessNodeCompatibility('v22.23.3'), {
-    status: 'unsupported', supported: false, actual: 'v22.23.3', required: '24.x'
+    status: 'unsupported', supported: false, actual: 'v22.23.3', required: '24.x || 26.x'
   });
   assert.equal(assessNodeCompatibility('unknown').status, 'unknown');
   assert.equal(assessNodeCompatibility('v24.22.0', '24.x || latest').status, 'unknown');
 });
 
 test('enforces the supported Node version in production and hosted modes only', () => {
-  const unsupported = assessNodeCompatibility('v26.12.0');
+  const unsupported = assessNodeCompatibility('v25.2.1');
   assert.equal(nodeCompatibilityIssue(unsupported, { isProduction: false, runtimeMode: 'local' }), null);
   assert.equal(nodeCompatibilityIssue(unsupported, { isProduction: true, runtimeMode: 'local' })?.code, 'unsupported_node_version');
   assert.equal(nodeCompatibilityIssue(unsupported, { isProduction: false, runtimeMode: 'hosted' })?.code, 'unsupported_node_version');
@@ -36,7 +36,7 @@ test('does not report readiness when the application runs on an unsupported Node
       status: 200,
       json: async () => ({
         format: 'contractor-ai-support-bundle/v1',
-        application: { node: 'v26.12.0', runtimeMode: 'hosted' },
+        application: { node: 'v25.2.1', runtimeMode: 'hosted' },
         database: { mode: 'postgres' },
         readiness: { runtimeReady: true }
       })

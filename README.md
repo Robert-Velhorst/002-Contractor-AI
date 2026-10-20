@@ -774,7 +774,7 @@ runtime, mock API, public evidence directory, or alternate dashboard.
 
 ### Run locally
 
-Requirements: Node.js 24.x and npm on Windows, macOS, or Linux. The portable Windows package is built with Node.js 24.22.0.
+Requirements: Node.js 24.x or 26.x and npm on Windows, macOS, or Linux. The portable Windows package is built with Node.js 24.22.0.
 
 ```powershell
 git clone https://github.com/Robert-Velhorst/002-Contractor-AI.git
@@ -1323,7 +1323,7 @@ aliases and keeping namespace/non-icon imports on the package's public API.
 It does not relax download budgets or remove any product workflows.
 
 GitHub Actions runs on pushes to `main`, pull requests, and manual dispatch.
-The Linux job performs Node.js 26.12.0 installation, TLS PostgreSQL 18.6 setup, release
+The Linux job performs Node.js 24.22.0 installation, TLS PostgreSQL 18.6 setup, release
 and HAI contracts, lint, build, bundle budgets, frontend and Node tests,
 production-scale benchmark, container verification, and Playwright. The Windows
 job builds and smoke-tests `ContractorAI-windows-x64.zip`.
