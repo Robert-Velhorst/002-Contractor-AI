@@ -55,27 +55,34 @@ export default defineConfig(({ command, mode }) => {
     minify: 'terser',
     terserOptions: { ecma: 2022, compress: { passes: 10 } },
     cssMinify: 'lightningcss',
-    rollupOptions: {
+    rolldownOptions: {
       output: {
-        onlyExplicitManualChunks: true,
-        manualChunks(id) {
-          // Both delivery roles reuse the same small list and authorized viewer.
-          if (/[\\/]components[\\/](ConversationPhoto|ClientDeliveryPhotos)\.jsx$/.test(id)
-            || /[\\/]conversation-photo-(reader|visibility)\.mjs$/.test(id)
-            || /[\\/]conversation-request\.mjs$/.test(id)) return 'ConversationPhoto'
-          // Cache the public React functions once; generated JSX imports bindings
-          // instead of repeating CommonJS property lookups at every element.
-          // CommonJS interop belongs with React, not the changing entry. Putting
-          // it in the entry creates a cycle and invalidates cached runtime bytes.
-          if (id === JSX_BRIDGE_INTERNAL_ID || id === '\0commonjsHelpers.js') return 'react'
-          // The dossier renders these together; keep their compression dictionary
-          // shared while the separately used field-assurance queue stays independent.
-          if (/[\\/]components[\\/]/.test(id) && DOSSIER_CONTROLS.has(path.basename(id, '.jsx'))) return 'job-controls'
-          if (!id.includes('node_modules')) return undefined
-          if (id.includes('lucide-react')) return 'icons'
-          if (id.includes('@dagrejs/graphlib')) return 'graph'
-          if (/[\\/]node_modules[\\/](react|react-dom|scheduler)[\\/]/.test(id)) return 'react'
-          return 'vendor'
+        codeSplitting: {
+          groups: [{
+            // Match the former onlyExplicitManualChunks behavior: keep the
+            // named modules in their chunk without recursively pulling in all
+            // of their dependencies.
+            includeDependenciesRecursively: false,
+            name(id) {
+              // Both delivery roles reuse the same small list and authorized viewer.
+              if (/[\\/]components[\\/](ConversationPhoto|ClientDeliveryPhotos)\.jsx$/.test(id)
+                || /[\\/]conversation-photo-(reader|visibility)\.mjs$/.test(id)
+                || /[\\/]conversation-request\.mjs$/.test(id)) return 'ConversationPhoto'
+              // Cache the public React functions once; generated JSX imports bindings
+              // instead of repeating CommonJS property lookups at every element.
+              // CommonJS interop belongs with React, not the changing entry. Putting
+              // it in the entry creates a cycle and invalidates cached runtime bytes.
+              if (id === JSX_BRIDGE_INTERNAL_ID || id === '\0commonjsHelpers.js') return 'react'
+              // The dossier renders these together; keep their compression dictionary
+              // shared while the separately used field-assurance queue stays independent.
+              if (/[\\/]components[\\/]/.test(id) && DOSSIER_CONTROLS.has(path.basename(id, '.jsx'))) return 'job-controls'
+              if (!id.includes('node_modules')) return null
+              if (id.includes('lucide-react')) return 'icons'
+              if (id.includes('@dagrejs/graphlib')) return 'graph'
+              if (/[\\/]node_modules[\\/](react|react-dom|scheduler)[\\/]/.test(id)) return 'react'
+              return 'vendor'
+            },
+          }],
         },
       },
     },

@@ -82,14 +82,17 @@ test('development keeps its automatic runtime and production caches the bridge i
   const production = config({ command: 'build', mode: 'production' });
   assert.equal(development.esbuild, undefined);
   assert.equal(production.esbuild, undefined);
-  assert.equal(production.build.rollupOptions.output.manualChunks(JSX_BRIDGE_INTERNAL_ID), 'react');
-  assert.equal(production.build.rollupOptions.output.manualChunks('\0commonjsHelpers.js'), 'react');
-  assert.equal(production.build.rollupOptions.output.manualChunks('\0unrelated-virtual-module'), undefined);
+  const partition = production.build.rolldownOptions.output.codeSplitting.groups[0].name;
+  assert.equal(partition(JSX_BRIDGE_INTERNAL_ID), 'react');
+  assert.equal(partition('\0commonjsHelpers.js'), 'react');
+  assert.equal(partition('\0unrelated-virtual-module'), null);
   const reactPlugin = build => build.plugins.flat(Infinity).find(plugin => plugin.name === 'vite:react-babel');
-  assert.equal(reactPlugin(development).config().esbuild.jsx, 'automatic');
-  assert.equal(reactPlugin(development).config().esbuild.jsxImportSource, undefined);
-  assert.equal(reactPlugin(production).config().esbuild.jsx, 'automatic');
-  assert.equal(reactPlugin(production).config().esbuild.jsxImportSource, JSX_BRIDGE_IMPORT_SOURCE);
+  const developmentReact = reactPlugin(development).config({}, { command: 'serve' }).oxc.jsx;
+  const productionReact = reactPlugin(production).config({}, { command: 'build' }).oxc.jsx;
+  assert.equal(developmentReact.runtime, 'automatic');
+  assert.equal(developmentReact.importSource, undefined);
+  assert.equal(productionReact.runtime, 'automatic');
+  assert.equal(productionReact.importSource, JSX_BRIDGE_IMPORT_SOURCE);
 });
 
 test('a screen-only change preserves the built React cache identity without an entry import cycle', async () => {
@@ -119,8 +122,8 @@ test('a screen-only change preserves the built React cache identity without an e
         ...production.plugins.flat(Infinity).filter(plugin =>
           ['contractor-jsx-runtime-bridge', 'contractor-preload-chunk-minifier', 'vite:react-babel', 'vite:react-refresh'].includes(plugin.name))
       ],
-      build: { ...production.build, write: false, rollupOptions: {
-        ...production.build.rollupOptions, input: entryId,
+      build: { ...production.build, write: false, rolldownOptions: {
+        ...production.build.rolldownOptions, input: entryId,
         onwarn(warning) { warnings.push(warning); }
       } }
     });
@@ -128,7 +131,8 @@ test('a screen-only change preserves the built React cache identity without an e
     const react = chunks.find(item => item.name === 'react');
     const entry = chunks.find(item => item.isEntry);
     assert.ok(react && entry);
-    assert.ok(Object.hasOwn(react.modules, '\0commonjsHelpers.js'));
+    // Rolldown may inline virtual modules into a chunk, so assert the stable
+    // cache and import contracts instead of its internal module-map key.
     assert.equal(react.imports.includes(entry.fileName), false, 'cached runtime must not import the changing entry');
     assert.ok(entry.imports.includes(react.fileName), 'entry uses the same real React runtime');
     return { react, screen: chunks.find(item => item.name === 'cache-contract-screen') };
