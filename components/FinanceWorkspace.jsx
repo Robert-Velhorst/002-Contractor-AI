@@ -549,7 +549,7 @@ export default function FinanceWorkspace({
                 {purchaseOrderPackage?.htmlDocumentId ? (
                   <a
                     className="secondary-button"
-                    aria-label={t('Download purchase order {reference} for {job}', { reference: purchaseOrderPackage.issueReference, job: job.title })}
+                    aria-label={t('Download {label} for {job}', { label: t('Order'), job: job.title })}
                     href={companyApiUrl(`/api/ledger/documents/${encodeURIComponent(purchaseOrderPackage.htmlDocumentId)}/issue-package`)}
                     download
                   >
@@ -560,7 +560,7 @@ export default function FinanceWorkspace({
                 {purchaseOrderPackage?.ublDocumentId ? (
                   <a
                     className="secondary-button"
-                    aria-label={t('Download purchase order UBL {reference} for {job}', { reference: purchaseOrderPackage.issueReference, job: job.title })}
+                    aria-label={t('Download {label} for {job}', { label: t('Order UBL'), job: job.title })}
                     href={companyApiUrl(`/api/ledger/documents/${encodeURIComponent(purchaseOrderPackage.ublDocumentId)}/issue-package`)}
                     download
                   >
