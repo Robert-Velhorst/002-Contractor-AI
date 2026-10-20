@@ -1,11 +1,11 @@
-FROM node:24.22.0-alpine AS build
+FROM node:26.12.0-alpine@sha256:6f08a523443ddedf52941874c203475b0ad503e859ad70cb26ab8be9a517dbd5 AS build
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci
 COPY . .
 RUN npm run build && npm run verify:bundle -- --report /app/BUNDLE_BUDGET.json
 
-FROM node:24.22.0-alpine AS runtime
+FROM node:26.12.0-alpine@sha256:6f08a523443ddedf52941874c203475b0ad503e859ad70cb26ab8be9a517dbd5 AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 ENV CONTRACTOR_AI_BIND_HOST=0.0.0.0
