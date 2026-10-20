@@ -1329,7 +1329,7 @@ aliases and keeping namespace/non-icon imports on the package's public API.
 It does not relax download budgets or remove any product workflows.
 
 GitHub Actions runs on pushes to `main`, pull requests, and manual dispatch.
-The Linux job performs Node.js 24.22.0 installation, TLS PostgreSQL 16 setup, release
+The Linux job performs Node.js 26.12.0 installation, TLS PostgreSQL 18.6 setup, release
 and HAI contracts, lint, build, bundle budgets, frontend and Node tests,
 production-scale benchmark, container verification, and Playwright. The Windows
 job builds and smoke-tests `ContractorAI-windows-x64.zip`.
