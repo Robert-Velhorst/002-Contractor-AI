@@ -50,7 +50,6 @@ export default defineConfig(({ command, mode }) => {
     cssMinify: 'lightningcss',
     rolldownOptions: {
       output: {
-        strictExecutionOrder: true,
         codeSplitting: {
           includeDependenciesRecursively: false,
           groups: [{ name: manualChunkName, debugName: 'manual-chunks', includeDependenciesRecursively: false }]
