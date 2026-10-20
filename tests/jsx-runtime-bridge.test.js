@@ -87,10 +87,12 @@ test('development keeps its automatic runtime and production caches the bridge i
   assert.equal(partition('\0commonjsHelpers.js'), 'react');
   assert.equal(partition('\0unrelated-virtual-module'), null);
   const reactPlugin = build => build.plugins.flat(Infinity).find(plugin => plugin.name === 'vite:react-babel');
-  assert.equal(reactPlugin(development).config().esbuild.jsx, 'automatic');
-  assert.equal(reactPlugin(development).config().esbuild.jsxImportSource, undefined);
-  assert.equal(reactPlugin(production).config().esbuild.jsx, 'automatic');
-  assert.equal(reactPlugin(production).config().esbuild.jsxImportSource, JSX_BRIDGE_IMPORT_SOURCE);
+  const developmentReact = reactPlugin(development).config({}, { command: 'serve' }).esbuild;
+  const productionReact = reactPlugin(production).config({}, { command: 'build' }).esbuild;
+  assert.equal(developmentReact.jsx, 'automatic');
+  assert.equal(developmentReact.jsxImportSource, undefined);
+  assert.equal(productionReact.jsx, 'automatic');
+  assert.equal(productionReact.jsxImportSource, JSX_BRIDGE_IMPORT_SOURCE);
 });
 
 test('a screen-only change preserves the built React cache identity without an entry import cycle', async () => {
@@ -129,7 +131,7 @@ test('a screen-only change preserves the built React cache identity without an e
     const react = chunks.find(item => item.name === 'react');
     const entry = chunks.find(item => item.isEntry);
     assert.ok(react && entry);
-    assert.ok(Object.hasOwn(react.modules, '\0commonjsHelpers.js'));
+    assert.ok(Object.hasOwn(react.modules, '\0contractor-automatic-elements'));
     assert.equal(react.imports.includes(entry.fileName), false, 'cached runtime must not import the changing entry');
     assert.ok(entry.imports.includes(react.fileName), 'entry uses the same real React runtime');
     return { react, screen: chunks.find(item => item.name === 'cache-contract-screen') };
