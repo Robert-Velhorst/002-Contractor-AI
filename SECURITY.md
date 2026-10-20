@@ -15,3 +15,7 @@ If private reporting is unavailable, open a public issue with only the title **R
 Please allow maintainers reasonable time to investigate and coordinate a fix before public disclosure. Acknowledgement, severity assessment, remediation, and disclosure timing depend on impact and maintainer availability; no response-time or remediation-time guarantee is offered.
 
 Security reports are for vulnerabilities in this repository. Use regular issues for non-security bugs and product support.
+
+## Response and disclosure
+
+Reports are reviewed on a best-effort basis. No response or remediation timeframe is guaranteed. Coordinate any public disclosure with the maintainers so users have a reasonable opportunity to receive a fix.
