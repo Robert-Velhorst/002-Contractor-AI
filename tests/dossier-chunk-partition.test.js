@@ -2,7 +2,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
 test('dossier grouping assigns only explicit controls and leaves field assurance independent', async () => {
-  const { default: configure } = await import('../vite.config.js');
+  const { default: configure } = await import('../vite.config.mjs');
   const output = configure({ command: 'build', mode: 'test' }).build.rolldownOptions.output;
   const group = output.codeSplitting.groups[0];
   assert.equal(group.includeDependenciesRecursively, false);

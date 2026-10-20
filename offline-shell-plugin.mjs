@@ -4,7 +4,9 @@ import { createHash } from 'node:crypto';
 export function offlineShellAssets(bundle) {
   const chunks = Object.values(bundle).filter(item => item.type === 'chunk');
   const mainEntry = chunks.find(chunk => chunk.isEntry
-    && Object.keys(chunk.modules).some(id => id.replaceAll('\\', '/').endsWith('/main.jsx')));
+    && Object.keys(chunk.modules).some(id => id.replaceAll('\\', '/').endsWith('/main.jsx')))
+    || chunks.find(chunk => chunk.isEntry
+      && (chunk.name === 'index' || (chunk.facadeModuleId || '').replaceAll('\\', '/').endsWith('/index.html')));
   const offlineEntry = chunks.find(chunk => Object.keys(chunk.modules)
     .some(id => id.replaceAll('\\', '/').endsWith('/OfflineField.jsx')));
   const clientPortalEntry = chunks.find(chunk => Object.keys(chunk.modules)

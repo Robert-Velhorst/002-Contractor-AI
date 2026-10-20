@@ -76,7 +76,7 @@ test('bridge resolves only its exact virtual module and never reads source paths
 });
 
 test('development keeps its automatic runtime and production caches the bridge in the measured React asset', async () => {
-  const { default: config } = await import('../vite.config.js');
+  const { default: config } = await import('../vite.config.mjs');
   const { JSX_BRIDGE_INTERNAL_ID, JSX_BRIDGE_IMPORT_SOURCE } = await import('../jsx-runtime-bridge.mjs');
   const development = config({ command: 'serve', mode: 'development' });
   const production = config({ command: 'build', mode: 'production' });
@@ -97,7 +97,7 @@ test('development keeps its automatic runtime and production caches the bridge i
 
 test('a screen-only change preserves the built React cache identity without an entry import cycle', async () => {
   const { build } = await import('vite');
-  const { default: config } = await import('../vite.config.js');
+  const { default: config } = await import('../vite.config.mjs');
   const production = config({ command: 'build', mode: 'production' });
   const entryId = path.resolve(__dirname, '../cache-contract-entry.jsx');
   const screenId = path.resolve(__dirname, '../cache-contract-screen.jsx');

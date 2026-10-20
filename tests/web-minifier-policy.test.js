@@ -7,7 +7,7 @@ const { renderToStaticMarkup } = require('react-dom/server');
 
 let policy;
 function options() {
-  policy ??= import('../vite.config.js').then(({ default: configuration }) => {
+  policy ??= import('../vite.config.mjs').then(({ default: configuration }) => {
     const { build } = configuration({ command: 'build', mode: 'production' });
     return { target: build.target, ...build.terserOptions, module: true, safari10: true };
   });
