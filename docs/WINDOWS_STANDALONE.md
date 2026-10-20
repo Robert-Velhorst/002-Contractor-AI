@@ -36,16 +36,12 @@ in-product verified backup workflow and retain copies away from the computer.
 ## Launchers
 
 - `ContractorAI.cmd`: local-only application.
-- `ContractorAI-Tunnel.cmd`: authenticated ngrok access to the same local data.
 - `ContractorAI-Export-HAI.cmd`: exports the read-only HAI feed while the local
   application is running. Set `CONTRACTOR_AI_HAI_FEED_PATH` to an absolute file
   under HAI's configured feed root first.
 - With that path set before launch, Operations also shows the verified local-feed
   state and provides an owner-only **Publish to HAI** action. The Windows smoke
   gate publishes and reads back this feed with zero execution authority.
-- The Windows smoke gate also executes the packaged tunnel lifecycle with a
-  controlled ngrok edge: anonymous readiness is rejected, authenticated readiness
-  reaches the expected loopback runtime, and public ingress closes before shutdown.
 
 ## Build locally
 
@@ -105,6 +101,5 @@ smoke is historical evidence, not acceptance of the current package.
 The smoke gate also runs the real solver worker from the selected package,
 checks a dated forecast against the resulting proposal, and verifies that the
 preview did not mutate its isolated ledger. Identity recovery, company handover
-and local HAI publication use isolated fixtures; the ngrok edge is a test double,
-not proof of a live tunnel. Passing this package gate includes its local bundle
+and local HAI publication use isolated fixtures. Passing this package gate includes its local bundle
 checks but does not establish EU-hosted production readiness.

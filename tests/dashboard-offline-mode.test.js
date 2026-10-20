@@ -478,9 +478,8 @@ test('operations view lists, verifies, and exports portable checksummed local ba
   assert.match(dashboardSource, /operationCapabilities\?\.hostedMigration\?\.available/);
   assert.match(dashboardSource, />EU migration</);
   assert.match(dashboardSource, /data-testid="runtime-exposure-readiness"/);
-  assert.match(dashboardSource, /publicTunnelVerified/);
-  assert.match(dashboardSource, /verified authenticated tunnel/);
-  assert.match(dashboardSource, /tunnel verification pending/);
+  assert.doesNotMatch(dashboardSource, /publicTunnel|ngrok/i);
+  assert.match(dashboardSource, /hosted ingress/);
   assert.match(dashboardSource, /data-testid="hai-connector-readiness"/);
   assert.match(dashboardSource, /href=\{companyApiUrl\('\/api\/integrations\/hai\/feed\?limit=100'\)\}/);
   assert.match(dashboardSource, /Download HAI feed/);

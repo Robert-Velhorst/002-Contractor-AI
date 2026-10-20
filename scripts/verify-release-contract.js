@@ -40,7 +40,6 @@ const REQUIRED_PATHS = [
   'docs/FINAL_VERIFICATION_REPORT.md',
   'docs/GOAL_COMPLETION_MATRIX.md',
   'docs/HAI_CONNECTOR.md',
-  'docs/NGROK.md',
   'docs/OPERATOR_RUNBOOK.md',
   'docs/PERFORMANCE_BENCHMARK.md',
   'docs/SECURITY.md',
@@ -108,7 +107,6 @@ const REQUIRED_PATHS = [
   'scripts/identity-maintenance.js',
   'scripts/run-node-tests.js',
   'scripts/node-test-runtime.js',
-  'scripts/start-ngrok.js',
   'scripts/verify-bundle-budget.js',
   'preload-chunk-minifier.mjs',
   'components/OperatorActionDialogs.jsx',
@@ -129,7 +127,10 @@ const RETIRED_PATHS = [
   'fn.indexOf(name)!',
   'pnpm-lock.yaml',
   'public/client-portal.html',
-  'public/index.html'
+  'public/index.html',
+  'scripts/start-ngrok.js',
+  'tests/ngrok-tunnel.test.js',
+  'docs/NGROK.md'
 ];
 
 const REQUIRED_HOSTED_ENV_KEYS = [
@@ -252,7 +253,7 @@ function verifyReleaseContract(root = path.resolve(__dirname, '..')) {
   const packageFile = path.join(root, 'package.json');
   const packageJson = JSON.parse(fs.readFileSync(packageFile, 'utf8'));
   if (packageJson.main !== 'server.js') failures.push('package.json must use server.js as the sole runtime entrypoint.');
-  for (const script of ['benchmark:ledger', 'build', 'doctor', 'export:hai', 'lint', 'migrate:hosted', 'package:windows', 'restore:local', 'start:standalone', 'start:tunnel', 'test', 'test:browser', 'test:container', 'test:frontend', 'test:performance', 'test:windows-package', 'verify:bundle', 'verify:hai-contract', 'verify:release']) {
+  for (const script of ['benchmark:ledger', 'build', 'doctor', 'export:hai', 'lint', 'migrate:hosted', 'package:windows', 'restore:local', 'start:standalone', 'test', 'test:browser', 'test:container', 'test:frontend', 'test:performance', 'test:windows-package', 'verify:bundle', 'verify:hai-contract', 'verify:release']) {
     if (!packageJson.scripts?.[script]) failures.push(`package.json is missing required script: ${script}`);
   }
   if (packageJson.scripts?.pretest) failures.push('package.json must not duplicate the full Node suite through an automatic pretest hook.');
@@ -284,15 +285,8 @@ function verifyReleaseContract(root = path.resolve(__dirname, '..')) {
   }
 
   const serverSource = fs.readFileSync(path.join(root, 'server.js'), 'utf8');
-  const ngrokSource = fs.readFileSync(path.join(root, 'scripts', 'start-ngrok.js'), 'utf8');
-  for (const tunnelBoundary of [
-    "CONTRACTOR_AI_NGROK_ACTIVE: 'verifying'",
-    "expectedStatus: 401",
-    'publicAuthenticationBoundary',
-    'validatePublicReadiness',
-    'await closeTunnelIngress(runtime.listener)'
-  ]) {
-    if (!ngrokSource.includes(tunnelBoundary)) failures.push(`ngrok launcher is missing verified lifecycle boundary: ${tunnelBoundary}`);
+  if (serverSource.includes('CONTRACTOR_AI_NGROK_') || serverSource.includes('publicTunnel')) {
+    failures.push('The server must not expose retired ngrok runtime configuration.');
   }
   for (const requiredActorBoundary of [
     'function trustedRequestActor(req)',

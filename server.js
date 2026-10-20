@@ -115,8 +115,8 @@ function parsePublicUrlDetails(value) {
   }
 }
 
-let hostedPublicUrl = String(process.env.CONTRACTOR_AI_PUBLIC_URL || '').trim();
-let hostedPublicUrlDetails = (() => {
+const hostedPublicUrl = String(process.env.CONTRACTOR_AI_PUBLIC_URL || '').trim();
+const hostedPublicUrlDetails = (() => {
   if (!hostedPublicUrl) return { protocol: '', origin: '', valid: false };
   return parsePublicUrlDetails(hostedPublicUrl);
 })();
@@ -503,10 +503,6 @@ function runtimeConfiguration(options = {}) {
   const configuredRoles = roleTokenConfig.principals.map(principal => principal.role);
   if (isStrongOperatorToken(dashboardAuthToken)) configuredRoles.push('owner');
   configuredRoles.push(...managedOperators.map(principal => principal.role));
-  const ngrokState = String(process.env.CONTRACTOR_AI_NGROK_ACTIVE || '').trim().toLowerCase();
-  const ngrokVerifiedAt = String(process.env.CONTRACTOR_AI_NGROK_VERIFIED_AT || '').trim();
-  const ngrokVerifiedTimestamp = Date.parse(ngrokVerifiedAt);
-  const publicTunnelVerified = ngrokState === 'true' && Number.isFinite(ngrokVerifiedTimestamp);
   return {
     mode: runtimeMode,
     runtimeCompatibility: { node: nodeCompatibility },
@@ -515,11 +511,7 @@ function runtimeConfiguration(options = {}) {
     exposure: {
       bindHost: configuredBindHost || null,
       loopbackOnly: ['127.0.0.1', '::1', 'localhost'].includes(configuredBindHost.toLowerCase()),
-      publicTunnel: runtimeMode === 'local' && ngrokState === 'true',
-      publicTunnelVerified: runtimeMode === 'local' && publicTunnelVerified,
-      publicTunnelVerificationPending: runtimeMode === 'local' && ngrokState === 'verifying',
       publicOrigin: hostedPublicUrlDetails.valid ? hostedPublicUrlDetails.origin : null,
-      tunnelVerifiedAt: publicTunnelVerified ? new Date(ngrokVerifiedTimestamp).toISOString() : null
     },
     auth: {
       required: dashboardAuthRequired,
@@ -11116,19 +11108,6 @@ app.use((error, req, res, next) => {
   return sendError(req, res, 500, 'internal_error', 'Unexpected server error', serializeError(error));
 });
 
-function attachPublicOrigin(publicUrl) {
-  const details = parsePublicUrlDetails(publicUrl);
-  if (!details.valid || details.protocol !== 'https:') {
-    throw new Error('The tunnel public origin must be a valid HTTPS origin.');
-  }
-  hostedPublicUrl = details.origin;
-  hostedPublicUrlDetails = details;
-  allowedOrigins = Array.from(new Set([...allowedOrigins, details.origin]));
-  process.env.CONTRACTOR_AI_PUBLIC_URL = details.origin;
-  process.env.CORS_ORIGINS = allowedOrigins.join(',');
-  return details.origin;
-}
-
 async function startDirectServer(options = {}) {
   const listenPort = options.port ?? port;
   const listenHost = String(options.host ?? configuredBindHost).trim() || undefined;
@@ -11230,7 +11209,6 @@ function shutdownRuntime({ server = directServer, signal = 'shutdown', timeoutMs
 
 app.locals.runtimeControl = Object.freeze({
   configureHttpServer,
-  attachPublicOrigin,
   start: options => startDirectServer(options),
   shutdown: options => shutdownRuntime(options),
   schedulerTimerCount: () => autonomousSchedulerTimers.size,
