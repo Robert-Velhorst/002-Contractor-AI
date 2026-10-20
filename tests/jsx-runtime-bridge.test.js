@@ -82,9 +82,10 @@ test('development keeps its automatic runtime and production caches the bridge i
   const production = config({ command: 'build', mode: 'production' });
   assert.equal(development.esbuild, undefined);
   assert.equal(production.esbuild, undefined);
-  assert.equal(production.build.rollupOptions.output.manualChunks(JSX_BRIDGE_INTERNAL_ID), 'react');
-  assert.equal(production.build.rollupOptions.output.manualChunks('\0commonjsHelpers.js'), 'react');
-  assert.equal(production.build.rollupOptions.output.manualChunks('\0unrelated-virtual-module'), undefined);
+  const partition = production.build.rolldownOptions.output.codeSplitting.groups[0].name;
+  assert.equal(partition(JSX_BRIDGE_INTERNAL_ID), 'react');
+  assert.equal(partition('\0commonjsHelpers.js'), 'react');
+  assert.equal(partition('\0unrelated-virtual-module'), null);
   const reactPlugin = build => build.plugins.flat(Infinity).find(plugin => plugin.name === 'vite:react-babel');
   assert.equal(reactPlugin(development).config().esbuild.jsx, 'automatic');
   assert.equal(reactPlugin(development).config().esbuild.jsxImportSource, undefined);
@@ -119,8 +120,8 @@ test('a screen-only change preserves the built React cache identity without an e
         ...production.plugins.flat(Infinity).filter(plugin =>
           ['contractor-jsx-runtime-bridge', 'contractor-preload-chunk-minifier', 'vite:react-babel', 'vite:react-refresh'].includes(plugin.name))
       ],
-      build: { ...production.build, write: false, rollupOptions: {
-        ...production.build.rollupOptions, input: entryId,
+      build: { ...production.build, write: false, rolldownOptions: {
+        ...production.build.rolldownOptions, input: entryId,
         onwarn(warning) { warnings.push(warning); }
       } }
     });
