@@ -190,8 +190,8 @@ test('native Android build uses a checksum-pinned Gradle wrapper without accepti
   const build = fs.readFileSync(path.join(root, 'scripts/build-android.ps1'), 'utf8');
   const readme = fs.readFileSync(path.join(root, 'android/README.md'), 'utf8');
   assert.equal(crypto.createHash('sha256').update(wrapperJar).digest('hex'), '3b8a25775a69158b5ad2b1d17a80a88dc7b40a352a73eb27d06c612a7ce68e98');
-  assert.match(properties, /gradle-9\.8\.1-bin\.zip/);
-  assert.match(properties, /distributionSha256Sum=dce76f55f8e251a3a1f130eb120f30b3d271de2b76c9b0729d316b5a1b6dc01f/);
+  assert.match(properties, /gradle-9\.8\.2-bin\.zip/);
+  assert.match(properties, /distributionSha256Sum=21bd5da2de49b642904077f38c0efdc7778e92b3ed0889392dca61b97e389607/);
   assert.match(fs.readFileSync(path.join(root, 'android/build.gradle'), 'utf8'), /com\.android\.application' version '9\.4\.1'/);
   assert.match(build, /gradlew\.bat/);
   assert.match(build, /No licenses are accepted by this script/);
