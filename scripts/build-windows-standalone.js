@@ -116,7 +116,7 @@ function run(command, args, cwd = root) {
 
 function assertBuildHost() {
   if (process.platform !== 'win32' || process.arch !== 'x64') throw new Error('The standalone package must be built on Windows x64.');
-  if (process.versions.node !== '24.22.0') throw new Error('The standalone package must be built with Node.js 24.22.0.');
+  if (process.versions.node !== '26.12.0') throw new Error('The standalone package must be built with Node.js 26.12.0.');
 }
 
 function copyRuntimeFile(relative) {
