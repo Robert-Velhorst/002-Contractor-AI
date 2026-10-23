@@ -2,6 +2,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { verifyBundleBudget } = require('./verify-bundle-budget');
+const { windowsNodeVersion } = require('./node-compatibility');
 
 const root = path.resolve(__dirname, '..');
 const releaseRoot = path.join(root, 'release');
@@ -116,7 +117,7 @@ function run(command, args, cwd = root) {
 
 function assertBuildHost() {
   if (process.platform !== 'win32' || process.arch !== 'x64') throw new Error('The standalone package must be built on Windows x64.');
-  if (process.versions.node !== '26.12.0') throw new Error('The standalone package must be built with Node.js 26.12.0.');
+  if (process.versions.node !== windowsNodeVersion) throw new Error(`The standalone package must be built with Node.js ${windowsNodeVersion}.`);
 }
 
 function copyRuntimeFile(relative) {
