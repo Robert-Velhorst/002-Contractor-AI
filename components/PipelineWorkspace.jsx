@@ -169,14 +169,14 @@ function PipelineWorkspace({
                   className={`pipeline-row ${selectedOpportunity?.id === opportunity.id ? 'pipeline-row-selected' : ''}`}
                   key={opportunity.id}
                 >
-                  <button className="pipeline-row-main" aria-label={[t('Open'), opportunity.title, formatStatus(opportunity.stage), `${opportunity.client?.name || 'Client pending'} / ${opportunity.service || 'Service pending'} / ${opportunity.city || opportunity.address || 'Location pending'}`].join(' ')} onClick={() => onSelect(opportunity)}>
-                    <span className="visually-hidden">{t('Open')}</span>
+                  <button className="pipeline-row-main" onClick={() => onSelect(opportunity)}>
+                    <span className="visually-hidden">{t('Open')}</span>{' '}
                     <span className={`pipeline-stage-marker pipeline-stage-${opportunity.stage}`} aria-hidden="true" />
                     <span className="pipeline-copy">
                       <span className="pipeline-title">
-                        <strong>{opportunity.title}</strong>
+                        <strong>{opportunity.title}</strong>{' '}
                         <span className={`status status-${opportunity.stage}`}>{formatStatus(opportunity.stage)}</span>
-                      </span>
+                      </span>{' '}
                       <small>
                         {opportunity.client?.name || 'Client pending'} / {opportunity.service || 'Service pending'} /{' '}
                         {opportunity.city || opportunity.address || 'Location pending'}
