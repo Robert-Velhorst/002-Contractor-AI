@@ -84,7 +84,7 @@ function BidPackageWorkspace({
           <div className="bid-package-list">
             {rows.map((bidPackage) => (
               <article className={`bid-package-row ${selectedBidPackage?.id === bidPackage.id ? 'bid-package-row-selected' : ''}`} key={bidPackage.id}>
-                <button className="bid-package-main" onClick={() => onSelect(bidPackage)}>
+                <button className="bid-package-main" aria-label={[t('Open bid package'), `${bidPackage.packageNumber} / ${bidPackage.title}`, t(String(bidPackage.status || 'draft').replaceAll('_', ' ')), `${bidPackage.client?.name || t('Client pending')} / ${bidPackage.trade} / ${bidPackage.opportunity?.title || t('Opportunity pending')}`].join(' ')} onClick={() => onSelect(bidPackage)}>
                   <span className="visually-hidden">{t('Open bid package')}</span>
                   <span className="bid-package-icon"><ClipboardList size={17} /></span>
                   <span>
