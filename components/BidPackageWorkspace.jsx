@@ -85,13 +85,13 @@ function BidPackageWorkspace({
             {rows.map((bidPackage) => (
               <article className={`bid-package-row ${selectedBidPackage?.id === bidPackage.id ? 'bid-package-row-selected' : ''}`} key={bidPackage.id}>
                 <button className="bid-package-main" onClick={() => onSelect(bidPackage)}>
-                  <span className="visually-hidden">{t('Open bid package')}</span>
+                  <span className="visually-hidden">{t('Open bid package')}</span>{' '}
                   <span className="bid-package-icon"><ClipboardList size={17} /></span>
                   <span>
                     <span className="pipeline-title">
-                      <strong>{bidPackage.packageNumber} / {bidPackage.title}</strong>
+                      <strong>{bidPackage.packageNumber} / {bidPackage.title}</strong>{' '}
                       <span className={`status status-${bidPackage.status}`}>{t(String(bidPackage.status || 'draft').replaceAll('_', ' '))}</span>
-                    </span>
+                    </span>{' '}
                     <small>{bidPackage.client?.name || t('Client pending')} / {bidPackage.trade} / {bidPackage.opportunity?.title || t('Opportunity pending')}</small>
                   </span>
                 </button>
