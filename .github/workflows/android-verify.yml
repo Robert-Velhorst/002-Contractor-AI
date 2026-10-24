@@ -5,12 +5,16 @@ on:
     paths:
       - "android/**"
       - "scripts/build-android.ps1"
+      - "scripts/check_android_runtime.py"
+      - "android-runtime.json"
       - ".github/workflows/android-verify.yml"
   push:
     branches: [main]
     paths:
       - "android/**"
       - "scripts/build-android.ps1"
+      - "scripts/check_android_runtime.py"
+      - "android-runtime.json"
       - ".github/workflows/android-verify.yml"
 
 permissions:
@@ -22,22 +26,42 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.15.1"
+      - name: Read selected stable Android toolchains
+        id: runtime
+        run: python scripts/check_android_runtime.py --outputs >> "$GITHUB_OUTPUT"
       - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
-          distribution: temurin
-          java-version: "17"
-      - name: Verify preinstalled Android SDK components
+          distribution: zulu
+          java-version: ${{ steps.runtime.outputs.java-version }}
+          check-latest: true
+      - name: Install selected final Android SDK packages in the disposable runner
         shell: bash
+        env:
+          SELECTED_PLATFORM: ${{ steps.runtime.outputs.android-platform }}
+          SELECTED_BUILD_TOOLS: ${{ steps.runtime.outputs.android-build-tools }}
         run: |
           set -euo pipefail
-          sdk="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
-          test -f "$sdk/platforms/android-37.2/android.jar"
-          test -f "$sdk/build-tools/37.0.0/source.properties"
-          if [ ! -e "$sdk/platforms/android-37" ]; then
-            ln -s "$sdk/platforms/android-37.2" "$sdk/platforms/android-37"
-          fi
-          test -f "$sdk/platforms/android-37/android.jar"
-          echo "ANDROID_HOME=$sdk" >> "$GITHUB_ENV"
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "platforms;$SELECTED_PLATFORM" "build-tools;$SELECTED_BUILD_TOOLS"
+      - name: Record actual compiler, SDK and stable package properties
+        run: python scripts/check_android_runtime.py > "$RUNNER_TEMP/contractor-android-runtime.json"
       - name: Build and lint Android app
         working-directory: android
-        run: ./gradlew --no-daemon :app:assembleDebug :app:lintDebug
+        shell: bash
+        run: ./gradlew --no-daemon :app:assembleDebug :app:lintDebug 2>&1 | tee "$RUNNER_TEMP/contractor-android-build.log"
+      - name: Hash the compiled debug APK
+        run: sha256sum android/app/build/outputs/apk/debug/app-debug.apk > "$RUNNER_TEMP/contractor-android-apk.sha256"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: contractor-android-build-evidence
+          path: |
+            ${{ runner.temp }}/contractor-android-runtime.json
+            ${{ runner.temp }}/contractor-android-build.log
+            ${{ runner.temp }}/contractor-android-apk.sha256
+            android/app/build/reports/lint-results-debug.html
+          retention-days: 7
+          if-no-files-found: error

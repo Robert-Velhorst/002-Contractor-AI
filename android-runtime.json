@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "python": "3.15.1",
+  "java": {
+    "version": "27.0.1",
+    "runtime": "27.0.1+9",
+    "vendor_version": "Zulu27.30+107-CA",
+    "source": "https://docs.azul.com/core/version-search"
+  },
+  "android": {
+    "major": 37,
+    "minor": 2,
+    "platform": "android-37.2",
+    "build_tools": "37.0.0",
+    "source": "https://dl.google.com/android/repository/repository2-3.xml"
+  }
+}
