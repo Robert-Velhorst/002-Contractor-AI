@@ -5,7 +5,7 @@ if (-not $Sdk) { throw 'Set ANDROID_HOME or supply -Sdk with the selected SDK.' 
 $taskPlatform = Join-Path $Sdk ('platforms/' + $taskProfile.android.platform)
 if (-not $Sdk -or -not (Test-Path -LiteralPath (Join-Path $taskPlatform 'android.jar')) -or
     -not (Test-Path -LiteralPath (Join-Path $Sdk ('build-tools/' + $taskProfile.android.build_tools + '/source.properties')))) {
-    throw "Select installed final SDK $($taskProfile.android.platform) and Build Tools $($taskProfile.android.build_tools). This script does not install tools or accept licenses."
+    throw "Select installed final SDK $($taskProfile.android.platform) and Build Tools $($taskProfile.android.build_tools). This script does not install tools. No licenses are accepted by this script."
 }
 if (-not $env:JAVA_HOME -or -not (Test-Path -LiteralPath (Join-Path $env:JAVA_HOME 'bin/javac.exe'))) {
     throw "Set JAVA_HOME to an installed stable JDK $($taskProfile.java.version)."
