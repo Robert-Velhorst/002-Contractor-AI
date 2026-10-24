@@ -1,20 +1,33 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { runDoctor } = require('../scripts/doctor');
+const requiredNodeRange = require('../package.json').engines.node;
 const { assessNodeCompatibility, nodeCompatibilityIssue } = require('../scripts/node-compatibility');
 
 test('checks the running app against both declared supported Node majors', () => {
-  assert.deepEqual(assessNodeCompatibility('v24.22.0'), {
-    status: 'supported', supported: true, actual: 'v24.22.0', required: '24.x || 26.x'
+  assert.deepEqual(assessNodeCompatibility('v24.22.1'), {
+    status: 'supported', supported: true, actual: 'v24.22.1', required: requiredNodeRange
   });
-  assert.deepEqual(assessNodeCompatibility('v26.12.0'), {
-    status: 'supported', supported: true, actual: 'v26.12.0', required: '24.x || 26.x'
+  assert.deepEqual(assessNodeCompatibility('v26.12.1'), {
+    status: 'supported', supported: true, actual: 'v26.12.1', required: requiredNodeRange
   });
   assert.deepEqual(assessNodeCompatibility('v22.23.3'), {
-    status: 'unsupported', supported: false, actual: 'v22.23.3', required: '24.x || 26.x'
+    status: 'unsupported', supported: false, actual: 'v22.23.3', required: requiredNodeRange
   });
   assert.equal(assessNodeCompatibility('unknown').status, 'unknown');
-  assert.equal(assessNodeCompatibility('v24.22.0', '24.x || latest').status, 'unknown');
+  assert.equal(assessNodeCompatibility('v24.22.1', '24.x || latest').status, 'unknown');
+});
+
+test('rejects vulnerable patch versions, prereleases and undeclared major lines', () => {
+  for (const version of ['v24.22.0', 'v26.12.0', 'v26.12.1-rc.1', 'v25.2.1', 'v27.0.0']) {
+    assert.equal(assessNodeCompatibility(version).status, 'unsupported', version);
+  }
+  for (const version of ['v24.22.1', 'v24.23.0', 'v26.12.1', 'v26.12.2']) {
+    assert.equal(assessNodeCompatibility(version).status, 'supported', version);
+  }
+  for (const range of ['', '*', 'latest', '24.x || latest']) {
+    assert.equal(assessNodeCompatibility('v26.12.1', range).status, 'unknown', range);
+  }
 });
 
 test('enforces the supported Node version in production and hosted modes only', () => {
@@ -22,7 +35,7 @@ test('enforces the supported Node version in production and hosted modes only', 
   assert.equal(nodeCompatibilityIssue(unsupported, { isProduction: false, runtimeMode: 'local' }), null);
   assert.equal(nodeCompatibilityIssue(unsupported, { isProduction: true, runtimeMode: 'local' })?.code, 'unsupported_node_version');
   assert.equal(nodeCompatibilityIssue(unsupported, { isProduction: false, runtimeMode: 'hosted' })?.code, 'unsupported_node_version');
-  assert.equal(nodeCompatibilityIssue(assessNodeCompatibility('v24.22.0'), { isProduction: true, runtimeMode: 'hosted' }), null);
+  assert.equal(nodeCompatibilityIssue(assessNodeCompatibility('v24.22.1'), { isProduction: true, runtimeMode: 'hosted' }), null);
 });
 
 test('does not report readiness when the application runs on an unsupported Node version', async () => {
@@ -60,7 +73,7 @@ test('distinguishes a healthy local runtime from hosted runtime readiness', asyn
       status: 200,
       json: async () => ({
         format: 'contractor-ai-support-bundle/v1',
-        application: { node: 'v24.22.0', runtimeMode: 'local' },
+        application: { node: 'v24.22.1', runtimeMode: 'local' },
         database: { mode: 'sqlite' },
         readiness: { runtimeReady: true, storage: { mode: 'local' } }
       })
@@ -86,7 +99,7 @@ test('reports hosted runtime readiness only with supported Node and durable prov
       status: 200,
       json: async () => ({
         format: 'contractor-ai-support-bundle/v1',
-        application: { node: 'v24.22.0', runtimeMode: 'hosted' },
+        application: { node: 'v24.22.1', runtimeMode: 'hosted' },
         database: { mode: 'postgres' },
         readiness: { runtimeReady: true, storage: { mode: 's3' } }
       })
