@@ -101,12 +101,12 @@ Source tests do not substitute for that proof.
 
 ## Build prerequisites
 
-Use JDK 17+, Android SDK Platform 37 (Android 17), Android Build Tools 37.0.0 and AGP 9.4.1. The app compiles and targets API 37. Review Android 17 behavior changes before device rollout; this checkout has no device or emulator acceptance evidence. When the entered server resolves to a local address, Android 17 requires the user to grant local-network permission before connecting. The app asks before using the worker key, then requires the key to be entered again after the permission prompt. Review Google's SDK
+The selected toolchains are in `../android-runtime.json`: stable JDK 27.0.1, final Android SDK Platform 37.2, Build Tools 37.0.0 and AGP 9.4.1. The app compiles against major 37/minor 2 and targets major 37. Java 17 source/bytecode compatibility is a separate floor; it does not select the build compiler. Review Android 17 behavior changes before device rollout; this checkout has no device or emulator acceptance evidence. When the entered server resolves to a local address, Android 17 requires the user to grant local-network permission before connecting. The app asks before using the worker key, then requires the key to be entered again after the permission prompt. Review Google's SDK
 terms through its official installation flow; neither this repository nor its
 build script accepts them. AGP 9.4.1 requires Gradle 9.6.0 or newer. The checked-in Gradle 9.8.2 wrapper downloads the
 official binary distribution and verifies its pinned SHA-256 checksum. The first
 build therefore needs internet access, but a separate Gradle installation is not
-required. The wrapper itself is pinned to Gradle's published JAR checksum.
+required. The wrapper itself is pinned to Gradle's published JAR checksum. SDK aliases and junctions are no longer created: install the actual selected platform. The PowerShell launcher restores its SDK environment setting after the build.
 
 ```powershell
 $env:JAVA_HOME = 'C:\path\to\jdk'
@@ -153,3 +153,19 @@ Official references: [build from the command line](https://developer.android.com
 [camera capture intent](https://developer.android.com/reference/android/provider/MediaStore#ACTION_IMAGE_CAPTURE),
 [Keystore](https://developer.android.com/privacy-and-security/keystore),
 [PDF renderer](https://developer.android.com/reference/android/graphics/pdf/PdfRenderer).
+
+
+### Current toolchain qualification
+
+The Android CI job selects free Zulu CA Java 27.0.1+9 / vendor 27.30.107 and
+records the actual compiler, SDK final-release fields and package properties.
+It uses the existing Node 26.12.1 toolchain for this metadata inspection. The existing debug APK
+assembly and lint remain the qualification path; logs and the compiled APK hash
+are retained. A passing source or metadata check alone is not a successful build.
+No operator SDK is installed or changed by preparing this configuration.
+
+The existing public AndroidX Core coordinate remains 1.19.1, matching the
+queried stable Google Maven metadata. This does not qualify the complete resolved
+native dependency graph, device permissions, worker credentials, offline sync,
+physical hardware or production release signing. Match current-head Actions
+evidence before claiming the new compiler/SDK combination works.
