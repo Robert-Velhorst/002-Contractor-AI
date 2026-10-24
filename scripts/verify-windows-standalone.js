@@ -9,6 +9,7 @@ const { handoverSmokeCode } = require('./company-handover-smoke');
 const { resourcePlannerSmokeCode } = require('./resource-planner-smoke');
 const { resolvePackageTarget } = require('./build-windows-standalone');
 const { verifyBundleBudget } = require('./verify-bundle-budget');
+const { windowsNodeVersion } = require('./node-compatibility');
 
 const packageRoot = resolvePackageTarget();
 const runtimeExecutable = path.join(packageRoot, 'runtime', 'node.exe');
@@ -166,7 +167,7 @@ async function verifyWindowsStandalone() {
   assert.ok(fs.existsSync(runtimeExecutable), 'Build the Windows standalone package before running its smoke test.');
   const build = JSON.parse(fs.readFileSync(path.join(packageRoot, 'BUILD.json'), 'utf8'));
   assert.equal(build.format, 'contractor-ai-windows-package/v1');
-  assert.match(String(build.node || ''), /^26\.12\.0$/, 'The packaged runtime must use Node.js 26.12.0.');
+  assert.equal(build.node, windowsNodeVersion, `The packaged runtime must use Node.js ${windowsNodeVersion}.`);
   verifyPackagedBundle(packageRoot, build);
 
   const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'contractor-ai-windows-package-'));

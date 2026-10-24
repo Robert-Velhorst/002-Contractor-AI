@@ -1,11 +1,17 @@
 plugins { id 'com.android.application' }
+def androidRuntime = new groovy.json.JsonSlurper().parse(rootProject.file('../android-runtime.json'))
 android {
     namespace 'nl.contractorai.field'
-    compileSdk 37
+    compileSdk {
+        version = release(androidRuntime.android.major) {
+            minorApiLevel = androidRuntime.android.minor
+        }
+    }
+    buildToolsVersion androidRuntime.android.build_tools
     defaultConfig {
         applicationId 'nl.contractorai.field'
         minSdk 26
-        targetSdk 37
+        targetSdk androidRuntime.android.major
         versionCode 1
         versionName '0.1.0'
         testInstrumentationRunner 'android.test.InstrumentationTestRunner'

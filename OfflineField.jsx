@@ -103,7 +103,14 @@ export default function OfflineField() {
       } } : {})
     }
     queueResponse(updated.data, jobId, kind, payload)
-    await persist(updated); setBody(''); setUnderstood(false); setProgressNote(''); setEquipmentConcernReservationId(''); setNotice('Op dit apparaat bewaard; nog niet door kantoor ontvangen.')
+    await persist(updated)
+    if (kind === 'questions') setBody(current => current === payload.message ? '' : current)
+    if (kind === 'acknowledgments') setUnderstood(current => current === payload.understood ? false : current)
+    if (kind === 'progress') {
+      setProgressNote(current => current === payload.note ? '' : current)
+      setEquipmentConcernReservationId(current => current === equipmentConcernReservationId ? '' : current)
+    }
+    setNotice('Op dit apparaat bewaard; nog niet door kantoor ontvangen.')
   }
   async function queuePhoto() {
     if (!photoFile) throw new Error('Maak een foto of kies eerst een afbeeldingsbestand.')

@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { act, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, expect, it, vi } from 'vitest'
 import OfflineField from '../OfflineField'
@@ -96,4 +96,24 @@ it('saves a held-equipment fault against a blocked task in the encrypted offline
     taskId: 'task-1', status: 'blocked',
     equipmentIssue: { reservationId: 'reservation-1', issueType: 'unsafe', note }
   }))
+})
+
+
+it('retains a progress draft while a question finishes saving', async () => {
+  let finishSave
+  const saved = new Promise(resolve => { finishSave = resolve })
+  offline.updateVault.mockImplementationOnce(() => saved)
+  render(<OfflineField />)
+  await userEvent.type(screen.getByLabelText('Offline wachtzin'), 'offline test passphrase')
+  await userEvent.click(screen.getByRole('button', { name: 'Ontgrendelen' }))
+  await screen.findByRole('heading', { name: 'Roof repair' })
+  await userEvent.type(screen.getByLabelText('Vraag of blokkade'), 'Confirm the opening dimensions.')
+  await userEvent.click(screen.getByRole('button', { name: 'Vraag lokaal bewaren' }))
+  await userEvent.selectOptions(screen.getByLabelText('Voortgangsstatus'), 'blocked')
+  const note = 'Waiting for verified opening dimensions.'
+  await userEvent.type(screen.getByLabelText('Blokkade en benodigde hulp'), note)
+  await act(async () => { finishSave(record); await saved })
+  expect(screen.getByLabelText('Blokkade en benodigde hulp').value).toBe(note)
+  await userEvent.click(screen.getByRole('button', { name: 'Voortgang lokaal bewaren' }))
+  expect(offline.queueResponse).toHaveBeenCalledWith(expect.any(Object), 'job-1', 'progress', expect.objectContaining({ note, status: 'blocked' }))
 })
