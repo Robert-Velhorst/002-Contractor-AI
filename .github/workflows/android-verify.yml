@@ -5,7 +5,7 @@ on:
     paths:
       - "android/**"
       - "scripts/build-android.ps1"
-      - "scripts/check_android_runtime.py"
+      - "scripts/check-android-runtime.mjs"
       - "android-runtime.json"
       - ".github/workflows/android-verify.yml"
   push:
@@ -13,7 +13,7 @@ on:
     paths:
       - "android/**"
       - "scripts/build-android.ps1"
-      - "scripts/check_android_runtime.py"
+      - "scripts/check-android-runtime.mjs"
       - "android-runtime.json"
       - ".github/workflows/android-verify.yml"
 
@@ -26,12 +26,12 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          python-version: "3.15.1"
+          node-version: "26.12.1"
       - name: Read selected stable Android toolchains
         id: runtime
-        run: python scripts/check_android_runtime.py --outputs >> "$GITHUB_OUTPUT"
+        run: node scripts/check-android-runtime.mjs --outputs >> "$GITHUB_OUTPUT"
       - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: zulu
@@ -47,7 +47,7 @@ jobs:
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
             "platforms;$SELECTED_PLATFORM" "build-tools;$SELECTED_BUILD_TOOLS"
       - name: Record actual compiler, SDK and stable package properties
-        run: python scripts/check_android_runtime.py > "$RUNNER_TEMP/contractor-android-runtime.json"
+        run: node scripts/check-android-runtime.mjs > "$RUNNER_TEMP/contractor-android-runtime.json"
       - name: Build and lint Android app
         working-directory: android
         shell: bash

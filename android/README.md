@@ -159,7 +159,7 @@ Official references: [build from the command line](https://developer.android.com
 
 The Android CI job selects free Zulu CA Java 27.0.1+9 / vendor 27.30.107 and
 records the actual compiler, SDK final-release fields and package properties.
-It uses Python 3.15.1 only for this metadata inspection. The existing debug APK
+It uses the existing Node 26.12.1 toolchain for this metadata inspection. The existing debug APK
 assembly and lint remain the qualification path; logs and the compiled APK hash
 are retained. A passing source or metadata check alone is not a successful build.
 No operator SDK is installed or changed by preparing this configuration.
