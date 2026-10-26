@@ -1,6 +1,6 @@
 # Hetzner Production Deployment
 
-Hetzner is the intended EU production target. This guide describes the release
+Hetzner is the target for production deployment. This guide describes the release
 path; it does not certify a provider, DPA, region, database, storage bucket,
 backup policy, or live deployment. An authenticated, read-only console
 inspection on 2026-10-16 confirmed the installed operating system and Docker
@@ -138,17 +138,20 @@ and field workflows, evidence retrieval, database migration head, backup
 freshness, object versioning and proxy/TLS behavior. Preserve incident logs and
 the prior image digest. A rollback is not complete until those checks pass.
 
-## Current blockers
+## Dated provider observations and unresolved gates
 
-Contractor.AI's app and hosted environment are not installed. No DPA-verified
+At the recorded provider review, Contractor.AI's app and hosted environment
+were not installed. No DPA-verified
 EU PostgreSQL or evidence bucket, production backup, or migration receipt is
-configured or verified. Hetzner Object Storage has no default at-rest
-encryption; the hosted adapter now requires SSE-C, but a provider bucket,
+configured or verified. [Hetzner's storage FAQ](https://docs.hetzner.com/storage/object-storage/faq/general/)
+states that Object Storage has no default at-rest encryption; the hosted
+adapter requires SSE-C, but a provider bucket,
 versioning policy, independent key backup, and live encrypted read/write test
 are still absent. This is a shared host; do not reset or reinstall it. A
 read-only console review confirmed that a maintained host OS and container
 runtime are available. Current capacity, co-residency, and service health must
-be reviewed privately before adding load. Contractor.AI is not installed. Keep
+be reviewed privately before adding load. This dated review does not establish
+current installation or deployment acceptance. Keep
 exact host identifiers, addresses, resource measurements, service inventory,
 and proxy configuration in private operator records, not this public
 repository.
@@ -166,25 +169,38 @@ Contractor.AI backend. No live configuration was changed from this session.
 Do not cut over until TLS, private capacity, service health, and end-to-end
 readiness have been verified.
 
-The current release-readiness PR is #129 at
-`cc1ecaad9169eb7633cd9147abb6fd494fdde4fc`. Its exact-head browser-inclusive
-`verify`, `windows-standalone`, CodeQL, and language-analysis checks passed on
-2026-10-18. The PR remains open as a draft. These checks validate the
-repository and build artifacts, not the live host, provider configuration, or
-production acceptance.
+## Repository checkpoint verified 26 October 2026
 
-GitHub `main` is `65f12eb5221f7e76ce26c7bc75a6a1264f36f09d`. Its `verify` run
-and six dependency-coverage runs completed successfully on 2026-10-17. These
-are CI results, not production acceptance. The only published release remains
-the `v1.1.0-rc.1` pre-release, whose tag points to
-`62d0872cd7a44d123a4e4535936702f21cb8ec1b`. A workflow-dispatch retry from
-`9dbb4ae9bb06d3dd1ccea9b074fbc80192947cb1` completed both package jobs and
+The 18 October release-readiness checks described the earlier head
+`cc1ecaad9169eb7633cd9147abb6fd494fdde4fc` of
+[PR #129](https://github.com/Robert-Velhorst/002-Contractor-AI/pull/129).
+That PR subsequently merged on 20 October; it is no longer an open draft.
+[PR #145](https://github.com/Robert-Velhorst/002-Contractor-AI/pull/145) merged
+on 24 October. At this review, GitHub's default branch was at
+[`0145e457c742ddd803bfecd1bc7601fc6b6c2f3b`](https://github.com/Robert-Velhorst/002-Contractor-AI/commit/0145e457c742ddd803bfecd1bc7601fc6b6c2f3b).
+The six reported checks at that commit completed successfully:
+[verify and Windows standalone](https://github.com/Robert-Velhorst/002-Contractor-AI/actions/runs/40135217449),
+[Android build](https://github.com/Robert-Velhorst/002-Contractor-AI/actions/runs/40135217626),
+and [three language analyses](https://github.com/Robert-Velhorst/002-Contractor-AI/actions/runs/40135217375).
+These are repository/build results; they do not establish live provider,
+TLS, migration, data recovery or production acceptance.
+
+The published-release inventory checked on 26 October still lists only the
+[`v1.1.0-rc.1` pre-release](https://github.com/Robert-Velhorst/002-Contractor-AI/releases/tag/v1.1.0-rc.1),
+targeting `62d0872cd7a44d123a4e4535936702f21cb8ec1b`; no stable published release
+was returned. The retained historical packaging observation records a
+workflow-dispatch retry from
+`9dbb4ae9bb06d3dd1ccea9b074fbc80192947cb1` that completed both package jobs and
 published a Windows archive plus a GHCR image index at
 `sha256:a8a1cae1000662b5c629892ec32f6844a2a51009dba39d978f704b0045add621`.
 The image contains an OCI BuildKit SLSA provenance manifest, but GitHub's
 attestation verification endpoint returned 404; the run also tagged the image
 with the dispatch commit's `sha-*` alias although the release tag points to an
 older commit. Do not treat that pre-release image as a verified production
-artifact. Current `main` now binds the `sha-*` alias to the validated release
-source, but no package has been rebuilt from the current workflow and no stable
-release from current `main` exists. No deployment or cutover is ready.
+artifact. The release workflow now binds the `sha-*` alias to the validated
+release source, but that guard does not retroactively qualify the historical
+image or the later repository checkpoint. This review did not download or
+revalidate current package images or attestations. A source-bound production
+artifact, its complete scan and verified provenance, provider configuration,
+real-data restoration and end-to-end readiness must be established before
+deployment or cutover.
